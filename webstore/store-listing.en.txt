@@ -1,0 +1,41 @@
+============================================================
+Chrome Web Store listing (English)
+* See webstore/store-listing.firefox.en.txt for the Firefox AMO version
+* See webstore/store-listing.txt for Japanese
+* Paste into "Store listing" at https://chrome.google.com/webstore/devconsole
+============================================================
+
+■ Name
+Petarin
+
+■ Summary (max 132 chars)
+Per-domain sticky notes for web pages. They cling to the screen edge and tuck away until needed. Manage all from the popup. Local-only.
+
+■ Description (max 16,000 chars)
+Petarin lets you stick notes to web pages, scoped to each site's domain. Notes cling to the edge of the screen and stay neatly tucked away so they never get in the way — open them only when you need them.
+
+■ Features
+
+🔹 Saved per domain
+A note you stick on example.com reappears the next time you open that same domain. Keep your memos organized site by site.
+
+🔹 Notes that cling to the edge
+Notes magnetically stick to the screen edge (right, left, top, or bottom). Drag the spine to slide a note along the edge — the cross axis is locked so things never get messy.
+
+🔹 Small by default, full size when opened
+While collapsed, a note shows just its emoji icon or the first few characters. Click the spine to expand and write (up to 2 lines). Pick from 7 colors and an emoji icon.
+
+🔹 Collapse them all at once
+Opened a lot of notes? Click outside the page, press Esc, or use the "collapse all" button to tuck them all away in one go.
+
+🔹 See everything from the popup and manager
+From the toolbar icon, browse every saved note grouped per domain. Search notes and sites, jump to a domain from its note card, choose the placement (right/left/top/bottom), toggle translucency, and turn the on-page rail on or off.
+
+🔹 Privacy first — zero external transmission
+Notes and settings are stored entirely in the browser's local storage (storage.local) and are never sent to any external server. No account required.
+
+■ Permission justification
+- storage … to save notes and settings locally
+- activeTab … to determine the domain of the current tab
+- host_permissions (http/https) … to draw the sticky-note rail at the edge of each page
+No network requests are made.

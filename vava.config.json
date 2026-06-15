@@ -1,0 +1,41 @@
+{
+  "_comment": "/vava スキル (~/.claude/skills/vava/) のスクリプトに渡すプロジェクト固有設定。スキル側スクリプトは CWD の本ファイルから設定を読み込む。スキーマは ~/.claude/skills/vava/scripts/{check-store-listing,update-amo-listing}.mjs のヘッダコメントを参照。",
+  "amo": {
+    "slug": "petarin",
+    "categories": ["other"],
+    "homepage": "https://github.com/1llum1n4t1s/Petarin",
+    "supportUrl": "https://github.com/1llum1n4t1s/Petarin/issues",
+    "defaultName": {
+      "ja": "ぺたりん",
+      "en-US": "Petarin"
+    },
+    "listingFiles": {
+      "ja": "webstore/store-listing.firefox.ja.txt",
+      "en-US": "webstore/store-listing.firefox.en.txt"
+    },
+    "privacyFiles": {
+      "ja": "docs/privacy-policy.md",
+      "en-US": "docs/privacy-policy.en.md"
+    }
+  },
+  "cws": {
+    "extensionIdFile": ".cws-id"
+  },
+  "driftKeywords": {
+    "_comment": "check-store-listing.mjs の drift 判定キーワード。listing が「主要キーワードを含む」か確認する。未設定 (null) なら drift チェックを skip。CWS は meta description しか取得できないため名前ベースの語で判定する。",
+    "cws": {
+      "ja": ["ぺたりん"],
+      "en": ["Petarin"]
+    },
+    "amo": {
+      "summary": {
+        "ja": ["ドメインごと", "付箋"],
+        "en": ["per domain", "sticky notes"]
+      },
+      "description": {
+        "ja": ["ドメインごと", "付箋", "端"],
+        "en": ["per domain", "sticky notes", "edge"]
+      }
+    }
+  }
+}

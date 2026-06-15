@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ぺたりん — 付箋デスク</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Yusei+Magic&family=Zen+Maru+Gothic:wght@400;500;700;900&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="manage.css" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+
+    <!-- ── 上部バー ─────────────────────────────────────────────── -->
+    <header class="deskbar">
+      <div class="brand">
+        <span class="logo-mark" aria-hidden="true"><span class="logo-note"></span></span>
+        <div class="brand-text">
+          <h1>付箋デスク</h1>
+          <p>ぺたりんに貼った付箋を、ぜんぶここで。</p>
+        </div>
+      </div>
+
+      <div class="stats" aria-hidden="false">
+        <div class="stamp">
+          <b id="statDomains">0</b>
+          <span>サイト</span>
+        </div>
+        <div class="stamp accent">
+          <b id="statNotes">0</b>
+          <span>付箋</span>
+        </div>
+      </div>
+
+      <div class="tools">
+        <div class="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" /><line x1="16.5" y1="16.5" x2="21" y2="21" />
+          </svg>
+          <input type="search" id="search" placeholder="付箋やサイトを探す…" autocomplete="off" />
+        </div>
+        <label class="sort">
+          <span>並べ替え</span>
+          <select id="sort">
+            <option value="new">新しい順</option>
+            <option value="old">古い順</option>
+            <option value="domain">サイト順</option>
+            <option value="color">色で揃える</option>
+            <option value="length">文字数が多い順</option>
+          </select>
+        </label>
+      </div>
+    </header>
+
+    <!-- ── 作業エリア ───────────────────────────────────────────── -->
+    <div class="workspace">
+      <!-- 左：ドメインの索引 -->
+      <aside class="index" id="index" aria-label="サイトの索引"></aside>
+
+      <!-- 右：付箋ボード -->
+      <main class="board">
+        <div class="board-head">
+          <div class="scope">
+            <span class="scope-favi" id="scopeFavi" aria-hidden="true"></span>
+            <div class="scope-text">
+              <h2 id="scopeTitle">すべての付箋</h2>
+              <p id="scopeMeta">0 枚</p>
+            </div>
+          </div>
+          <div class="board-actions">
+            <button class="ghost" id="backAll" type="button" hidden>← すべて</button>
+            <button class="ghost" id="selectAll" type="button">ぜんぶ選択</button>
+            <button class="ghost" id="openDomain" type="button" hidden>↗ このサイトを開く</button>
+          </div>
+        </div>
+
+        <!-- 一括操作バー（選択時に出現） -->
+        <div class="bulkbar" id="bulkbar" hidden>
+          <span class="bulk-count"><b id="selCount">0</b> 枚を選択中</span>
+          <div class="bulk-right">
+            <button class="ghost" id="clearSel" type="button">選択解除</button>
+            <button class="danger" id="bulkDelete" type="button">🗑 まとめて剥がす</button>
+          </div>
+        </div>
+
+        <div class="notes" id="notes"></div>
+
+        <!-- 空状態 -->
+        <div class="empty" id="empty" hidden>
+          <div class="empty-art" aria-hidden="true"><span>＋</span></div>
+          <p class="empty-title" id="emptyTitle">まだ付箋はないみたい</p>
+          <p class="empty-sub" id="emptySub">
+            気になるページを開いて、端の「＋」から<br />最初の一枚をぺたりと貼ってみて。
+          </p>
+        </div>
+      </main>
+    </div>
+
+    <!-- 操作のトースト -->
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+    <script type="module" src="manage.js"></script>
+  </body>
+</html>

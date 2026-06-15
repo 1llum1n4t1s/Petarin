@@ -1,0 +1,22 @@
+{
+  "name": "petarin",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "ぺたりん: 見ているページのドメインごとに付箋をぺたりと貼れる Chrome 拡張機能。画面の端からそっと顔を出す WEB 付箋。",
+  "scripts": {
+    "generate-icons": "node scripts/generate-icons.js"
+  },
+  "devDependencies": {
+    "sharp": "^0.34.5",
+    "web-ext": "^10.4.0"
+  },
+  "keywords": [
+    "chrome-extension",
+    "sticky-notes",
+    "memo",
+    "japanese"
+  ],
+  "author": "ゆろち",
+  "license": "MIT"
+}

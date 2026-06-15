@@ -1,0 +1,351 @@
+/* ぺたりん レール（Shadow DOM 内に注入）— 紙の付箋が画面の端からそっと顔を出す */
+
+:host,
+* {
+  box-sizing: border-box;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  --peta-dim: 0.45;
+  font-family: "Hiragino Maru Gothic ProN", "Hiragino Maru Gothic Pro",
+    "Yu Gothic UI", "BIZ UDPGothic", "Segoe UI", system-ui, sans-serif;
+}
+
+/* ── 付箋本体（格納時の小さなタブ）────────────────────────────────── */
+.note {
+  position: absolute;
+  display: flex;
+  align-items: stretch;
+  pointer-events: auto;
+  width: 30px;
+  height: 32px;
+  border-radius: 2px;
+  color: var(--ink, #5c4a1e);
+  background-image:
+    /* 上端の柔らかな艶（光の帯）*/
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0) 40%),
+    /* 角のハイライト */
+    radial-gradient(120% 90% at 16% 12%, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0) 55%),
+    /* 紙の地：光源側から陰へ深く落とす */
+    linear-gradient(150deg, color-mix(in srgb, var(--paper) 90%, #fff) 0%, var(--paper) 52%,
+      color-mix(in srgb, var(--paper) 80%, #000 9%) 100%);
+  background-color: var(--paper, #ffe57a);
+  /* 厚みのある紙：接地影＋浮き影＋内側のベベル（上ハイライト・下シャドウ・極細リム）*/
+  box-shadow: 0 1px 1.5px rgba(48, 31, 7, 0.18), 0 8px 18px -8px rgba(38, 24, 5, 0.52),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1.5px 2px rgba(58, 38, 9, 0.12),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.25);
+  /* 引き出しのような単純な横スライド：幅だけをイージングで動かす（高さは即時・バウンス無し）*/
+  transition: width 0.32s ease, top 0.3s ease, left 0.3s ease,
+    opacity 0.25s ease, box-shadow 0.25s ease, transform 0.2s ease;
+  overflow: hidden;
+}
+.note.dragging {
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+  box-shadow: 0 2px 3px rgba(60, 40, 10, 0.18), 0 18px 30px -10px rgba(60, 40, 10, 0.5);
+  transform: scale(1.04);
+  animation: none;
+  z-index: 6;
+}
+/* 上下レールはせり出しが高さ方向。戻りも滑らかにするため height も遷移対象に。*/
+.layer[data-side="top"] .note,
+.layer[data-side="bottom"] .note {
+  transition: width 0.32s ease, height 0.3s ease, top 0.3s ease, left 0.3s ease,
+    opacity 0.25s ease, box-shadow 0.25s ease, transform 0.2s ease;
+}
+/* リサイズ追従中は位置のバウンス遷移を切って静かに動かす */
+.layer.repositioning .note { transition: none; }
+
+/* ── 磨かれた小口（ページに面した端の金口のような輝き）──────────────
+   革表紙の手帳の索引タブのように、端だけが光を受けて艶めく高級感。
+   色は付箋自身の --deep から起こすので、どの色でも調和する。*/
+.note::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  z-index: 2;
+  border-radius: 2px;
+  opacity: 1;
+  /* 磨いた金属の小口リボン：外端の鋭いハイライト→飽和した金芯→奥の陰。
+     格納時も展開時も同じ位置（ページに面した端）に出して見た目を統一する。*/
+  background: linear-gradient(
+    var(--gilt-dir, to right),
+    rgba(255, 255, 255, 0.98) 0%,
+    color-mix(in srgb, var(--deep) 96%, #fff) 34%,
+    color-mix(in srgb, var(--deep) 88%, #000 6%) 64%,
+    color-mix(in srgb, var(--deep) 52%, #000 30%) 100%
+  );
+  transition: opacity 0.25s ease, filter 0.25s ease;
+}
+.note:not(.expanded):hover::after { opacity: 1; filter: brightness(1.12); }
+/* ホバーで一段持ち上がる深い影（手前へ寄ってくる手触り）*/
+.note:not(.expanded):not(.dragging):hover {
+  box-shadow: 0 2px 3px rgba(48, 31, 7, 0.2), 0 16px 26px -10px rgba(38, 24, 5, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.66), inset 0 -1.5px 2px rgba(58, 38, 9, 0.12),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.3);
+}
+
+/* ── 背（spine）= ドラッグ取っ手 ＆ 開閉トグル ──────────────────────── */
+.spine {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  position: relative;
+  background: linear-gradient(
+    var(--spine-angle, 180deg),
+    color-mix(in srgb, var(--deep) 55%, transparent),
+    transparent 80%
+  );
+}
+.note.dragging .spine { cursor: grabbing; }
+.spine .head {
+  font-weight: 800;
+  font-size: 8px; /* 格納時の文字サイズ（2 行で文字数を稼ぐ）*/
+  letter-spacing: 0.01em;
+  line-height: 1.18;
+  width: 100%;
+  text-align: center;
+  /* 折り返して 2 行まで表示（はみ出しは … で省略）*/
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+  opacity: 0.95;
+  /* インクが紙に沈んだような微かなエンボス */
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+/* アイコン（絵文字）モード：格納時は絵文字だけを大きく中央に。文字用の clamp/エンボスは解除 */
+.note.has-icon .spine .head {
+  font-size: 16px;
+  line-height: 1;
+  display: block;
+  -webkit-line-clamp: initial;
+  word-break: normal;
+  text-shadow: none;
+}
+.spine .plus {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55), 0 -0.5px 0 rgba(90, 60, 10, 0.18);
+}
+.note.expanded .spine .head { display: none; }
+
+/* 格納時の頭文字を金口(::after, 5px)に重ねない＝ページに面した端に逃げ(padding)を作る。
+   文字は反対側へ寄って 2 行ぶんの幅を稼ぐ。展開時は head 非表示なので collapsed のみ。*/
+.layer[data-side="right"] .note:not(.expanded) .spine { padding-left: 7px; }
+.layer[data-side="left"] .note:not(.expanded) .spine { padding-right: 7px; }
+.layer[data-side="top"] .note:not(.expanded) .spine { padding-bottom: 7px; }
+.layer[data-side="bottom"] .note:not(.expanded) .spine { padding-top: 7px; }
+/* ＋作成タブ・アイコン付き付箋は単一字（記号/絵文字）なので逃げ不要＝中央に戻す。
+   絵文字を中央に置いても 7px 側の金口(5px)には掛からない（per-side より高い詳細度で打消し）。*/
+.layer[data-side="right"] .note.creator:not(.expanded) .spine,
+.layer[data-side="left"] .note.creator:not(.expanded) .spine,
+.layer[data-side="top"] .note.creator:not(.expanded) .spine,
+.layer[data-side="bottom"] .note.creator:not(.expanded) .spine,
+.layer[data-side="right"] .note.has-icon:not(.expanded) .spine,
+.layer[data-side="left"] .note.has-icon:not(.expanded) .spine,
+.layer[data-side="top"] .note.has-icon:not(.expanded) .spine,
+.layer[data-side="bottom"] .note.has-icon:not(.expanded) .spine { padding: 0; }
+
+/* ── 本体（展開時のみ中身が見える。横長の入力欄）────────────────────── */
+.body {
+  display: none;
+  flex: 1;
+  flex-direction: row;      /* 横並び：テキスト｜パレット｜✎｜✕ を1段に収める */
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  position: relative;
+  min-width: 0;
+}
+.note.expanded {
+  width: 50vw;   /* ウィンドウ幅の半分（相対）。1 行を広々と書ける */
+  height: 44px;  /* 1 行ぶんに圧縮（横並びで余計な高さを使わない）*/
+  z-index: 4;
+}
+/* 入力欄・ボタンを金口(::after)より上の重なり順に置く。金口は透明な body 越しに
+   見えたまま、文字やボタンは金口に塗り潰されない（縦 padding の無い上下レールで重要）。*/
+.note.expanded .body { display: flex; z-index: 3; }
+.note.expanded .spine { flex: 0 0 16px; }
+
+.ta {
+  flex: 1;
+  min-width: 0;       /* 横並びで縮められるように */
+  height: 28px;       /* 1 行ぶん（横並びで縦に伸びない）*/
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow: hidden;
+  padding: 2px 6px;
+  border-radius: 7px;
+  transition: background 0.18s ease, box-shadow 0.18s ease;
+}
+.ta::placeholder { color: var(--ink); opacity: 0.42; }
+.ta:read-only { cursor: default; }
+/* 閲覧モードはただのメモ表示（入力欄に見せない）。プレースホルダも出さない */
+.note:not(.editing) .ta::placeholder { color: transparent; }
+/* 編集モードのときだけ入力欄らしく見せる（書ける合図）*/
+.note.editing .ta {
+  background: rgba(255, 255, 255, 0.45);
+  box-shadow: inset 0 0 0 1.6px color-mix(in srgb, var(--deep) 60%, transparent);
+}
+.note.editing .ta::selection { background: color-mix(in srgb, var(--deep) 45%, #fff); }
+
+/* アイコン切替（横並びの先頭）: 押すと 絵文字表示 ⇄ 文字表示 を切替（ON 中はもう一度押すと別の絵文字）。
+   ON のときは選んだ絵文字を、OFF のときは「あ」を表示して状態が一目で分かるようにする。*/
+.icon-btn {
+  flex-shrink: 0;
+  width: 27px; height: 27px;
+  border: 0; border-radius: 9px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; line-height: 1;
+  background: rgba(70, 40, 20, 0.14); color: var(--ink);
+  transition: background 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
+}
+.icon-btn:hover { transform: scale(1.1); }
+.icon-btn.on {
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 0 0 1.6px color-mix(in srgb, var(--deep) 55%, transparent);
+}
+/* 文字モード（OFF）の「あ」は控えめな小さい太字に */
+.icon-btn:not(.on) { font-size: 12px; font-weight: 800; }
+
+/* 色パレット（横並びの一員）*/
+.palette { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.swatch {
+  width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid; padding: 0;
+  cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.swatch:hover { transform: scale(1.22); }
+.swatch.on { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85), 0 0 0 3.5px var(--ink); transform: scale(1.12); }
+
+/* 操作ボタン（横並びの一員）: 編集 ✎ / 完了 ✓ ・ 削除 ✕ */
+.edit, .del {
+  flex-shrink: 0;
+  width: 23px; height: 23px;
+  border: 0; border-radius: 50%;
+  font-size: 12px; line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center; justify-content: center;
+  background: rgba(70, 40, 20, 0.16); color: var(--ink);
+  transition: background 0.15s ease, transform 0.12s ease;
+}
+.edit:hover, .del:hover { transform: scale(1.1); }
+.del:hover { background: #d6483f; color: #fff; }
+.edit:hover { background: var(--deep); color: #fff; }
+.note.editing .edit { background: #4d9f5a; color: #fff; }
+
+/* ── ＋作成タブ（細く・移動可能）───────────────────────────────────── */
+.creator {
+  /* やや深い金（gold leaf）寄りに振って、付箋たちと差別化しつつ上品に */
+  --paper: #f6d873;
+  --deep: #d8a93a;
+  --ink: #6b531a;
+  width: 30px;
+  height: 32px;
+  border: 0;
+  /* 付箋と同じ厚み表現＋金口らしい暖色のリム */
+  box-shadow: 0 1px 1.5px rgba(70, 48, 8, 0.2), 0 8px 18px -8px rgba(60, 40, 6, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.65), inset 0 -1.5px 2px rgba(110, 80, 20, 0.14),
+    inset 0 0 0 0.5px rgba(255, 248, 220, 0.4);
+  animation: peta-breathe 4.2s ease-in-out infinite;
+}
+.creator .spine { cursor: pointer; touch-action: none; }
+.note.dragging.creator .spine { cursor: grabbing; }
+.creator:hover { filter: brightness(1.05); }
+@keyframes peta-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.035); } /* 主張しすぎない静かな呼吸 */
+}
+
+/* ── にょき！：隠れた長い紙が端からせり出す ─────────────────────────
+   端は固定したまま軸方向の寸法だけ伸ばす（離れず、出てくる）。
+   ホバーで width/height を伸ばすだけ。弾み（ぴょこぴょこ）は無しで、
+   .note の transition がそのまま「すっと出る」一発の動きを担う。*/
+
+/* ── 半透明（格納中・非ホバー時。＋作成タブも対象）────────────────── */
+.layer[data-translucent="1"] .note:not(.expanded):not(:hover) {
+  opacity: var(--peta-dim);
+}
+
+/* ── サイドごとの貼り付き向き ─────────────────────────────────────── */
+/* 画面端に接する側は丸めず密着（途切れて見えないように）、ページ側だけ 2px。
+   金口は端いっぱいまで通して連続させる。*/
+.layer[data-side="right"] .note { right: 0; border-radius: 2px 0 0 2px; --spine-angle: 270deg; }
+.layer[data-side="right"] .note.expanded .spine { order: 2; }
+.layer[data-side="right"] .note:not(.expanded):not(.dragging):hover { width: 44px; }
+.layer[data-side="right"] .note::after { --gilt-dir: to right; left: 0; top: 1px; bottom: 1px; width: 5px; }
+
+.layer[data-side="left"] .note { left: 0; border-radius: 0 2px 2px 0; --spine-angle: 90deg; }
+.layer[data-side="left"] .note.expanded .spine { order: -1; }
+.layer[data-side="left"] .note:not(.expanded):not(.dragging):hover { width: 44px; }
+.layer[data-side="left"] .note::after { --gilt-dir: to left; right: 0; top: 1px; bottom: 1px; width: 5px; }
+
+.layer[data-side="top"] .note { top: 0; width: 26px; border-radius: 0 0 2px 2px; --spine-angle: 0deg; flex-direction: column; }
+.layer[data-side="top"] .note.creator { width: 30px; height: 32px; }
+.layer[data-side="top"] .note.expanded { width: 50vw; }
+.layer[data-side="top"] .note.expanded .spine { order: -1; flex: 0 0 14px; }
+.layer[data-side="top"] .note:not(.expanded):not(.dragging):hover { height: 46px; }
+.layer[data-side="top"] .note::after { --gilt-dir: to top; bottom: 0; left: 1px; right: 1px; height: 5px; }
+
+.layer[data-side="bottom"] .note { bottom: 0; width: 26px; border-radius: 2px 2px 0 0; --spine-angle: 360deg; flex-direction: column; }
+.layer[data-side="bottom"] .note.creator { width: 30px; height: 32px; }
+.layer[data-side="bottom"] .note.expanded { width: 50vw; }
+.layer[data-side="bottom"] .note.expanded .spine { order: 2; flex: 0 0 14px; }
+.layer[data-side="bottom"] .note:not(.expanded):not(.dragging):hover { height: 46px; }
+.layer[data-side="bottom"] .note::after { --gilt-dir: to bottom; top: 0; left: 1px; right: 1px; height: 5px; }
+
+/* ── まとめてとじるボタン ─────────────────────────────────────────── */
+.close-all {
+  position: fixed;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(160deg, #6b5847, #4d3f31);
+  color: #fff6e6;
+  font-family: "Hiragino Maru Gothic ProN", "Yu Gothic UI", system-ui, sans-serif;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  box-shadow: 0 8px 20px -6px rgba(40, 25, 10, 0.6);
+  opacity: 0;
+  transform: translateY(8px) scale(0.92);
+  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  z-index: 10;
+}
+.close-all span:first-child { animation: peta-spin 6s linear infinite; }
+@keyframes peta-spin { to { transform: rotate(360deg); } }
+.close-all.show { opacity: 1; transform: translateY(0) scale(1); }
+.close-all:hover { background: linear-gradient(160deg, #7a6553, #574836); }
+.close-all[data-side="right"] { right: 18px; bottom: 18px; }
+.close-all[data-side="left"] { left: 18px; bottom: 18px; }
+.close-all[data-side="top"] { right: 18px; top: 18px; }
+.close-all[data-side="bottom"] { right: 18px; bottom: 18px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .note, .close-all, .swatch, .del, .edit { transition-duration: 0.01ms; }
+  /* 上下レールは height 遷移を per-side で上書きしているので同等の詳細度で打ち消す */
+  .layer[data-side="top"] .note, .layer[data-side="bottom"] .note { transition-duration: 0.01ms; }
+  .creator, .close-all span:first-child { animation: none; }
+}

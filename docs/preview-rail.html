@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <!-- 開発プレビュー：chrome API をモックし、ダミーページ上にコンテンツスクリプトのレールを描画する。
+       ドラッグ・展開・編集・色・削除・まとめてとじる の挙動をブラウザで直接確認できる。 -->
+  <head>
+    <meta charset="UTF-8" />
+    <title>ぺたりん rail preview</title>
+    <style>
+      body { margin: 0; font-family: "Yu Gothic UI", system-ui, sans-serif; color: #2a2a2a;
+        background: #fafafa; line-height: 1.9; }
+      .page { max-width: 720px; margin: 0 auto; padding: 48px 32px 200px; }
+      h1 { font-size: 28px; }
+      p { color: #555; }
+      .hint { background: #fff7df; border: 1px solid #f0d98a; border-radius: 10px; padding: 14px 18px; }
+    </style>
+    <script>
+      // ── chrome API モック ─────────────────────────────────────────
+      const now = Date.now();
+      const host = location.hostname; // 127.0.0.1 / localhost
+      window.chrome = {
+        runtime: { getURL: (p) => "/" + p },
+        storage: {
+          local: {
+            _d: {
+              "petarin:settings": { side: "right", collapsedTranslucent: true, translucentOpacity: 0.45, showOnPage: true, creatorRatio: 0.78 },
+              "petarin:notes": {
+                [host]: [
+                  { id: "p1", text: "横長の入力欄テスト\n2行目もここに", color: "yellow", posRatio: 0.18, createdAt: now, updatedAt: now },
+                  { id: "p2", text: "あとで読む", color: "mint", posRatio: 0.45, createdAt: now, updatedAt: now },
+                ],
+              },
+            },
+            async get(key) { const ks = typeof key === "string" ? [key] : key; const o = {}; for (const k of ks) if (k in this._d) o[k] = this._d[k]; return o; },
+            async set(obj) { Object.assign(this._d, obj); for (const f of this._l) f(Object.fromEntries(Object.keys(obj).map((k) => [k, { newValue: obj[k] }])), "local"); },
+            _l: [],
+          },
+          onChanged: { addListener(f) { window.chrome.storage.local._l.push(f); } },
+        },
+      };
+    </script>
+  </head>
+  <body>
+    <div class="page">
+      <h1>ぺたりん 動作プレビュー（ダミーページ）</h1>
+      <p class="hint">右端の細い「＋」をドラッグで移動／クリックで新規作成。付箋の背をクリックで展開、オーバーレイの ✎ で編集、✕ で削除。外側クリックか Esc でまとめて格納。</p>
+      <p>これは拡張機能のコンテンツスクリプトを実ページ風に確認するためのダミー本文です。スクロールしても付箋は画面右端に貼り付いたままになります。テキストを選択したり、ページのキーボードショートカット相当の挙動があっても、付箋への入力が奪われないことを確認できます。</p>
+      <p>あいうえお かきくけこ さしすせそ たちつてと なにぬねの。ロングテキストのダミー。Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore.</p>
+      <p>あいうえお かきくけこ さしすせそ たちつてと なにぬねの。ロングテキストのダミー。Lorem ipsum dolor sit amet.</p>
+    </div>
+    <script src="/src/content/content.js"></script>
+  </body>
+</html>

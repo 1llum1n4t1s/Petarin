@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <!-- 開発用プレビュー：chrome API をモックし、サンプル付箋で popup の見た目を確認する -->
+  <head>
+    <meta charset="UTF-8" />
+    <title>ぺたりん popup preview</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Yusei+Magic&family=Zen+Maru+Gothic:wght@400;500;700;900&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../src/popup/popup.css" />
+    <script>
+      // ── chrome API モック ─────────────────────────────────────────
+      const now = Date.now();
+      window.chrome = {
+        storage: {
+          local: {
+            _d: {
+              "petarin:settings": {
+                side: "right",
+                collapsedTranslucent: true,
+                translucentOpacity: 0.45,
+                showOnPage: true,
+              },
+              "petarin:notes": {
+                "www.reddit.com": [
+                  { id: "a1", text: "Fable 5 の事件、あとで詳しく調べる", color: "yellow", posRatio: 0.3, createdAt: now - 3600e3, updatedAt: now - 120e3 },
+                  { id: "a2", text: "r/Xenoblade のスレ\n返信する", color: "mint", posRatio: 0.5, createdAt: now - 7200e3, updatedAt: now - 6000e3 },
+                ],
+                "github.com": [
+                  { id: "b1", text: "PR レビュー待ち", color: "coral", posRatio: 0.2, createdAt: now - 86400e3, updatedAt: now - 86000e3 },
+                  { id: "b2", text: "Issue #42 起票", color: "blue", posRatio: 0.6, createdAt: now - 90000e3, updatedAt: now - 88000e3 },
+                  { id: "b3", text: "", color: "pink", posRatio: 0.8, createdAt: now - 200000e3, updatedAt: now - 200000e3 },
+                ],
+                "www.google.com": [
+                  { id: "c1", text: "検索結果まとめ", color: "purple", posRatio: 0.4, createdAt: now - 5 * 86400e3, updatedAt: now - 5 * 86400e3 },
+                ],
+                "docs.anthropic.com": [
+                  { id: "d1", text: "Claude API の料金\nメモ", color: "green", posRatio: 0.5, createdAt: now - 8 * 86400e3, updatedAt: now - 8 * 86400e3 },
+                ],
+              },
+            },
+            async get(key) {
+              const keys = typeof key === "string" ? [key] : key;
+              const out = {};
+              for (const k of keys) if (k in this._d) out[k] = this._d[k];
+              return out;
+            },
+            async set(obj) {
+              Object.assign(this._d, obj);
+            },
+          },
+          onChanged: { addListener() {} },
+        },
+        tabs: {
+          async query() {
+            return [{ url: "https://www.reddit.com/r/Xenoblade_Chronicles/" }];
+          },
+          create({ url }) {
+            console.log("open tab:", url);
+          },
+        },
+        runtime: { getURL: (p) => p },
+      };
+    </script>
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <header class="topbar">
+      <div class="tape" aria-hidden="true"></div>
+      <div class="brand">
+        <span class="logo-mark" aria-hidden="true"><span class="logo-note"></span></span>
+        <div class="brand-text">
+          <h1>ぺたりん</h1>
+          <p>このドメインに、ぺたり。</p>
+        </div>
+      </div>
+      <div class="count-badge" id="totalBadge" title="保存中の付箋の合計">0</div>
+    </header>
+    <main>
+      <section class="card settings">
+        <h2 class="card-title">どの端に貼る？</h2>
+        <div class="side-picker">
+          <div class="browser-mock" id="sidePicker">
+            <div class="mock-bar"><i></i><i></i><i></i><div class="mock-url"></div></div>
+            <div class="mock-screen">
+              <button class="zone zone-top" data-side="top" aria-label="上に並べる"></button>
+              <button class="zone zone-right" data-side="right" aria-label="右に並べる"></button>
+              <button class="zone zone-bottom" data-side="bottom" aria-label="下に並べる"></button>
+              <button class="zone zone-left" data-side="left" aria-label="左に並べる"></button>
+              <span class="mock-hint">画面の端を選んでね</span>
+            </div>
+          </div>
+        </div>
+        <label class="switch-row">
+          <span class="switch-label">格納中は半透明にする<small>マウスを乗せると、はっきり表示</small></span>
+          <span class="switch"><input type="checkbox" id="translucentToggle" /><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="switch-row">
+          <span class="switch-label">ページ上に付箋を表示<small>オフにすると、このポップアップだけで管理</small></span>
+          <span class="switch"><input type="checkbox" id="showOnPageToggle" /><span class="track"><span class="thumb"></span></span></span>
+        </label>
+      </section>
+      <div class="search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><line x1="16.5" y1="16.5" x2="21" y2="21" /></svg>
+        <input type="search" id="searchInput" placeholder="付箋やドメインを探す…" autocomplete="off" />
+      </div>
+      <section id="list" class="list"></section>
+      <div id="empty" class="empty" hidden>
+        <div class="empty-art" aria-hidden="true"><span class="empty-note">＋</span></div>
+        <p class="empty-title">まだ付箋はないみたい</p>
+        <p class="empty-sub">気になるページを開いて、端の「＋」から<br />最初の一枚をぺたりと貼ってみて。</p>
+      </div>
+    </main>
+    <footer class="foot">
+      <span id="footCount">0 枚の付箋</span><span class="foot-dot">·</span><span class="foot-name">ぺたりん</span>
+    </footer>
+    <script type="module" src="../src/popup/popup.js"></script>
+  </body>
+</html>

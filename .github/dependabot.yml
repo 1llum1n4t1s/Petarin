@@ -1,0 +1,24 @@
+# Dependabot 設定
+#
+# GitHub Actions の SHA ピン留め推奨 (https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions)
+# に従い、Actions を SHA + タグコメントの形に保つための自動 PR 設定。
+# npm 依存 (sharp / web-ext) の脆弱性 / バージョン追随もまとめてカバーする。
+version: 2
+updates:
+  # GitHub Actions の SHA ピン留め維持
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+
+  # npm 依存の脆弱性 / マイナーバージョン追随
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
