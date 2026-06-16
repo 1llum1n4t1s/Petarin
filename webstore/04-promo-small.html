@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Yusei+Magic&family=Zen+Maru+Gothic:wght@400;500;700&display=swap" rel="stylesheet" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 440px; height: 280px; overflow: hidden; }
+    body {
+      font-family: "Zen Maru Gothic", "Yu Gothic UI", system-ui, sans-serif; color: #4d3f31;
+      background: radial-gradient(circle at 80% 0%, #faf3e4, transparent 55%), #f0e7d2;
+      position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    }
+    .logo { width: 64px; height: 64px; background: #f2c84b; border-radius: 16px 5px 16px 16px;
+      box-shadow: 0 6px 14px -5px rgba(74, 56, 30, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+      transform: rotate(-5deg); display: grid; place-items: center; position: relative; margin-bottom: 16px; }
+    .logo::after { content: ""; position: absolute; top: 0; right: 0; border-width: 0 16px 16px 0; border-style: solid;
+      border-color: transparent #e0ad33 transparent transparent; border-top-right-radius: 5px; }
+    .logo .note { width: 28px; height: 28px; background: #4d3f31;
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M5 3h10l6 6v12H5z'/%3E%3C/svg%3E") center/contain no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M5 3h10l6 6v12H5z'/%3E%3C/svg%3E") center/contain no-repeat; }
+    h1 { font-family: "Yusei Magic", sans-serif; font-weight: 400; font-size: 42px; letter-spacing: 0.04em; line-height: 1; }
+    p { font-size: 15px; font-weight: 700; color: #7a6648; margin-top: 12px; }
+    .corner { position: absolute; border-radius: 8px 3px 8px 8px; box-shadow: 0 6px 12px -5px rgba(74, 56, 30, 0.45);
+      display: grid; place-items: center; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <div class="corner" style="background:#FFB6C9; width:40px; height:40px; left:26px; top:30px; transform:rotate(-12deg);">🌸</div>
+  <div class="corner" style="background:#A6E6D5; width:38px; height:38px; right:30px; bottom:34px; transform:rotate(10deg);">🍀</div>
+  <div class="logo"><span class="note"></span></div>
+  <h1>ぺたりん</h1>
+  <p>ドメインごとに貼れる WEB 付箋</p>
+</body>
+</html>

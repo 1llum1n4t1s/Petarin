@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Yusei+Magic&family=Zen+Maru+Gothic:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 1280px; height: 800px; overflow: hidden; }
+    body {
+      font-family: "Zen Maru Gothic", "Yu Gothic UI", system-ui, sans-serif;
+      color: #3a322a;
+      background:
+        radial-gradient(circle at 12% -8%, #faf3e4, transparent 42%),
+        radial-gradient(circle at 102% 112%, #ecdfc4, transparent 46%),
+        #f1e8d4;
+      display: flex; align-items: center; gap: 36px; padding: 0 74px; position: relative;
+    }
+    body::before {
+      content: ""; position: absolute; inset: 0; opacity: 0.5; pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+    }
+    .copy { width: 560px; position: relative; z-index: 1; }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 8px; font-weight: 700; font-size: 17px; color: #8a6d34;
+      background: #fff7df; border: 1px solid #f0d98a; border-radius: 999px; padding: 8px 17px; margin-bottom: 26px;
+    }
+    h1 {
+      font-family: "Yusei Magic", sans-serif; font-weight: 400; font-size: 54px; line-height: 1.3;
+      color: #4d3f31; letter-spacing: 0.01em;
+    }
+    h1 .hl { color: #d98a1e; }
+    .lead { font-size: 19px; line-height: 1.9; color: #6b5d4d; margin-top: 22px; }
+    .bullets { margin-top: 28px; display: flex; flex-direction: column; gap: 15px; }
+    .bullet { display: flex; align-items: center; gap: 13px; font-size: 18.5px; font-weight: 500; color: #4d3f31; }
+    .chip {
+      width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; font-size: 18px; flex-shrink: 0;
+      box-shadow: 0 3px 7px -3px rgba(74, 56, 30, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    }
+    .frame { flex: 1; display: flex; justify-content: center; align-items: center; position: relative; z-index: 1; }
+    .device { position: relative; transform: rotate(1.3deg); filter: drop-shadow(0 34px 54px rgba(74, 56, 30, 0.34)); }
+    .device iframe { width: 400px; height: 624px; border: 0; border-radius: 17px; background: #fdf8ee; display: block; }
+    .pin { position: absolute; top: -15px; left: 50%; transform: translateX(-50%) rotate(-6deg); font-size: 32px;
+      filter: drop-shadow(0 5px 4px rgba(74, 56, 30, 0.3)); z-index: 2; }
+  </style>
+</head>
+<body>
+  <div class="copy">
+    <span class="eyebrow">🗂 ぺたりん — WEB 付箋</span>
+    <h1>全ドメインの付箋を、<br /><span class="hl">ひとつの机</span>に。</h1>
+    <p class="lead">どのサイトに貼ったか忘れても大丈夫。ポップアップからドメインごとに一覧・検索して、ぱっと開けます。</p>
+    <div class="bullets">
+      <div class="bullet"><span class="chip" style="background:#FFE57A">📌</span>ドメインごとに自動で整理</div>
+      <div class="bullet"><span class="chip" style="background:#A6E6D5">🔍</span>付箋もサイトもまとめて検索</div>
+      <div class="bullet"><span class="chip" style="background:#FFB6C9">🎨</span>7 色 + 絵文字アイコンで色分け</div>
+    </div>
+  </div>
+  <div class="frame">
+    <div class="device">
+      <span class="pin">📌</span>
+      <iframe src="/docs/preview-popup.html" scrolling="no"></iframe>
+    </div>
+  </div>
+  <script>
+    // popup.js が付箋リストを描画したあと、設定パネルを越えて「ドメイン別の一覧」が
+    // 主役に来るよう iframe 内をスクロールする（同一オリジン配信なので contentDocument 可）。
+    const frame = document.querySelector(".device iframe");
+    // 店頭素材ではドメイン別の付箋一覧を主役にしたいので、設定カード（配置ピッカー）を
+    // 伏せて、ブランド＋検索＋一覧が見えるようにする（iframe 同一オリジンなので注入可）。
+    function revealList() {
+      try {
+        const d = frame.contentDocument;
+        if (d.getElementById("petarin-store-crop")) return;
+        const st = d.createElement("style");
+        st.id = "petarin-store-crop";
+        st.textContent = ".settings{display:none !important}";
+        (d.head || d.documentElement).appendChild(st);
+      } catch (e) {}
+    }
+    window.addEventListener("load", () => {
+      setTimeout(revealList, 300);
+      setTimeout(revealList, 800);
+    });
+  </script>
+</body>
+</html>

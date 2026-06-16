@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Yusei+Magic&family=Zen+Maru+Gothic:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 1280px; height: 800px; overflow: hidden; }
+    body {
+      font-family: "Zen Maru Gothic", "Yu Gothic UI", system-ui, sans-serif; color: #3a322a;
+      background: radial-gradient(circle at 50% 28%, #faf3e4, transparent 55%),
+        radial-gradient(circle at 6% 100%, #ecdfc4, transparent 40%),
+        radial-gradient(circle at 96% 4%, #f3e7c9, transparent 38%), #f0e7d2;
+      position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    }
+    body::before { content: ""; position: absolute; inset: 0; opacity: 0.5; pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E"); }
+    .center { position: relative; z-index: 3; text-align: center; }
+    .logo {
+      width: 116px; height: 116px; margin: 0 auto 26px; background: #f2c84b; border-radius: 26px 8px 26px 26px;
+      box-shadow: 0 12px 26px -8px rgba(74, 56, 30, 0.55), inset 0 2px 0 rgba(255, 255, 255, 0.55);
+      transform: rotate(-5deg); display: grid; place-items: center; position: relative;
+    }
+    .logo::after { content: ""; position: absolute; top: 0; right: 0; border-width: 0 30px 30px 0; border-style: solid;
+      border-color: transparent #e0ad33 transparent transparent; border-top-right-radius: 8px; }
+    .logo .note { width: 50px; height: 50px; background: #4d3f31;
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M5 3h10l6 6v12H5z'/%3E%3C/svg%3E") center/contain no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M5 3h10l6 6v12H5z'/%3E%3C/svg%3E") center/contain no-repeat; }
+    h1 { font-family: "Yusei Magic", sans-serif; font-weight: 400; font-size: 88px; color: #4d3f31; letter-spacing: 0.04em; line-height: 1; }
+    .tagline { font-size: 27px; font-weight: 700; color: #6b5642; margin-top: 26px; }
+    .tagline .hl { color: #d98a1e; }
+    .sub { font-size: 18px; color: #8a7d6d; margin-top: 16px; }
+    .sub b { color: #6b5d4d; }
+
+    .sticky { position: absolute; border-radius: 12px 4px 12px 12px; padding: 14px 16px; font-weight: 700;
+      color: var(--ink); font-size: 16px; line-height: 1.4; z-index: 1;
+      background: radial-gradient(circle at 18% 14%, rgba(255, 255, 255, 0.5), transparent 55%),
+        linear-gradient(155deg, color-mix(in srgb, var(--p) 92%, #fff), var(--p));
+      box-shadow: 0 2px 3px rgba(74, 56, 30, 0.18), 0 16px 30px -12px rgba(74, 56, 30, 0.5); }
+    .sticky::after { content: ""; position: absolute; top: 0; right: 0; border-width: 0 16px 16px 0; border-style: solid;
+      border-color: transparent color-mix(in srgb, var(--d) 82%, #000 6%) transparent transparent; border-top-right-radius: 4px; }
+    .sticky .em { font-size: 21px; display: block; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <div class="sticky" style="--p:#FFE57A; --d:#F2C84B; --ink:#5C4A1E; left:118px; top:120px; transform:rotate(-8deg); width:172px;">
+    <span class="em">📌</span>このサイトの<br />続きはここから
+  </div>
+  <div class="sticky" style="--p:#A6E6D5; --d:#73D0BB; --ink:#1C5247; left:150px; top:470px; transform:rotate(6deg); width:158px;">
+    <span class="em">🍀</span>あとで読む
+  </div>
+  <div class="sticky" style="--p:#FFB6C9; --d:#F58FAC; --ink:#6E2A40; right:120px; top:128px; transform:rotate(7deg); width:166px;">
+    <span class="em">🌸</span>お気に入りの<br />レシピ
+  </div>
+  <div class="sticky" style="--p:#A9D6F5; --d:#79B9ED; --ink:#1F4A6E; right:142px; top:462px; transform:rotate(-7deg); width:168px;">
+    <span class="em">⭐</span>レビュー待ちの<br />タスク
+  </div>
+
+  <div class="center">
+    <div class="logo"><span class="note"></span></div>
+    <h1>ぺたりん</h1>
+    <p class="tagline">見ているページの<span class="hl">ドメインごと</span>に、付箋をぺたり。</p>
+    <p class="sub">画面の端からそっと顔を出す、<b>WEB 付箋</b>。Chrome / Firefox 対応。</p>
+  </div>
+</body>
+</html>

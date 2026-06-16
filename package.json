@@ -5,9 +5,12 @@
   "private": true,
   "description": "ぺたりん: 見ているページのドメインごとに付箋をぺたりと貼れる Chrome 拡張機能。画面の端からそっと顔を出す WEB 付箋。",
   "scripts": {
-    "generate-icons": "node scripts/generate-icons.js"
+    "generate-icons": "node scripts/generate-icons.js",
+    "generate-screenshots": "node webstore/generate-screenshots.js",
+    "build": "pnpm run generate-icons && pnpm run generate-screenshots"
   },
   "devDependencies": {
+    "puppeteer-core": "^25.1.0",
     "sharp": "^0.34.5",
     "web-ext": "^10.4.0"
   },
