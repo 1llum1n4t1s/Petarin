@@ -34,8 +34,51 @@ From the toolbar icon, browse every saved note grouped per domain. Search notes 
 🔹 Privacy first — zero external transmission
 Notes and settings are stored entirely in the browser's local storage (storage.local) and are never sent to any external server. No account required.
 
+------------------------------------------------------------
+
+[Privacy practices] tab
+------------------------------------------------------------
+
+■ Does this item have a single purpose?
+Yes
+
+■ Single purpose description
+Stick notes to the edge of the screen, scoped to each page's domain, and manage them entirely in local on-device storage.
+
+■ Data usage disclosure
+
+  - Do you collect personally identifiable information?
+    No
+
+  - How do you handle user data?
+    - Selling user data: No
+    - Using or transferring user data for purposes unrelated to the item's single purpose: No
+    - Using or transferring user data to determine creditworthiness or for lending: No
+
 ■ Permission justification
-- storage … to save notes and settings locally
-- activeTab … to determine the domain of the current tab
-- host_permissions (http/https) … to draw the sticky-note rail at the edge of each page
-No network requests are made.
+
+  storage:
+  To save the notes (text, color, icon, placement) and user settings (placement, translucency, on-page toggle) only in on-device storage (chrome.storage.local). Nothing is sent to any external server.
+
+  activeTab:
+  To determine the domain of the current tab in the popup and the management page (note desk) so the notes for that domain can be listed and shown. The tab's page content is not read.
+
+■ Host permission justification
+
+  http://*/* and https://*/*:
+  To draw the sticky-note rail (content script) at the edge of every http(s) page so notes can be stuck on each page. The rail is rendered in an isolated Shadow DOM only; it never reads or modifies the page DOM (no interference with the page's own content) and performs no external transmission. Note data is stored only in on-device chrome.storage.local.
+
+■ Are you using remote code?
+No
+(All code is contained within the extension package; no code is loaded from external sources.)
+
+------------------------------------------------------------
+
+[Distribution] tab
+------------------------------------------------------------
+
+■ Visibility
+Public
+
+■ Target regions
+All regions
