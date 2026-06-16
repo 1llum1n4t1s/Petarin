@@ -2,7 +2,7 @@
   "_comment": "/vava スキル (~/.claude/skills/vava/) のスクリプトに渡すプロジェクト固有設定。スキル側スクリプトは CWD の本ファイルから設定を読み込む。スキーマは ~/.claude/skills/vava/scripts/{check-store-listing,update-amo-listing}.mjs のヘッダコメントを参照。",
   "amo": {
     "slug": "ぺたりん",
-    "categories": ["feeds-news-blogging", "bookmarks", "social-communication"],
+    "categories": ["bookmarks"],
     "homepage": "https://github.com/1llum1n4t1s/Petarin",
     "supportUrl": "https://github.com/1llum1n4t1s/Petarin/issues",
     "defaultName": {
