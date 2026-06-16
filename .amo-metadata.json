@@ -1,6 +1,6 @@
 {
   "categories": {
-    "firefox": ["other"]
+    "firefox": ["feeds-news-blogging", "bookmarks", "social-communication"]
   },
   "version": {
     "license": "MIT"
