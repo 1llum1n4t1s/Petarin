@@ -694,7 +694,7 @@ function renderSyncDomains(report) {
       const inScope = syncCfg.syncScope === "all" || syncCfg.syncDomains.includes(d);
       const badge = document.createElement("span");
       badge.className = "sp-badge";
-      const REASON = { domain_too_large: "大きすぎ", quota_exceeded: "容量超過", hash_collision: "キー衝突", decode_error: "復号失敗", write_failed: "送信失敗", delete_deferred: "削除保留" };
+      const REASON = { domain_too_large: "大きすぎ", quota_exceeded: "容量超過", hash_collision: "キー衝突", decode_error: "復号失敗", write_failed: "送信失敗", delete_deferred: "削除保留", item_limit: "件数上限" };
       if (!inScope) { badge.classList.add("off"); badge.textContent = "—"; }
       else if (st && st.synced) {
         badge.classList.add("ok");

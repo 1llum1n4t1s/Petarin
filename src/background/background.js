@@ -58,8 +58,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
     return;
   }
   if (area === "sync") {
-    // 自分が直前に push したキーのエコーは無視（往復ループ＆書込レート枯渇を防ぐ）。
-    if (wasJustPushed(keys)) return;
+    // 自分が直前に push した「値と同一」のエコーだけ無視（往復ループ＆書込レート枯渇を防ぐ）。
+    // 同一キーでも値が違えば他端末の変更なので pull する（キー名一致だけで切らない）。
+    if (wasJustPushed(changes)) return;
     scheduleReconcile(400); // 他端末由来 → なるべく早く pull
   }
 });

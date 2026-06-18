@@ -139,6 +139,10 @@
   // 全ドメインを丸ごと書き戻す旧 persistNotes と違い、自分の知らない他タブ／他PCの
   // 付箋を消さない（複数タブでの read-modify-write ロストアップデートを防ぐ）。
   function upsertNotePersist(note) {
+    // 削除済みの付箋を、デバウンス中の保存タイマー等が後から復活させないようにする。ゴミ箱ボタンは
+    // pointerdown を preventDefault するため textarea が blur せず saveTimer(280ms)が生き残り、削除後に
+    // 発火して再挿入してしまう（Codex 指摘）。メモリ上の真実 notes に存在しない id は保存しない。
+    if (!notes.some((n) => n && n.id === note.id)) return Promise.resolve();
     return withWrite(async () => {
       const raw = await chrome.storage.local.get(KEY_NOTES);
       const all = raw[KEY_NOTES] || {};

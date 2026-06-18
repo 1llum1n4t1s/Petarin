@@ -31,11 +31,11 @@ function makeArea(store, ctl, kind) {
   return {
     async get(keys) { return pickFrom(store, keys); },
     async set(obj) {
-      if (kind === "sync" && ctl.failSyncSet) throw new Error("QUOTA_BYTES quota exceeded (mock)");
+      if (kind === "sync" && (ctl.failSyncSet || ctl.failSetOnly)) throw new Error("QUOTA_BYTES quota exceeded (mock)");
       Object.assign(store, structuredClone(obj));
     },
     async remove(keys) {
-      if (kind === "sync" && ctl.failSyncSet) throw new Error("quota exceeded (mock remove)");
+      if (kind === "sync" && ctl.failSyncSet) throw new Error("quota exceeded (mock remove)"); // failSetOnly は remove を通す
       for (const k of [].concat(keys)) delete store[k];
     },
   };
@@ -672,9 +672,73 @@ async function scenarioS17() {
   ok((localNotes(A)["mine.com"] || []).some((n) => n.id === "M1"), "mine.com のローカル付箋は残る", JSON.stringify(localNotes(A)["mine.com"]));
 }
 
+// ════════════════════════════════════════════════════════════════
+// S18（Codex #6）: 自エコー抑止は「値が一致」する時だけ。同一キーでも別端末が違う値に変えたら抑止しない。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS18() {
+  console.log("S18（Codex#6）自エコーは値一致のみ抑止し同一キーの他端末変更は抑止しない:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  seedDevice(A, { notes: { "ex.com": [note("X", "本文", 18_000_000)] } });
+  await reconcileAs(A, mod, { now: 18_000_000 });
+  const noteKey = Object.keys(sync).find((k) => k.startsWith("petarin:sync:n:"));
+
+  const echo = { [noteKey]: { newValue: sync[noteKey] } };
+  ok(mod.wasJustPushed(echo) === true, "push した値と同一のエコーは抑止される", JSON.stringify(mod.wasJustPushed(echo)));
+  const other = { [noteKey]: { newValue: { d: "ex.com", n: [["Z", "他端末", "yellow", "", 0.5, 18_000_000, 0]] } } };
+  ok(mod.wasJustPushed(other) === false, "同一キーでも値が違えば抑止しない（他端末由来を pull）", JSON.stringify(mod.wasJustPushed(other)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S19（Codex #9）: item 数上限(512)を超える多数ドメインは write_failed ではなく決定的に skip する。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS19() {
+  console.log("S19（Codex#9）item 数上限で決定的に skip する（write_failed にしない）:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const notes = {};
+  for (let i = 0; i < 520; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", 19_000_000)];
+  seedDevice(A, { notes });
+  const r = await reconcileAs(A, mod, { now: 19_000_000 });
+
+  const syncedCount = r.domains.filter((d) => d.synced).length;
+  const itemLimited = r.domains.filter((d) => d.reason === "item_limit").length;
+  ok(syncedCount <= 511, "同期ドメイン item 数が上限(meta 込み 512)内", `synced=${syncedCount}`);
+  ok(itemLimited > 0, "超過ドメインは item_limit で決定的に skip", `item_limit=${itemLimited}`);
+  ok(!r.error, "write_failed にならない（reject しない）", JSON.stringify(r.error));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S20（Codex #7）: 墓石(set)が失敗した時は cloud item を remove しない（set→remove の順序保証）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS20() {
+  console.log("S20（Codex#7）墓石 set 失敗時は item を remove しない（順序保証）:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  seedDevice(A, { notes: { "ex.com": [note("X", "本文", 20_000_000)] } });
+  await reconcileAs(A, mod, { now: 20_000_000 });
+  const noteKey = Object.keys(sync).find((k) => k.startsWith("petarin:sync:n:"));
+  ok(!!noteKey, "t0 で ex.com が同期される", JSON.stringify(Object.keys(sync)));
+
+  // X を削除（ドメイン空＝removeKey）。set だけ失敗させる。
+  A.localStore[KEY_NOTES] = {};
+  A.ctl.failSetOnly = true;
+  const r = await reconcileAs(A, mod, { now: 20_000_000 + DAY });
+  ok(!!r.error, "set 失敗が report.error に乗る", JSON.stringify(r.error));
+  ok(!!sync[noteKey], "set 失敗時に cloud item は remove されない（順序保証）", String(!!sync[noteKey]));
+
+  // 回復後の再 reconcile で削除が確定し item が消える
+  A.ctl.failSetOnly = false;
+  await reconcileAs(A, mod, { now: 20_000_000 + 2 * DAY });
+  ok(!sync[noteKey], "回復後に削除が確定し item が remove される", JSON.stringify(Object.keys(sync)));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);

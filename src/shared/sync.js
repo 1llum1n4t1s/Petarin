@@ -335,12 +335,22 @@ async function readSync() {
   };
 }
 
-// 自己エコー抑止: 直近に自分が書いた sync キー集合（短時間）を記録し、
-// その onChanged は reconcile を再起動させない判断材料にする（background 側で参照）。
-let _lastPush = { at: 0, keys: new Set() };
-export function wasJustPushed(changedKeys, withinMs = 8000) {
+// 自己エコー抑止: 直近に自分が書いた sync キーと「その値」を短時間記録し、その onChanged は
+// reconcile を再起動させない判断材料にする（background 側で参照）。
+//   キー名一致だけで抑止すると、同一キーを別端末が 8 秒以内に変更したとき自エコーと誤認して
+//   取りこぼす（次のトリガーまで反映されない）。値（JSON）一致まで見て、異なれば他端末由来として
+//   抑止しない（Codex 指摘）。push した値と同一バイトのエコーだけを無視＝再 reconcile ループは防ぐ。
+let _lastPush = { at: 0, vals: new Map() };
+export function wasJustPushed(changes, withinMs = 8000) {
   if (Date.now() - _lastPush.at > withinMs) return false;
-  return changedKeys.every((k) => _lastPush.keys.has(k));
+  const keys = Object.keys(changes || {});
+  if (!keys.length) return false;
+  return keys.every((k) => {
+    if (!_lastPush.vals.has(k)) return false;
+    const nv = changes[k] ? changes[k].newValue : undefined;
+    const cur = nv === undefined ? null : JSON.stringify(nv); // remove は null として記録
+    return _lastPush.vals.get(k) === cur;
+  });
 }
 
 // 同期対象ドメインの決定。
@@ -470,6 +480,12 @@ async function _reconcile(opts) {
   for (const d of Object.keys(sync.rawByDomain)) {
     if (!domainSet.has(d)) used += bytesOf({ [domainKey(d)]: sync.rawByDomain[d] });
   }
+  // storage.sync は item 数上限(MAX_ITEMS=512)もある。バイトだけ見ると極小ドメインが多数だと全部
+  // バイト予算を通過して setOps に積まれ、バッチが item 超過で write_failed になる。残る item 数も
+  // 数えて、超える低優先ドメインは決定的に skip する（Codex 指摘）。meta=1・settings=1・スコープ外
+  // 既存 item を初期計上し、in-scope で同期するドメインごとに +1。
+  let itemCount = 1 /* meta */ + (cfg.syncSettings ? 1 : 0);
+  for (const d of Object.keys(sync.rawByDomain)) if (!domainSet.has(d)) itemCount += 1;
   const ordered = domains
     .map((d) => ({ d, latest: Math.max(0, ...((mergedByDomain[d] || []).map(tsOf))) }))
     .sort((a, b) => b.latest - a.latest);
@@ -545,12 +561,18 @@ async function _reconcile(opts) {
       report.domains.push({ domain, count: merged.length, synced: false, reason: "domain_too_large" });
       continue; // shadow は pre-seed の remote を保持（base を失わない）
     }
+    if (itemCount + 1 > SYNC_LIMITS.MAX_ITEMS) {
+      // item 数上限(512)超過 → このドメインは sync しない（決定的 skip で write_failed を避ける）
+      report.domains.push({ domain, count: merged.length, synced: false, reason: "item_limit" });
+      continue; // shadow は pre-seed の remote を保持（base を失わない）
+    }
     if (used + size > totalBudget) {
       // 合計 100KB 予算を超過 → 古いドメインから溢れる（未同期バッジ）
       report.domains.push({ domain, count: merged.length, synced: false, reason: "quota_exceeded" });
       continue; // shadow は pre-seed の remote を保持（base を失わない）
     }
     used += size;
+    itemCount += 1;
     // 書き込み要否は「符号化形 同士」で比較する（生 Note で比較すると展開時の正規化差で
     // 無限 re-push になりうるため）。
     if (JSON.stringify(sync.rawByDomain[domain] || null) !== JSON.stringify(item)) {
@@ -614,20 +636,20 @@ async function _reconcile(opts) {
   // (2) sync への push（容量超過・レート制限・競合で reject しうる）。
   //   6a: 失敗を握りつぶさず report.error に載せ、reject させない。さらに「synced:true としたドメイン」を
   //   未同期へ落とす。自己エコー記録は push 成功時だけ行う（失敗時に記録すると次の onChanged を取りこぼす）。
-  const syncKeysWritten = [];
-  const syncWrites = [];
-  if (Object.keys(setOps).length) {
-    syncKeysWritten.push(...Object.keys(setOps));
-    syncWrites.push(chrome.storage.sync.set(setOps));
-  }
-  if (removeKeys.length) {
-    syncKeysWritten.push(...removeKeys);
-    syncWrites.push(chrome.storage.sync.remove(removeKeys));
-  }
+  //   順序: set（墓石 meta を含む）を await してから remove する。逆順（並行）だと set 失敗時に「cloud item は
+  //   消えたが墓石は未保存」の窓ができ、その間に rejoin した端末が削除済み付箋を復活させる（Codex 指摘）。
+  const hasSet = Object.keys(setOps).length > 0;
   let pushOk = true;
   try {
-    if (syncWrites.length) await Promise.all(syncWrites);
-    if (syncKeysWritten.length) _lastPush = { at: Date.now(), keys: new Set(syncKeysWritten) };
+    if (hasSet) await chrome.storage.sync.set(setOps);
+    if (removeKeys.length) await chrome.storage.sync.remove(removeKeys);
+    if (hasSet || removeKeys.length) {
+      // 自エコー判定用に「キー→push した値(JSON)」を記録する。remove は null。
+      const vals = new Map();
+      for (const k of Object.keys(setOps)) vals.set(k, JSON.stringify(setOps[k]));
+      for (const k of removeKeys) vals.set(k, null);
+      _lastPush = { at: Date.now(), vals };
+    }
   } catch (e) {
     pushOk = false;
     report.error = String((e && e.message) || e);
