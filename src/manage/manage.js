@@ -5,13 +5,19 @@ import {
   deleteNotes,
   updateNote,
   restoreNotes,
+  getSettings,
+  saveSettings,
   COLORS,
   colorOf,
+  DEFAULT_COLOR,
+  MAX_CHARS,
+  relTime,
+  hashHue,
 } from "../shared/storage.js";
+import { isValidDomain } from "../shared/sync.js";
 
 const $ = (sel) => document.querySelector(sel);
 const SEP = "\u001f"; // \u001f = Unit Separator (domain<->id delimiter; never appears in either)
-const MAX_CHARS = 140;
 
 let allNotes = {};
 let currentDomain = "";
@@ -60,9 +66,11 @@ async function init() {
     allNotes = await getAllNotes(); // データは常に最新へ同期
     if (editingKey) { pendingRender = true; return; }      // 編集中は壊さない
     if (pendingEchoes > 0) { pendingEchoes--; return; }    // 自分の書き込みエコー：再描画は各操作側が担当
-    render();                                               // 外部（ページ側）変更のみ再描画
+    render();                                               // 外部（ページ側＝同期含む）変更のみ再描画
   });
 
+  setupSync();
+  setupBackup();
   render();
 }
 
@@ -123,7 +131,7 @@ function visibleItems() {
 function sortItems(items) {
   const t = (x) => x.note.updatedAt || x.note.createdAt || 0;
   const ci = (x) => {
-    const i = COLORS.findIndex((c) => c.id === (x.note.color || "yellow"));
+    const i = COLORS.findIndex((c) => c.id === (x.note.color || DEFAULT_COLOR));
     return i < 0 ? 99 : i;
   };
   const a = [...items];
@@ -360,7 +368,7 @@ function buildMemo(domain, note) {
   }
   const date = document.createElement("span");
   date.className = "memo-date";
-  date.textContent = relTime(note.updatedAt || note.createdAt);
+  date.textContent = relTime(note.updatedAt || note.createdAt, true);
   foot.append(date);
 
   const colors = document.createElement("div");
@@ -419,7 +427,9 @@ function beginEdit(el, domain, note) {
     editingKey = null;
     let next = original;
     if (commit) {
-      next = (el.textContent || "").replace(/\s*\n\s*/g, " ").trim().slice(0, MAX_CHARS);
+      // 改行は潰さず複数行のまま保存（content.js の本文と往復しても壊さない）。plaintext-only の
+      // 改行は <br>/ブロック境界になりうるため textContent だと欠落する → innerText で取得。CRLF は LF へ正規化。
+      next = (el.innerText || "").replace(/\r\n?/g, "\n").slice(0, MAX_CHARS);
       if (next !== original) {
         expectEcho();
         await updateNote(domain, note.id, { text: next });
@@ -493,8 +503,14 @@ async function undoDelete() {
   const snap = lastDeleted;
   lastDeleted = null;
   hideToast();
+  // 「元に戻す」は今の操作。削除を同期した直後だと、墓石の削除時刻（reconcile 時の now）の方が
+  // 復元する付箋の古い updatedAt より新しく、次の reconcile で LWW 負けして再び消える（Codex#3）。
+  // 復活を勝たせるため updatedAt を now に更新してから戻す（mergeDomainNotes が dead < updatedAt を見て
+  // 復活＋墓石撤去する）。
+  const now = Date.now();
+  const fresh = snap.map(({ domain, note }) => ({ domain, note: { ...note, updatedAt: now } }));
   expectEcho();                 // 復元は restoreNotes の 1 回書き込み
-  await restoreNotes(snap);
+  await restoreNotes(fresh);
   await reload();
 }
 
@@ -528,24 +544,257 @@ function hideToast() {
   toastTimer = setTimeout(() => { toast.hidden = true; }, 300);
 }
 
-// ── ユーティリティ ────────────────────────────────────────────────
-function hashHue(str) {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
-  return h;
+// relTime / hashHue は shared/storage.js に集約（デスクは年付き＝relTime(ts, true)）。
+
+// ── バックアップ（書き出し / 読み込み）──────────────────────────────
+// local が唯一の真実の源なので、アンインストール・PC 移行・プロファイル破損に備えた
+// 手動の退避／復元手段。読み込みは非破壊マージ（既存 id はそのまま・新しい付箋だけ追加）。
+function setupBackup() {
+  $("#exportBtn").addEventListener("click", exportNotes);
+  $("#importBtn").addEventListener("click", () => $("#importFile").click());
+  $("#importFile").addEventListener("change", importNotes);
 }
-function relTime(ts) {
-  if (!ts) return "";
-  const diff = Date.now() - ts;
-  const m = Math.floor(diff / 60000);
-  if (m < 1) return "たった今";
-  if (m < 60) return `${m}分前`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}時間前`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}日前`;
-  const date = new Date(ts);
-  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
+
+async function exportNotes() {
+  const notes = await getAllNotes();
+  const payload = { app: "petarin", schemaVersion: 1, exportedAt: new Date().toISOString(), notes };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const d = new Date();
+  const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `petarin-notes-${stamp}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  const count = Object.values(notes).reduce((s, arr) => s + arr.length, 0);
+  showToast(`${count} 枚を書き出したよ`);
+}
+
+// 外部バックアップ（利用者が編集可能）の note を保存形へ正規化する。text が非文字列（例 {}）だと
+// 描画経路の note.text?.trim() が TypeError を投げ、デスク/popup が壊れる（Codex 指摘）。描画・配置・
+// 相対時刻が触る型（text/posRatio/createdAt/color/icon）を防御的に揃え、未知の余剰フィールドは捨てる。
+function normalizeImportedNote(note, now) {
+  if (!note || typeof note.id !== "string") return null;
+  const num = (v, fallback) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+  let posRatio = num(note.posRatio, 0.5);
+  if (posRatio < 0) posRatio = 0;
+  else if (posRatio > 1) posRatio = 1;
+  return {
+    id: note.id,
+    text: typeof note.text === "string" ? note.text.slice(0, MAX_CHARS) : "",
+    color: typeof note.color === "string" ? note.color : DEFAULT_COLOR,
+    icon: typeof note.icon === "string" ? note.icon : "",
+    posRatio,
+    createdAt: num(note.createdAt, now),
+    updatedAt: now, // 復元＝今の操作。同期削除の墓石(削除時刻)に LWW で勝たせる
+  };
+}
+
+async function importNotes(e) {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = ""; // 同じファイルを連続で選べるようにリセット
+  if (!file) return;
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch {
+    showToast("読み込めなかった（JSON が壊れてるみたい）");
+    return;
+  }
+  const notes = data && data.notes;
+  if (!notes || typeof notes !== "object") {
+    showToast("ぺたりんの書き出しファイルじゃないみたい");
+    return;
+  }
+  // [{domain, note}] へ展開して restoreNotes で非破壊マージ。
+  // バックアップは利用者が編集できる外部入力なので、ドメインは sync と同じ健全性チェックを通す
+  // （`https://${domain}/` 連結で別オリジンへ飛ぶ細工キーを弾く。Codex 指摘）。
+  // また復元は「今」の操作なので updatedAt を now に更新し、同期削除の墓石(削除時刻)に LWW で勝たせる
+  // （古い updatedAt のまま戻すと次の reconcile で再削除される。undo と同じ。Codex 指摘）。
+  const now = Date.now();
+  const pairs = [];
+  let skipped = 0;
+  for (const domain of Object.keys(notes)) {
+    if (!Array.isArray(notes[domain])) continue;
+    if (!isValidDomain(domain)) { skipped++; continue; }
+    for (const note of notes[domain]) {
+      const clean = normalizeImportedNote(note, now);
+      if (clean) pairs.push({ domain, note: clean });
+    }
+  }
+  if (!pairs.length) { showToast(skipped ? "取り込めるドメインが無かった（不正なドメイン名はスキップ）" : "取り込める付箋が無かったよ"); return; }
+  expectEcho();
+  await restoreNotes(pairs);
+  await reload();
+  showToast(`${pairs.length} 枚を取り込んだよ（重複はスキップ）`);
+}
+
+// ── 複数PC同期パネル（既定OFF）────────────────────────────────────
+// 同期ロジック本体は background（reconcile）に一元化。ここは設定の読み書きと、
+// 容量レポートの描画だけを担う。reconcile はメッセージで依頼する。
+let syncCfg = { syncEnabled: false, syncSettings: false, syncScope: "selected", syncDomains: [] };
+let reportTimer = 0;
+
+function setupSync() {
+  const panel = $("#syncPanel");
+  $("#syncBtn").addEventListener("click", openSyncPanel);
+  $("#syncClose").addEventListener("click", closeSyncPanel);
+  panel.addEventListener("click", (e) => { if (e.target === panel) closeSyncPanel(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !panel.hidden) closeSyncPanel(); });
+
+  $("#syncEnabled").addEventListener("change", async (e) => {
+    await saveSyncCfg({ syncEnabled: e.target.checked });
+    if (!e.target.checked) {
+      // OFF: この端末が出した投影を撤去（プライバシー配慮・任意）
+      try { await chrome.runtime.sendMessage({ type: "petarin:purgeSync" }); } catch {}
+    }
+    renderSyncPanel();
+    if (e.target.checked) refreshSyncReport();
+  });
+  $("#syncSettings").addEventListener("change", async (e) => {
+    await saveSyncCfg({ syncSettings: e.target.checked });
+    refreshSyncReport();
+  });
+  for (const r of document.querySelectorAll('input[name="syncScope"]')) {
+    r.addEventListener("change", async (e) => {
+      await saveSyncCfg({ syncScope: e.target.value });
+      renderSyncDomains(null);
+      refreshSyncReport();
+    });
+  }
+}
+
+async function openSyncPanel() {
+  syncCfg = await loadSyncCfg();
+  renderSyncPanel();
+  $("#syncPanel").hidden = false;
+  if (syncCfg.syncEnabled) refreshSyncReport();
+}
+function closeSyncPanel() { $("#syncPanel").hidden = true; }
+
+async function loadSyncCfg() {
+  const s = await getSettings();
+  return {
+    syncEnabled: !!s.syncEnabled,
+    syncSettings: !!s.syncSettings,
+    syncScope: s.syncScope || "selected",
+    syncDomains: Array.isArray(s.syncDomains) ? s.syncDomains : [],
+  };
+}
+async function saveSyncCfg(partial) {
+  syncCfg = { ...syncCfg, ...partial };
+  await saveSettings(partial);
+}
+
+function renderSyncPanel() {
+  $("#syncEnabled").checked = syncCfg.syncEnabled;
+  $("#syncBtn").classList.toggle("on", syncCfg.syncEnabled);
+  $("#syncBody").hidden = !syncCfg.syncEnabled;
+  $("#syncSettings").checked = syncCfg.syncSettings;
+  for (const r of document.querySelectorAll('input[name="syncScope"]')) r.checked = (r.value === syncCfg.syncScope);
+  renderSyncDomains(null);
+}
+
+// 同期サイト一覧（scope=selected はチェックボックス、all は読み取り専用）。
+function renderSyncDomains(report) {
+  const box = $("#syncDomainList");
+  const local = Object.keys(allNotes).filter((d) => (allNotes[d] || []).length);
+  // レポートにしか出ないドメイン（最後の付箋を消したが削除が保留＝cloud に残り他端末ではまだ見える）も
+  // 行として出す。allNotes 基準だけだと delete_deferred のドメインが一覧から消え、削除が未伝播なことを
+  // ユーザーが把握できない（Codex）。少なくとも delete_deferred は report-only でも表示する。
+  const reportOnly = report
+    ? (report.domains || []).filter((x) => x.reason === "delete_deferred" && !local.includes(x.domain)).map((x) => x.domain)
+    : [];
+  const domains = [...new Set([...local, ...reportOnly])].sort();
+  const statusOf = (d) => (report ? (report.domains || []).find((x) => x.domain === d) || null : null);
+  box.replaceChildren(...domains.map((d) => {
+    const row = document.createElement("label");
+    row.className = "sp-dom";
+    if (syncCfg.syncScope === "selected") {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = syncCfg.syncDomains.includes(d);
+      cb.addEventListener("change", async () => {
+        const set = new Set(syncCfg.syncDomains);
+        if (cb.checked) set.add(d); else set.delete(d);
+        await saveSyncCfg({ syncDomains: [...set] });
+        refreshSyncReport();
+      });
+      row.append(cb);
+    }
+    const name = document.createElement("span");
+    name.className = "sp-dom-name";
+    name.textContent = d.replace(/^www\./, "");
+    name.title = d;
+    const count = document.createElement("span");
+    count.className = "sp-dom-count";
+    count.textContent = `${(allNotes[d] || []).length}枚`;
+    row.append(name, count);
+    if (syncCfg.syncEnabled) {
+      const st = statusOf(d);
+      const inScope = syncCfg.syncScope === "all" || syncCfg.syncDomains.includes(d);
+      const badge = document.createElement("span");
+      badge.className = "sp-badge";
+      const REASON = { domain_too_large: "大きすぎ", quota_exceeded: "容量超過", hash_collision: "キー衝突", decode_error: "復号失敗", write_failed: "送信失敗", delete_deferred: "削除保留", item_limit: "件数上限" };
+      if (!inScope) { badge.classList.add("off"); badge.textContent = "—"; }
+      else if (st && st.synced) {
+        badge.classList.add("ok");
+        badge.textContent = "同期中";
+        if (st.compressed) badge.title = "圧縮して同期中";
+      }
+      else if (st && !st.synced) { badge.classList.add("skip"); badge.textContent = REASON[st.reason] || "未同期"; }
+      else { badge.classList.add("off"); badge.textContent = "…"; }
+      row.append(badge);
+    }
+    return row;
+  }));
+}
+
+// 連続操作をまとめてから background に reconcile を依頼し、レポートを描画する。
+function refreshSyncReport() {
+  clearTimeout(reportTimer);
+  reportTimer = setTimeout(async () => {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: "petarin:reconcile" });
+      if (res && res.ok) renderSyncReport(res.report);
+    } catch { /* SW 不在等は無視 */ }
+  }, 250);
+}
+
+function renderSyncReport(report) {
+  if (!report || !report.enabled) return;
+  const used = report.usedBytes || 0;
+  const quota = report.quota || 102400;
+  const pct = Math.min(100, Math.round((used / quota) * 100));
+  $("#syncGaugeFill").style.width = pct + "%";
+  $("#syncGaugeText").textContent = `${(used / 1024).toFixed(1)} / ${Math.round(quota / 1024)} KB`;
+  $(".sp-gauge-bar").classList.toggle("warn", pct >= 85);
+  // 「削除保留(delete_deferred)」は容量超過ではなく count:0 の一過性状態。容量警告サマリには数えないが、
+  // 「削除が他端末へまだ伝わっていない」ことは別途知らせる（cloud item を意図的に残しており、放置すると
+  // ユーザーは削除が反映されたと誤解する。Codex）。
+  const skipped = (report.domains || []).filter((d) => !d.synced && d.reason !== "delete_deferred");
+  const deferred = (report.domains || []).filter((d) => d.reason === "delete_deferred");
+  const note = $("#syncNote");
+  if (report.error) {
+    // 書込自体が失敗（容量上限 API・レート制限など）。一過性のことが多く次回 reconcile で再 push される。
+    note.classList.add("warn");
+    note.textContent = "同期の書き込みに失敗しました。時間をおいて自動で再試行します（その間の変更はこの端末に残ります）。";
+    note.title = String(report.error);
+  } else if (skipped.length) {
+    note.classList.add("warn");
+    note.removeAttribute("title");
+    note.textContent = `${skipped.length} サイトが容量上限で未同期です（その付箋はこの端末にのみ残ります）。`;
+  } else if (deferred.length) {
+    note.classList.add("warn");
+    note.removeAttribute("title");
+    note.textContent = `${deferred.length} サイトの削除が保留中です（容量に空きができ次第、他の端末へ自動で反映されます）。`;
+  } else {
+    note.classList.remove("warn");
+    note.removeAttribute("title");
+    note.textContent = report.settingsSynced ? "見た目設定も同期しています。" : "";
+  }
+  renderSyncDomains(report);
 }
 
 init();

@@ -2,8 +2,9 @@
 // 見ているページのドメインに紐づく付箋を、画面の端からそっと出すレールとして描画する。
 // Shadow DOM でページ側の CSS から完全隔離。設定や付箋の変更は storage.onChanged で同期。
 //
-// 付箋は 3 状態:  格納(collapsed) → 展開・閲覧(expanded) → 展開・編集(editing)
-//   クリックで左にスライドして展開（閲覧）。オーバーレイの ✎ を押して初めて書き込める。
+// 付箋は 2 状態:  格納(collapsed) ⇄ 展開・編集(expanded＝箱がせり出し、そのまま複数行を書ける)
+//   spine のクリックで開閉。開くと即フォーカスして編集できる（旧「閲覧」状態と ✎ ボタンは廃止）。
+//   大きい箱は重なると操作しづらいので、同時に開くのは 1 枚（開くと他は畳む＝アコーディオン）。
 //
 // アニメのため開閉/編集/作成/削除は要素を作り直さずクラス切替（applyState）で差分更新する。
 // 全面再描画 render() は初期化・外部同期など限られた場面のみ。resize は位置だけ再計算。
@@ -17,6 +18,10 @@
   // ── 定数（shared/storage.js と対応） ────────────────────────────
   const KEY_NOTES = "petarin:notes";
   const KEY_SETTINGS = "petarin:settings";
+  // 削除時刻ログ（同期しない・local 専用）。storage.js LOCAL_TOMBS_KEY と同キー・同構造
+  // { [domain]: { [id]: deletedAt } }。reconcile が tombstone を実削除時刻で刻むのに使う（Codex#5）。
+  const KEY_LOCAL_TOMBS = "petarin:sync:localTombs";
+  const LOCAL_TOMB_TTL = 180 * 24 * 60 * 60 * 1000;
 
   const COLORS = [
     { id: "yellow", paper: "#FFE57A", deep: "#F2C84B", ink: "#5C4A1E" },
@@ -26,18 +31,32 @@
     { id: "blue",   paper: "#A9D6F5", deep: "#79B9ED", ink: "#1F4A6E" },
     { id: "mint",   paper: "#A6E6D5", deep: "#73D0BB", ink: "#1C5247" },
     { id: "green",  paper: "#BEE89B", deep: "#95D16C", ink: "#33501F" },
+    // 無彩色。storage.js の COLORS と「id 集合」を一致させること（content script は import 不可で手動複製）。
+    // sync は色を id 文字列で持つので並び順は非依存・未知 id は黄にフォールバック。
+    { id: "white",  paper: "#FBFAF6", deep: "#D2CABA", ink: "#4A463C" },
+    { id: "black",  paper: "#2C2B2E", deep: "#6A6770", ink: "#F3F0E8" },
   ];
   const DEFAULT_COLOR = "yellow";
 
   // 格納時に出すアイコン候補（小さくても見分けやすい絵文字を厳選）。
   // 新規作成時は、同ドメイン内で重複しないものをランダムに自動付与する。
   const ICONS = [
-    "🍎","🍊","🍋","🍇","🍓","🍑","🍒","🥝","🍉","🍍","🍌","🥥",
-    "🌸","🌷","🌻","🌼","🌺","🌹","🍀","🌿","🍁","🌵","🪴","🎍",
-    "🐱","🐶","🐰","🐻","🐼","🦊","🐯","🦁","🐸","🐵","🐧","🐤",
-    "🦉","🦋","🐝","🐢","🐙","🐬","🐳","🦄","🐞","🐠",
-    "⭐","🌟","✨","⚡","🔥","❄️","☀️","🌈","🌙","☁️","💧","🌊",
-    "🎈","🎀","🎁","🔔","📌","📎","✏️","📖","🔑","🎵","🍵","☕",
+    // フルーツ・野菜
+    "🍎","🍏","🍊","🍋","🍌","🍉","🍇","🍓","🫐","🍈","🍒","🍑","🥭","🍍","🥥","🥝","🍅","🥑","🍆","🥕","🌽","🌶️","🥦","🍄",
+    // 食べもの・スイーツ・飲みもの
+    "🍔","🍕","🍟","🌭","🌮","🍣","🍱","🍙","🍜","🍤","🍳","🥐","🍞","🧀","🍰","🎂","🧁","🍮","🍭","🍬","🍫","🍩","🍪","🍿","🍡","🍵","☕","🧋","🥤","🍷",
+    // 花・植物
+    "🌸","🌷","🌹","🌺","🌻","🌼","💐","🌵","🌴","🌲","🌳","🌱","🌿","🍀","🍁","🍂","🍃","🌾","🪴","🎍","🌰",
+    // どうぶつ
+    "🐶","🐱","🐭","🐹","🐰","🦊","🐻","🐼","🐨","🐯","🦁","🐮","🐷","🐸","🐵","🐔","🐧","🐤","🦆","🦉","🦇","🐺","🐴","🦄","🐝","🐞","🦋","🐌","🐢","🐍","🐙","🐠","🐡","🐬","🐳","🦈","🐊","🐘","🦒","🦔",
+    // 自然・宇宙・天気
+    "⭐","🌟","✨","⚡","🔥","❄️","☀️","🌈","🌙","☁️","💧","🌊","🌍","🪐","☄️","🌠","⛄","💫",
+    // ハート・かたち
+    "❤️","🧡","💛","💚","💙","💜","🤎","🖤","🤍","💖","💗","💕","🔴","🟠","🟡","🟢","🔵","🟣","🟤","⚫","⚪","🔶","🔷","💎",
+    // もの・文房具
+    "🎈","🎀","🎁","🔔","📌","📎","✏️","📖","🔑","🎵","🖍️","📕","📗","📘","📙","📒","📚","🗒️","📝","✂️","📐","🔖","🏷️","📍","🧸","🔮",
+    // あそび・のりもの
+    "🎯","🎲","🎮","🧩","🎨","🎬","🎤","🎧","🎸","🎹","🥁","🎺","🏀","⚽","🎾","🚀","✈️","⛵","🚲","🏆","🥇","👑","🎏","🪁","🎉",
   ];
 
   const DEFAULTS = {
@@ -52,9 +71,13 @@
     collapsed: { v: { w: 30, h: 32 }, h: { w: 26, h: 32 } }, // 格納タブ（高さは 2 倍）
     creator: { v: { w: 30, h: 32 }, h: { w: 30, h: 32 } },
   };
-  // 展開時の横幅はウィンドウ幅の半分（相対）。高さは 1 行ぶんに圧縮（横並びレイアウト）。
-  const expandedDim = () => ({ w: Math.round(window.innerWidth * 0.5), h: 44 });
-  const MAX_CHARS = 140;
+  // 展開時は普通の付箋のような箱（端からスライドして出る）。画面が狭ければ収まるよう詰める。
+  const EXP_W = 360, EXP_H = 420;
+  const expandedDim = () => ({
+    w: Math.min(EXP_W, Math.max(160, window.innerWidth - 20)),
+    h: Math.min(EXP_H, Math.max(160, window.innerHeight - 20)),
+  });
+  const MAX_CHARS = 2000;
 
   const domain = location.hostname;
   const colorOf = (id) => COLORS.find((c) => c.id === id) || COLORS[0];
@@ -64,6 +87,9 @@
   const noteEl = (id) => layer.querySelector(`.note[data-id="${esc(id)}"]`);
   const noteText = (note) => (typeof note.text === "string" ? note.text : "");
   const isEmpty = (note) => !noteText(note).trim();
+  // 継承プロパティ名（__proto__ 等）の key でも own な JSON 直列化可能エントリを作る（storage.js の同名と同義。
+  // 素の obj[key]=v だと key="__proto__" は own を作らず prototype 差し替えになる）。localTombs の id 記録に使う。
+  const ownSet = (obj, key, val) => Object.defineProperty(obj, key, { value: val, writable: true, enumerable: true, configurable: true });
 
   // 同ドメインの他の付箋と重複しないアイコンをランダムに選ぶ（出尽くしたら重複許容）
   function pickIcon(excludeId) {
@@ -71,6 +97,14 @@
     const pool = ICONS.filter((e) => !used.has(e));
     const from = pool.length ? pool : ICONS;
     return from[Math.floor(Math.random() * from.length)];
+  }
+  // 旧データ(icon 無し)の補完は端末間で一致する「決定的」選択にする。ランダムだと端末ごとに別アイコンを
+  // 付け、updatedAt 同値の LWW（同値は local 優先）で互いに勝ち合い毎サイクル push し合う churn を起こす
+  // （Codex 指摘）。id の安定ハッシュで選べば全端末が同じ結果に収束し、updatedAt を変えずに済む。
+  function legacyIcon(id) {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+    return ICONS[h % ICONS.length];
   }
 
   // ── 状態 ──────────────────────────────────────────────────────────
@@ -82,6 +116,8 @@
   // 自分の書き込みによる onChanged を無視するための時刻（キー別に分離）
   let notesWriteAt = 0;
   let settingsWriteAt = 0;
+  // 入力中(textareaフォーカス)に来た外部変更を取りこぼした印。編集を抜けたら取り込む。
+  let pendingSync = false;
 
   // ── ストレージ ────────────────────────────────────────────────────
   async function loadSettings() {
@@ -98,27 +134,114 @@
         id: n.id,
         text: typeof n.text === "string" ? n.text : "",
         color: n.color || DEFAULT_COLOR,
-        // 旧データ（icon 無し）は "" ＝文字表示モード（後方互換）。絵文字文字列なら絵文字モード。
+        // icon 無し（旧データ）は "" のまま読み、buildNote で絵文字を自動付与する（文字表示モードは廃止）。
         icon: typeof n.icon === "string" ? n.icon : "",
         posRatio: typeof n.posRatio === "number" ? clamp(n.posRatio, 0, 1) : 0.5,
         createdAt: n.createdAt || Date.now(),
         updatedAt: n.updatedAt || n.createdAt || Date.now(),
       }));
   }
-  async function persistNotes() {
-    const raw = await chrome.storage.local.get(KEY_NOTES);
-    const all = raw[KEY_NOTES] || {};
-    if (notes.length) all[domain] = notes;
-    else delete all[domain];
-    await chrome.storage.local.set({ [KEY_NOTES]: all });
-    notesWriteAt = Date.now(); // コミット完了後に打刻（エコー抑止窓を最小化）
+  // 自分の書き込み（get→set）をタブ内で直列化し、get と set の隙間に別の書き込みが
+  // 割り込んで取りこぼすのを防ぐ（storage.js の _writeLock と同じ考え方をこの IIFE 内に持つ）。
+  let writeLock = Promise.resolve();
+  function withWrite(task) {
+    const run = writeLock.then(task, task);
+    writeLock = run.then(() => {}, () => {}); // 失敗しても連鎖は止めない
+    return run;
+  }
+
+  // 付箋を「保存済みの最新内容」に対して 1 枚だけ上書き挿入する。
+  // 全ドメインを丸ごと書き戻す旧 persistNotes と違い、自分の知らない他タブ／他PCの
+  // 付箋を消さない（複数タブでの read-modify-write ロストアップデートを防ぐ）。
+  function upsertNotePersist(note) {
+    // 削除済みの付箋を、デバウンス中の保存タイマー等が後から復活させないようにする。ゴミ箱ボタンは
+    // pointerdown を preventDefault するため textarea が blur せず saveTimer(280ms)が生き残り、削除後に
+    // 発火して再挿入してしまう（Codex 指摘）。メモリ上の真実 notes に存在しない id は保存しない。
+    if (!notes.some((n) => n && n.id === note.id)) return Promise.resolve();
+    return withWrite(async () => {
+      const saved = {
+        id: note.id,
+        text: noteText(note),
+        color: note.color || DEFAULT_COLOR,
+        icon: typeof note.icon === "string" ? note.icon : "",
+        posRatio: note.posRatio,
+        createdAt: note.createdAt,
+        updatedAt: note.updatedAt,
+      };
+      // 楽観的並行制御。毎回「最新を読む→自分のこの 1 枚だけ当てる→set 直前にもう一度読んでベースが
+      // 変わっていなければ set」。background reconcile が get〜set の隙に他ドメイン／同ドメインの他付箋を pull
+      // したら（再読でベース不一致を検出）最新を読み直して当て直す＝全 notes 丸ごと書き戻しで pull を巻き戻さない。
+      // 最終試行は最善努力で書く（自分の編集を失わない）。chrome.storage に CAS は無いので set 直前の再読〜set の
+      // 極小窓は残るが reconcile 側も verify-before-set で content に道を譲り収束する（Codex 指摘）。
+      const MAX = 4;
+      for (let attempt = 0; attempt < MAX; attempt++) {
+        const all = (await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {};
+        const baseJSON = JSON.stringify(all);
+        const list = (all[domain] || []).slice();
+        const i = list.findIndex((n) => n && n.id === note.id);
+        if (i >= 0) list[i] = saved;
+        else list.push(saved);
+        all[domain] = list;
+        // set 直前に再読。ベースが変わっていたら（reconcile 割り込み）最新で当て直す（最終試行は強行）。
+        const cur = JSON.stringify((await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {});
+        if (cur !== baseJSON && attempt < MAX - 1) continue;
+        notesWriteAt = Date.now(); // set の前に打刻：onChanged が set 完了と同期発火しても自エコーを確実に無視
+        await chrome.storage.local.set({ [KEY_NOTES]: all });
+        break;
+      }
+    });
+  }
+
+  // 指定 id の付箋だけを保存済みの最新内容から取り除く（他の付箋・他タブの付箋は保持）。
+  function removeNotesPersist(ids) {
+    const drop = new Set(ids);
+    return withWrite(async () => {
+      // upsert と同じ楽観的並行制御。毎回「最新を読む→対象 id だけ削除して当てる→set 直前に再読し、ベースが
+      // 変わっていたら（reconcile が他ドメイン/他付箋を pull）最新へ当て直す」。全 notes 丸ごと書き戻しで pull を
+      // 巻き戻さない（次回 reconcile が無関係付箋に tombstone を立てる誤動作を防ぐ。Codex）。最終試行は最善努力。
+      const MAX = 4;
+      for (let attempt = 0; attempt < MAX; attempt++) {
+        const raw = await chrome.storage.local.get([KEY_NOTES, KEY_LOCAL_TOMBS]);
+        const all = raw[KEY_NOTES] || {};
+        const baseJSON = JSON.stringify(all);
+        const before = all[domain] || [];
+        const removed = before.filter((n) => n && drop.has(n.id)).map((n) => n.id);
+        const list = before.filter((n) => n && !drop.has(n.id));
+        if (list.length) all[domain] = list;
+        else delete all[domain]; // 空になったドメインはキーごと掃除
+        // 実削除時刻を localTombs へ記録（notes と同一 set で書く＝reconcile が最新を読める。Codex#5）。
+        const now = Date.now();
+        const log = raw[KEY_LOCAL_TOMBS] || {};
+        if (removed.length) {
+          // 継承プロパティ名（__proto__ 等）の id でも own な記録を残す（素の dom[id]=now だと
+          // id="__proto__" は own を作らず削除記録が消え、再 ON 時に stale cloud ノートが復活する。Codex）。
+          if (!Object.prototype.hasOwnProperty.call(log, domain)) ownSet(log, domain, {});
+          const dom = log[domain];
+          for (const id of removed) ownSet(dom, id, now);
+        }
+        for (const d of Object.keys(log)) { // TTL GC（同期しない local ログ）
+          const dm = log[d];
+          for (const id of Object.keys(dm)) if (now - (dm[id] || 0) > LOCAL_TOMB_TTL) delete dm[id];
+          if (!Object.keys(dm).length) delete log[d];
+        }
+        // set 直前に notes を再読。ベースが変わっていたら最新で当て直す（最終試行は強行＝削除を取りこぼさない）。
+        const cur = JSON.stringify((await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {});
+        if (cur !== baseJSON && attempt < MAX - 1) continue;
+        notesWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
+        await chrome.storage.local.set({ [KEY_NOTES]: all, [KEY_LOCAL_TOMBS]: log });
+        break;
+      }
+    });
   }
   async function persistCreatorRatio() {
-    const raw = await chrome.storage.local.get(KEY_SETTINGS);
-    const cur = { ...DEFAULTS, ...(raw[KEY_SETTINGS] || {}) };
-    cur.creatorRatio = settings.creatorRatio;
-    await chrome.storage.local.set({ [KEY_SETTINGS]: cur });
-    settingsWriteAt = Date.now();
+    // creatorRatio だけを「最新の settings」に重ねて書く。settings 全体を読んだ値ごと書き戻すと、ドラッグ中に
+    // manage が変更した同期フラグ（syncEnabled/syncScope/syncDomains 等）を古い値で巻き戻し、OFF にした同期が
+    // 再開しうる（Codex）。set 直前に再読し、自分が変える creatorRatio 以外は最新スナップショットを保持する
+    // （単一キー保存なので全体書き戻しは避けられない＝窓は最小化。chrome.storage に CAS は無い）。
+    const fresh = (await chrome.storage.local.get(KEY_SETTINGS))[KEY_SETTINGS] || {};
+    const next = { ...DEFAULTS, ...fresh, creatorRatio: settings.creatorRatio };
+    settingsWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
+    await chrome.storage.local.set({ [KEY_SETTINGS]: next });
   }
 
   // ── DOM ヘルパ ────────────────────────────────────────────────────
@@ -134,6 +257,27 @@
     return n;
   }
 
+  // フラットな線アイコンを SVG で生成（任意ページ上でも安全に createElementNS で組む）。
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function svgIcon(paths, sw = 1.8) {
+    const s = document.createElementNS(SVGNS, "svg");
+    s.setAttribute("viewBox", "0 0 24 24");
+    s.setAttribute("fill", "none");
+    s.setAttribute("stroke", "currentColor");
+    s.setAttribute("stroke-width", String(sw));
+    s.setAttribute("stroke-linecap", "round");
+    s.setAttribute("stroke-linejoin", "round");
+    s.setAttribute("aria-hidden", "true");
+    for (const d of paths) {
+      const p = document.createElementNS(SVGNS, "path");
+      p.setAttribute("d", d);
+      s.append(p);
+    }
+    return s;
+  }
+  const ICON_CLOSE = ["M6 6 18 18", "M18 6 6 18"];                                  // ×
+  const ICON_TRASH = ["M4 7h16", "M9 7V5h6v2", "M6 7l1 13h10l1-13", "M10 10.5v6", "M14 10.5v6"]; // ゴミ箱
+
   // ── 初期化 ────────────────────────────────────────────────────────
   async function init() {
     await loadSettings();
@@ -147,7 +291,10 @@
     try {
       const res = await fetch(chrome.runtime.getURL("src/content/rail.css"));
       style.textContent = await res.text();
-    } catch {}
+    } catch (e) {
+      // 失敗してもレールは動く（無スタイル）。原因追跡のため握りつぶさず必ず記録する。
+      console.warn("[petarin] rail.css の取得に失敗（無スタイルで描画）:", e);
+    }
     root.append(style);
 
     layer = el("div", { class: "layer" });
@@ -286,43 +433,41 @@
       dimFor: () => dimOf(note.id),
       getRatio: () => note.posRatio,
       setRatio: (r) => { note.posRatio = r; },
-      commit: () => { note.updatedAt = Date.now(); persistNotes(); },
+      commit: () => { note.updatedAt = Date.now(); upsertNotePersist(note); },
       onTap: () => toggle(note.id),
     });
     wrap.append(spine);
 
     const body = el("div", { class: "body" });
 
-    // アイコン切替（絵文字 ⇄ 文字）。絵文字 ON なら格納時は絵文字だけ、OFF なら本文先頭を表示。
-    const iconBtn = el("button", { class: "icon-btn", type: "button", tabindex: "-1" });
-    const refreshIconBtn = () => {
-      if (note.icon) {
-        iconBtn.textContent = note.icon;
-        iconBtn.classList.add("on");
-        iconBtn.title = "アイコン表示中（押すと文字表示に切替／もう一度押すと別の絵文字）";
-      } else {
-        iconBtn.textContent = "あ";
-        iconBtn.classList.remove("on");
-        iconBtn.title = "文字表示中（押すとアイコンを付ける）";
-      }
-    };
-    refreshIconBtn();
-    iconBtn.addEventListener("pointerdown", (e) => e.preventDefault());
-    iconBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      note.icon = note.icon ? "" : pickIcon(note.id);
-      note.updatedAt = Date.now();
-      persistNotes();
-      refreshIconBtn();
-      applyState(wrap, note);
-      if (editingId === note.id) { const t = wrap.querySelector(".ta"); if (t) t.focus(); }
-    });
-    body.append(iconBtn);
+    // 上端バー：右上に「閉じる(×)」を明示配置（削除＝ゴミ箱と取り違えないように分離）。
+    const topbar = el("div", { class: "topbar" });
+    const closeBtn = el("button", { class: "close-x", type: "button", tabindex: "-1", title: "閉じる", "aria-label": "閉じる" }, svgIcon(ICON_CLOSE, 2));
+    closeBtn.addEventListener("pointerdown", (e) => e.preventDefault());
+    closeBtn.addEventListener("click", (e) => { e.stopPropagation(); toggle(note.id); }); // 展開中なので畳む
+    topbar.append(closeBtn);
+    body.append(topbar);
 
+    // 本文（複数行・普通の付箋のように自由に書ける）。展開中は常に編集可能。
     const ta = el("textarea", { class: "ta", maxlength: String(MAX_CHARS), placeholder: "ここに書いてね", spellcheck: "false" });
     ta.value = noteText(note);
     bindEditor(ta, note, wrap);
     body.append(ta);
+
+    // 下端ツールバー：絵文字｜色｜（余白）｜削除
+    const bar = el("div", { class: "toolbar" });
+
+    // アイコン（絵文字）ボタン。クリックで絵文字ピッカーを開いて明示選択する。
+    if (!note.icon) { note.icon = legacyIcon(note.id); upsertNotePersist(note); } // 旧データ(icon 無し)へ決定的付与（端末間で収束・churn 回避）
+    const iconBtn = el("button", { class: "icon-btn on", type: "button", tabindex: "-1", title: "クリックで絵文字を選ぶ" });
+    iconBtn.textContent = note.icon;
+    iconBtn.addEventListener("pointerdown", (e) => e.preventDefault());
+    iconBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (activeIconPicker && activeIconPicker.btn === iconBtn) { closeIconPicker(); return; }
+      openIconPicker(note, wrap, iconBtn);
+    });
+    bar.append(iconBtn);
 
     const palette = el("div", { class: "palette" });
     for (const col of COLORS) {
@@ -335,59 +480,97 @@
         e.stopPropagation();
         note.color = col.id;
         note.updatedAt = Date.now();
-        persistNotes();
+        upsertNotePersist(note);
         wrap.style.setProperty("--paper", col.paper);
         wrap.style.setProperty("--deep", col.deep);
         wrap.style.setProperty("--ink", col.ink);
         for (const s of palette.querySelectorAll(".swatch")) s.classList.remove("on");
         sw.classList.add("on");
-        if (editingId === note.id) { const t = wrap.querySelector(".ta"); if (t) t.focus(); }
+        const t = wrap.querySelector(".ta"); if (t && !t.readOnly) t.focus();
       });
       if (col.id === note.color) sw.classList.add("on");
       palette.append(sw);
     }
-    body.append(palette);
+    bar.append(palette);
 
-    // 操作ボタンは本体の横並びに収める（縦の高さを使わない）
-    const editBtn = el("button", { class: "edit", type: "button", tabindex: "-1" }, "✎");
-    editBtn.addEventListener("pointerdown", (e) => e.preventDefault());
-    editBtn.addEventListener("click", (e) => { e.stopPropagation(); startEdit(note.id); });
-    body.append(editBtn);
+    bar.append(el("div", { class: "sp" })); // 余白（削除を右端へ寄せる）
 
-    const del = el("button", { class: "del", type: "button", title: "この付箋を削除", "aria-label": "削除", tabindex: "-1" }, "✕");
+    const del = el("button", { class: "del", type: "button", title: "この付箋を削除", "aria-label": "削除", tabindex: "-1" }, svgIcon(ICON_TRASH));
     del.addEventListener("pointerdown", (e) => e.preventDefault());
     del.addEventListener("click", (e) => { e.stopPropagation(); removeNote(note.id); });
-    body.append(del);
+    bar.append(del);
 
+    body.append(bar);
     wrap.append(body);
     applyState(wrap, note);
     return wrap;
   }
 
+  // ── 絵文字ピッカー（展開中のアイコンボタンから開く。重複選択を許可）──────────
+  let activeIconPicker = null;
+  function closeIconPicker() {
+    if (!activeIconPicker) return;
+    const { picker, onDown, onKey } = activeIconPicker;
+    document.removeEventListener("pointerdown", onDown, true);
+    document.removeEventListener("keydown", onKey, true);
+    picker.remove();
+    activeIconPicker = null;
+  }
+  function openIconPicker(note, wrap, btn) {
+    closeIconPicker();
+    const picker = el("div", { class: "icon-picker" });
+    picker.style.setProperty("--pk-accent", colorOf(note.color).deep);
+    for (const emo of ICONS) {
+      const b = el("button", { class: "emoji" + (emo === note.icon ? " on" : ""), type: "button", tabindex: "-1" }, emo);
+      b.addEventListener("pointerdown", (e) => e.preventDefault());
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        note.icon = emo;              // 重複許可（pickIcon を通さず明示選択）
+        note.updatedAt = Date.now();
+        upsertNotePersist(note);
+        btn.textContent = emo;
+        applyState(wrap, note);
+        closeIconPicker();
+        if (editingId === note.id) { const t = wrap.querySelector(".ta"); if (t) t.focus(); }
+      });
+      picker.append(b);
+    }
+    layer.append(picker);
+    // 位置決め（ボタンの上、収まらなければ下。ビューポート内にクランプ）
+    const r = btn.getBoundingClientRect();
+    const pr = picker.getBoundingClientRect();
+    let top = r.top - pr.height - 8;
+    if (top < 8) top = r.bottom + 8;
+    let left = clamp(r.left + r.width / 2 - pr.width / 2, 8, window.innerWidth - pr.width - 8);
+    top = clamp(top, 8, window.innerHeight - pr.height - 8);
+    picker.style.left = `${left}px`;
+    picker.style.top = `${top}px`;
+    // 外側クリック / Esc で閉じる（Esc は付箋格納より先に拾って止める）
+    const onDown = (e) => {
+      const path = e.composedPath ? e.composedPath() : [];
+      if (path.includes(picker) || path.includes(btn)) return;
+      closeIconPicker();
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); closeIconPicker(); }
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey, true);
+    activeIconPicker = { picker, btn, onDown, onKey };
+  }
+
   // 状態（展開/編集）を要素へ反映。クラス切り替えで width などがトランジションする。
   function applyState(wrap, note) {
     const isExp = expanded.has(note.id);
-    const isEdit = editingId === note.id;
     wrap.classList.toggle("expanded", isExp);
-    wrap.classList.toggle("editing", isEdit);
+    wrap.classList.toggle("editing", editingId === note.id); // フォーカス中の箱を強調
     place(wrap, note.posRatio, isExp ? expandedDim() : collapsedDim());
 
     const ta = wrap.querySelector(".ta");
-    if (ta) ta.readOnly = !isEdit;
-    const icon = note.icon || "";
-    wrap.classList.toggle("has-icon", !!icon);
+    if (ta) ta.readOnly = !isExp; // 展開中は常に編集可能（普通の付箋のように直接書ける）
+    wrap.classList.add("has-icon"); // 格納時は絵文字を表示（旧データは buildNote で自動付与）
     const head = wrap.querySelector(".spine .head");
-    if (head) {
-      // アイコン付きは絵文字だけを表示。無しは本文先頭（2 行・はみ出しは CSS の line-clamp）。
-      head.textContent = icon
-        ? icon
-        : (noteText(note) || "").replace(/\s+/g, " ").trim().slice(0, 24);
-    }
-    const editBtn = wrap.querySelector(".edit");
-    if (editBtn) {
-      editBtn.textContent = isEdit ? "✓" : "✎";
-      editBtn.title = isEdit ? "編集を終える" : "編集する";
-    }
+    if (head) head.textContent = note.icon || "";
   }
 
   function buildCreator() {
@@ -407,12 +590,13 @@
 
   // ── 共通ドラッグ（軸ロック）。動かなければ onTap ───────────────────
   function attachDrag(handle, wrap, o) {
-    let dragging = false, moved = false, startPos = 0, startRatio = 0;
+    let dragging = false, moved = false, startPos = 0, startRatio = 0, obs = null;
     handle.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       dragging = true; moved = false;
       startRatio = o.getRatio();
       startPos = isVertical() ? e.clientY : e.clientX;
+      obs = obstaclesFor(o.id); // 障害物はドラッグ中不変＝1 回だけ算出（毎 pointermove の全付箋走査を避ける）
       handle.setPointerCapture(e.pointerId);
       wrap.classList.add("dragging");
       e.preventDefault();
@@ -428,7 +612,7 @@
       const maxStart = Math.max(1, track - len);
       // 指の動きぶんだけ希望位置(px)を出し、他の付箋に重ならない最寄りへ弾く
       const desired = clamp(startRatio * maxStart + (cur - startPos), 0, maxStart);
-      const resolved = resolveAxis(desired, len, maxStart, obstaclesFor(o.id));
+      const resolved = resolveAxis(desired, len, maxStart, obs);
       const r = resolved / maxStart;
       o.setRatio(r);
       place(wrap, r, dim);
@@ -458,29 +642,13 @@
       if (isEmpty(note)) discardNote(note.id, wrap); // 空のまま閉じたら破棄
       else applyState(wrap, note);
     } else {
-      expanded.add(id); // まず閲覧状態で左へスライド展開
+      collapseAll();        // 大きい箱は重ねない＝開く前に他の展開を畳む（アコーディオン）
+      expanded.add(id);     // 端からスライドして箱が出る
+      editingId = id;       // 開いたら即編集（普通の付箋のように直接書ける）
       applyState(wrap, note);
+      focusEditor(id);      // 本文へフォーカス
     }
     updateCloseAll();
-  }
-
-  // 旧編集付箋の DOM を現在の状態へ戻す（editingId 更新後に呼ぶ）
-  function refreshNote(id) {
-    const note = notes.find((n) => n.id === id);
-    const wrap = noteEl(id);
-    if (note && wrap) applyState(wrap, note);
-  }
-
-  function startEdit(id) {
-    const note = notes.find((n) => n.id === id);
-    const wrap = noteEl(id);
-    if (!note || !wrap) return;
-    const prev = editingId;
-    editingId = editingId === id ? null : id;
-    if (editingId) expanded.add(editingId);
-    if (prev && prev !== editingId) refreshNote(prev); // 直前の編集付箋を閲覧へ戻す
-    applyState(wrap, note);
-    if (editingId === id) focusEditor(id);
   }
 
   function focusEditor(id) {
@@ -498,11 +666,11 @@
     expanded.delete(id);
     if (editingId === id) editingId = null;
     if (wrap) wrap.remove();
-    persistNotes();
+    removeNotesPersist([id]);
   }
 
   function createNote() {
-    const prev = editingId;
+    collapseAll(); // 既存の展開を畳んでから新規を開く（同時に開くのは 1 枚＝アコーディオン）
     const note = {
       id: `n_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
       text: "",
@@ -522,9 +690,8 @@
 
     expanded.add(note.id);
     editingId = note.id;
-    if (prev && prev !== note.id) refreshNote(prev); // 編集中だった付箋を閲覧へ戻す
     updateCloseAll();
-    persistNotes(); // 非同期保存（await しない＝状態確定は完全に同期）
+    upsertNotePersist(note); // 非同期保存（await しない＝状態確定は完全に同期）
 
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
@@ -549,7 +716,7 @@
     const ids = [...expanded];
     expanded.clear();
     editingId = null;
-    let removed = false;
+    const removedIds = [];
     for (const id of ids) {
       const note = notes.find((n) => n.id === id);
       const wrap = noteEl(id);
@@ -557,97 +724,53 @@
       if (isEmpty(note)) {
         notes = notes.filter((n) => n.id !== id); // 空付箋はまとめて掃除
         if (wrap) wrap.remove();
-        removed = true;
+        removedIds.push(id);
       } else if (wrap) {
         applyState(wrap, note); // スライドして格納
       }
     }
-    if (removed) persistNotes();
+    if (removedIds.length) removeNotesPersist(removedIds);
     updateCloseAll();
   }
 
-  // ── エディタ ──────────────────────────────────────────────────────
+  // 入力中に取りこぼした外部変更(pendingSync)を、編集を抜けた後に取り込む。
+  // ストレージは既に最新（自分の最後の書き込みも反映済み）なので、読み直して再描画するだけ。
+  async function syncCatchUp() {
+    if (!pendingSync) return;
+    pendingSync = false;
+    await loadSettings();
+    await loadNotes();
+    for (const id of [...expanded]) {
+      if (!notes.some((n) => n.id === id)) { expanded.delete(id); if (editingId === id) editingId = null; }
+    }
+    render();
+  }
+
+  // ── エディタ（普通の付箋のように複数行を自由に書ける）──────────────
   function bindEditor(ta, note, wrap) {
     let saveTimer = 0;
-    let composing = false; // IME 変換中フラグ
-    let compStart = 0;     // IME 変換開始時のキャレット位置（挿入範囲の先頭）
-    const queueSave = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => persistNotes(), 280); };
+    const queueSave = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => upsertNotePersist(note), 280); };
+    const commit = () => { note.text = ta.value; note.updatedAt = Date.now(); queueSave(); };
 
-    const lineLimitPx = () => {
-      const cs = getComputedStyle(ta);
-      const line = parseFloat(cs.lineHeight) || 20;
-      const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-      return line * 1.5 + pad; // 1行と2行の中間をしきい値に（1行限定）
-    };
-
-    // 1 行超過の判定。textarea は flex:1 で引き伸ばされているため、測定の瞬間だけ
-    // flex を切って「内容の高さ」で scrollHeight を測る（引き伸ばし高さで誤判定しない）。
-    const overflows = () => {
-      const pf = ta.style.flex, ph = ta.style.height;
-      ta.style.flex = "0 0 auto";
-      ta.style.height = "auto";
-      const over = ta.scrollHeight > lineLimitPx();
-      ta.style.flex = pf;
-      ta.style.height = ph;
-      return over;
-    };
-
-    // 直接入力：1 行を超えたら直前の確定値へ巻き戻す（無関係な文字は消さない）。
-    // キャレットは入力位置付近に保つ（末尾へ飛ばさない）。
-    const oneLineLimit = () => {
-      const caret = ta.selectionStart;
-      if (overflows() && ta.value !== ta.dataset.valid) {
-        ta.value = ta.dataset.valid || "";
-        const p = clamp(caret - 1, 0, ta.value.length);
-        ta.setSelectionRange(p, p);
-      } else {
-        ta.dataset.valid = ta.value;
-      }
-    };
-
-    // IME 確定：1 行を超える分を「今回挿入した範囲(compStart〜キャレット)」の末尾から削る。
-    // これで無関係な末尾の確定済みテキストを消さず、キャレットも飛ばさない。
-    const fitInserted = (start) => {
-      let caret = ta.selectionStart; // 挿入直後のキャレット＝挿入範囲の終端
-      let guard = 0;
-      while (overflows() && caret > start && guard++ < 2000) {
-        ta.value = ta.value.slice(0, caret - 1) + ta.value.slice(caret);
-        caret--;
-      }
-      ta.dataset.valid = ta.value;
-      ta.setSelectionRange(caret, caret);
-    };
-
-    ta.dataset.valid = ta.value;
-
-    // ページ側のキーボードショートカットに入力を奪われないよう伝播を止める
+    // ページ側のキーボードショートカットに入力を奪われないよう伝播を止める。
+    // 改行（Enter）はそのまま通す＝複数行入力を許可する。Esc だけは閉じる動作に充てる。
     ta.addEventListener("keydown", (e) => {
       e.stopPropagation();
-      if (e.key === "Escape") { e.preventDefault(); collapseAll(); return; }
-      if (!composing && !e.isComposing && e.key === "Enter") e.preventDefault(); // 1行限定（改行不可）
+      if (e.key === "Escape") { e.preventDefault(); collapseAll(); }
     });
     for (const t of ["keyup", "keypress", "beforeinput"]) {
       ta.addEventListener(t, (e) => e.stopPropagation());
     }
 
-    ta.addEventListener("compositionstart", () => { composing = true; compStart = ta.selectionStart; });
-    ta.addEventListener("compositionend", () => {
-      composing = false;
-      fitInserted(compStart); // 確定テキストを 2 行に収める（挿入範囲の末尾から削る）
-      note.text = ta.value;
-      note.updatedAt = Date.now();
-      queueSave();
+    ta.addEventListener("input", (e) => { e.stopPropagation(); commit(); });
+    ta.addEventListener("compositionend", commit); // IME 確定後の最終値も保存
+    ta.addEventListener("focus", () => { editingId = note.id; }); // フォーカス中の箱を編集対象に
+    ta.addEventListener("blur", () => {
+      clearTimeout(saveTimer);
+      // 保存が確定してから取りこぼし分を取り込む（順序を保証）
+      upsertNotePersist(note).finally(() => syncCatchUp());
     });
-    ta.addEventListener("input", (e) => {
-      e.stopPropagation();
-      // 変換中は 1 行制限を掛けない（未確定文字列を巻き戻すと日本語入力が壊れる）
-      if (!composing && !e.isComposing) oneLineLimit();
-      note.text = ta.value;
-      note.updatedAt = Date.now();
-      queueSave();
-    });
-    ta.addEventListener("blur", () => { clearTimeout(saveTimer); persistNotes(); });
-    // 閲覧中（readonly）はクリックでキャレットを出さない。トグルへの伝播も止める。
+    // 格納中（readonly）はクリックでキャレットを出さない。トグルへの伝播も止める。
     ta.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
       if (ta.readOnly) e.preventDefault();
@@ -679,19 +802,29 @@
     window.addEventListener("resize", () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(reposition); });
 
     // SPA が host を剥がしても復活させる（state は JS 側に保持されるので再アタッチで復元）
+    let mo = null;
     try {
-      const mo = new MutationObserver(() => { if (!host.isConnected) mount(); });
+      mo = new MutationObserver(() => { if (!host.isConnected) mount(); });
       mo.observe(document.documentElement, { childList: true });
     } catch {}
 
-    chrome.storage.onChanged.addListener(async (changes, area) => {
+    const onStorageChanged = async (changes, area) => {
       if (area !== "local") return;
-      // 編集中は外部同期による全面再描画を見送る（入力・フォーカス・IME を壊さないため）
-      if (editingId) return;
+      // 自分の書き込みエコー（直近 500ms の自書き込み）は無視し、外部変更だけを対象にする。
       const now = Date.now();
+      const notesExternal = changes[KEY_NOTES] && now - notesWriteAt >= 500;
+      const settingsExternal = changes[KEY_SETTINGS] && now - settingsWriteAt >= 500;
+      if (!notesExternal && !settingsExternal) return;
+      // textarea にフォーカスして入力中のときだけ全面再描画を見送る（入力・フォーカス・IME 保護）。
+      // 開いていてもフォーカスが外れていれば通常どおり取り込む。入力中の外部変更は pendingSync で後追い。
+      if (editingId && root.activeElement && root.activeElement.classList &&
+          root.activeElement.classList.contains("ta")) {
+        pendingSync = true;
+        return;
+      }
       let dirty = false;
-      if (changes[KEY_SETTINGS] && now - settingsWriteAt >= 500) { await loadSettings(); dirty = true; }
-      if (changes[KEY_NOTES] && now - notesWriteAt >= 500) {
+      if (settingsExternal) { await loadSettings(); dirty = true; }
+      if (notesExternal) {
         await loadNotes();
         for (const id of [...expanded]) {
           if (!notes.some((n) => n.id === id)) { expanded.delete(id); if (editingId === id) editingId = null; }
@@ -699,8 +832,19 @@
         dirty = true;
       }
       if (dirty) render();
+    };
+    chrome.storage.onChanged.addListener(onStorageChanged);
+
+    // ページ離脱で常駐 Observer／リスナを解放する。ただし bfcache 退避（event.persisted）は
+    // ページが凍結されるだけで Back/Forward で復帰するため解放しない。解放すると復帰後に popup 編集・
+    // 同期 pull・設定変更がレールへ反映されなくなる（凍結中はイベントが届かず、復帰後に既存リスナが
+    // そのまま機能する）。真の unload（!persisted）でのみ解放する（once は付けない）。
+    window.addEventListener("pagehide", (e) => {
+      if (e.persisted) return; // bfcache 退避は復帰に備えて維持
+      try { if (mo) mo.disconnect(); } catch {}
+      try { chrome.storage.onChanged.removeListener(onStorageChanged); } catch {}
     });
   }
 
-  init();
+  init().catch((e) => console.warn("[petarin] 初期化に失敗:", e));
 })();

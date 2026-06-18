@@ -53,6 +53,16 @@
             <option value="length">文字数が多い順</option>
           </select>
         </label>
+        <button class="syncbtn" id="syncBtn" type="button" title="複数PCで同期">
+          <span aria-hidden="true">⇄</span> 同期
+        </button>
+        <button class="syncbtn" id="exportBtn" type="button" title="全付箋を JSON ファイルへ書き出す（バックアップ）">
+          <span aria-hidden="true">⬇</span> 書き出し
+        </button>
+        <button class="syncbtn" id="importBtn" type="button" title="JSON ファイルから読み込む（既存はそのまま・新しい付箋だけ追加）">
+          <span aria-hidden="true">⬆</span> 読み込み
+        </button>
+        <input type="file" id="importFile" accept="application/json,.json" hidden />
       </div>
     </header>
 
@@ -98,6 +108,50 @@
           </p>
         </div>
       </main>
+    </div>
+
+    <!-- ── 複数PC同期パネル（既定OFF）──────────────────────────────── -->
+    <div class="syncpanel" id="syncPanel" hidden>
+      <div class="sp-card" role="dialog" aria-modal="true" aria-labelledby="syncTitle">
+        <div class="sp-head">
+          <h2 id="syncTitle"><span aria-hidden="true">⇄</span> 複数PCで同期</h2>
+          <button class="sp-close" id="syncClose" type="button" aria-label="閉じる">✕</button>
+        </div>
+
+        <label class="sp-toggle">
+          <input type="checkbox" id="syncEnabled" />
+          <span class="sp-track" aria-hidden="true"><span class="sp-knob"></span></span>
+          <span class="sp-toggle-label">同期を有効にする</span>
+        </label>
+
+        <p class="sp-consent">
+          同期をONにすると、付箋データ（「見た目の設定」をONにした場合はその設定も）があなたの
+          <b>Google／Firefox アカウントのブラウザ標準同期</b>
+          を通じて、あなたの他の端末と共有されます。
+          <b>ぺたりん開発者のサーバーには送信されず、開発者はアクセスできません。</b>
+          一度も ON にしていなければ、すべて端末内ローカル保存のまま外部送信は一切ありません。
+          OFF にすると<b>この端末では以降の同期（送信）を停止</b>しますが、
+          過去に ON にして同期済みのデータは他の端末から使えるようブラウザの同期ストレージに残ります（この操作では削除しません）。
+          同期の有効化はこの端末だけに適用されます（他の端末を勝手に有効化しません）。
+        </p>
+
+        <div class="sp-body" id="syncBody" hidden>
+          <fieldset class="sp-scope">
+            <legend>同期するもの</legend>
+            <label class="sp-opt"><input type="checkbox" id="syncSettings" /> 見た目の設定（貼る端・色味・表示）</label>
+            <label class="sp-opt"><input type="radio" name="syncScope" value="selected" /> 選んだサイトの付箋だけ</label>
+            <label class="sp-opt"><input type="radio" name="syncScope" value="all" /> すべてのサイトの付箋（容量に収まる範囲で）</label>
+          </fieldset>
+
+          <div class="sp-gauge">
+            <div class="sp-gauge-bar"><span id="syncGaugeFill"></span></div>
+            <div class="sp-gauge-text" id="syncGaugeText">0 / 100 KB</div>
+          </div>
+
+          <div class="sp-domains" id="syncDomainList" aria-label="同期するサイト"></div>
+          <p class="sp-note" id="syncNote"></p>
+        </div>
+      </div>
     </div>
 
     <!-- 操作のトースト -->

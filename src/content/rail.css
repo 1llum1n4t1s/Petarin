@@ -22,69 +22,36 @@
   pointer-events: auto;
   width: 30px;
   height: 32px;
-  border-radius: 2px;
+  border-radius: 4px;
   color: var(--ink, #5c4a1e);
-  background-image:
-    /* 上端の柔らかな艶（光の帯）*/
-    linear-gradient(180deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0) 40%),
-    /* 角のハイライト */
-    radial-gradient(120% 90% at 16% 12%, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0) 55%),
-    /* 紙の地：光源側から陰へ深く落とす */
-    linear-gradient(150deg, color-mix(in srgb, var(--paper) 90%, #fff) 0%, var(--paper) 52%,
-      color-mix(in srgb, var(--paper) 80%, #000 9%) 100%);
-  background-color: var(--paper, #ffe57a);
-  /* 厚みのある紙：接地影＋浮き影＋内側のベベル（上ハイライト・下シャドウ・極細リム）*/
-  box-shadow: 0 1px 1.5px rgba(48, 31, 7, 0.18), 0 8px 18px -8px rgba(38, 24, 5, 0.52),
-    inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1.5px 2px rgba(58, 38, 9, 0.12),
-    inset 0 0 0 0.5px rgba(255, 255, 255, 0.25);
-  /* 引き出しのような単純な横スライド：幅だけをイージングで動かす（高さは即時・バウンス無し）*/
-  transition: width 0.32s ease, top 0.3s ease, left 0.3s ease,
-    opacity 0.25s ease, box-shadow 0.25s ease, transform 0.2s ease;
+  /* フラット：単色の紙地（グラデ・ベベル無し）＋控えめな単一の影だけ */
+  background: var(--paper, #ffe57a);
+  box-shadow: 0 1px 2px rgba(35, 24, 6, 0.18);
+  /* 端から箱がせり出す：幅・高さをイージングで動かす（バウンス無し）*/
+  transition: width 0.28s ease, height 0.28s ease, top 0.28s ease, left 0.28s ease,
+    opacity 0.2s ease, box-shadow 0.2s ease;
   overflow: hidden;
 }
 .note.dragging {
-  transition: box-shadow 0.2s ease, transform 0.2s ease;
-  box-shadow: 0 2px 3px rgba(60, 40, 10, 0.18), 0 18px 30px -10px rgba(60, 40, 10, 0.5);
-  transform: scale(1.04);
-  animation: none;
+  box-shadow: 0 4px 12px rgba(35, 24, 6, 0.28);
   z-index: 6;
-}
-/* 上下レールはせり出しが高さ方向。戻りも滑らかにするため height も遷移対象に。*/
-.layer[data-side="top"] .note,
-.layer[data-side="bottom"] .note {
-  transition: width 0.32s ease, height 0.3s ease, top 0.3s ease, left 0.3s ease,
-    opacity 0.25s ease, box-shadow 0.25s ease, transform 0.2s ease;
 }
 /* リサイズ追従中は位置のバウンス遷移を切って静かに動かす */
 .layer.repositioning .note { transition: none; }
 
-/* ── 磨かれた小口（ページに面した端の金口のような輝き）──────────────
-   革表紙の手帳の索引タブのように、端だけが光を受けて艶めく高級感。
-   色は付箋自身の --deep から起こすので、どの色でも調和する。*/
+/* ── ページに面した端の細い差し色帯（フラット：単色。索引タブの目印）──────────
+   格納時はこの帯が色のアクセント。展開時は spine 自体が差し色を担うので隠す。*/
 .note::after {
   content: "";
   position: absolute;
   pointer-events: none;
   z-index: 2;
-  border-radius: 2px;
-  opacity: 1;
-  /* 磨いた金属の小口リボン：外端の鋭いハイライト→飽和した金芯→奥の陰。
-     格納時も展開時も同じ位置（ページに面した端）に出して見た目を統一する。*/
-  background: linear-gradient(
-    var(--gilt-dir, to right),
-    rgba(255, 255, 255, 0.98) 0%,
-    color-mix(in srgb, var(--deep) 96%, #fff) 34%,
-    color-mix(in srgb, var(--deep) 88%, #000 6%) 64%,
-    color-mix(in srgb, var(--deep) 52%, #000 30%) 100%
-  );
-  transition: opacity 0.25s ease, filter 0.25s ease;
+  background: var(--deep);
 }
-.note:not(.expanded):hover::after { opacity: 1; filter: brightness(1.12); }
-/* ホバーで一段持ち上がる深い影（手前へ寄ってくる手触り）*/
+.note.expanded::after { display: none; }
+/* ホバーで少しだけ影を強めて手前に寄せる（フラットな単一の影）*/
 .note:not(.expanded):not(.dragging):hover {
-  box-shadow: 0 2px 3px rgba(48, 31, 7, 0.2), 0 16px 26px -10px rgba(38, 24, 5, 0.55),
-    inset 0 1px 0 rgba(255, 255, 255, 0.66), inset 0 -1.5px 2px rgba(58, 38, 9, 0.12),
-    inset 0 0 0 0.5px rgba(255, 255, 255, 0.3);
+  box-shadow: 0 2px 6px rgba(35, 24, 6, 0.26);
 }
 
 /* ── 背（spine）= ドラッグ取っ手 ＆ 開閉トグル ──────────────────────── */
@@ -97,11 +64,7 @@
   user-select: none;
   touch-action: none;
   position: relative;
-  background: linear-gradient(
-    var(--spine-angle, 180deg),
-    color-mix(in srgb, var(--deep) 55%, transparent),
-    transparent 80%
-  );
+  background: transparent; /* フラット：格納時は紙地のまま。展開時だけ差し色（下で指定）*/
 }
 .note.dragging .spine { cursor: grabbing; }
 .spine .head {
@@ -118,8 +81,6 @@
   overflow: hidden;
   word-break: break-all;
   opacity: 0.95;
-  /* インクが紙に沈んだような微かなエンボス */
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
 }
 /* アイコン（絵文字）モード：格納時は絵文字だけを大きく中央に。文字用の clamp/エンボスは解除 */
 .note.has-icon .spine .head {
@@ -134,7 +95,6 @@
   font-size: 17px;
   font-weight: 700;
   line-height: 1;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55), 0 -0.5px 0 rgba(90, 60, 10, 0.18);
 }
 .note.expanded .spine .head { display: none; }
 
@@ -144,112 +104,153 @@
 .layer[data-side="left"] .note:not(.expanded) .spine { padding-right: 7px; }
 .layer[data-side="top"] .note:not(.expanded) .spine { padding-bottom: 7px; }
 .layer[data-side="bottom"] .note:not(.expanded) .spine { padding-top: 7px; }
-/* ＋作成タブ・アイコン付き付箋は単一字（記号/絵文字）なので逃げ不要＝中央に戻す。
-   絵文字を中央に置いても 7px 側の金口(5px)には掛からない（per-side より高い詳細度で打消し）。*/
+/* ＋作成タブ・アイコン付き付箋は単一字（記号/絵文字）。金口(::after 5px)はページ側の端を
+   塗るので、その 5px ぶんだけページ側に逃げを作る。すると残りの“紙面”の中央に字が来て、
+   タブ全幅で中央に置いたときの「金口側へ寄って見える」ズレが取れる（縁を考慮した中央）。*/
 .layer[data-side="right"] .note.creator:not(.expanded) .spine,
+.layer[data-side="right"] .note.has-icon:not(.expanded) .spine { padding: 0 0 0 5px; }
 .layer[data-side="left"] .note.creator:not(.expanded) .spine,
+.layer[data-side="left"] .note.has-icon:not(.expanded) .spine { padding: 0 5px 0 0; }
 .layer[data-side="top"] .note.creator:not(.expanded) .spine,
+.layer[data-side="top"] .note.has-icon:not(.expanded) .spine { padding: 0 0 5px 0; }
 .layer[data-side="bottom"] .note.creator:not(.expanded) .spine,
-.layer[data-side="right"] .note.has-icon:not(.expanded) .spine,
-.layer[data-side="left"] .note.has-icon:not(.expanded) .spine,
-.layer[data-side="top"] .note.has-icon:not(.expanded) .spine,
-.layer[data-side="bottom"] .note.has-icon:not(.expanded) .spine { padding: 0; }
+.layer[data-side="bottom"] .note.has-icon:not(.expanded) .spine { padding: 5px 0 0 0; }
 
-/* ── 本体（展開時のみ中身が見える。横長の入力欄）────────────────────── */
+/* ── 本体（展開時のみ中身が見える。普通の付箋の箱：本文＋下端ツールバー）──────── */
 .body {
   display: none;
   flex: 1;
-  flex-direction: row;      /* 横並び：テキスト｜パレット｜✎｜✕ を1段に収める */
-  align-items: center;
+  flex-direction: column;   /* 縦並び：本文（広い）の下に操作ツールバー */
+  align-items: stretch;
   gap: 8px;
-  padding: 0 12px;
+  padding: 10px 12px;
   position: relative;
   min-width: 0;
+  min-height: 0;            /* flex 子の本文が縮んでスクロールできるように */
 }
 .note.expanded {
-  width: 50vw;   /* ウィンドウ幅の半分（相対）。1 行を広々と書ける */
-  height: 44px;  /* 1 行ぶんに圧縮（横並びで余計な高さを使わない）*/
+  width: 360px;             /* 普通の付箋のような箱 */
+  height: 420px;
+  max-width: calc(100vw - 20px);
+  max-height: calc(100vh - 20px);
   z-index: 4;
+  /* フラットな浮きパネル：単一のやわらかい影だけ（ベベル・金口は使わない）*/
+  box-shadow: 0 8px 28px rgba(35, 24, 6, 0.22);
 }
-/* 入力欄・ボタンを金口(::after)より上の重なり順に置く。金口は透明な body 越しに
-   見えたまま、文字やボタンは金口に塗り潰されない（縦 padding の無い上下レールで重要）。*/
 .note.expanded .body { display: flex; z-index: 3; }
-.note.expanded .spine { flex: 0 0 16px; }
+/* 展開時の背（spine）はページ側の細い差し色帯にする（製本の背のようなフラットなアクセント）*/
+.note.expanded .spine { flex: 0 0 14px; background: var(--deep); }
 
+/* フラット：紙面（付箋の地色）にそのまま書く。フィールド枠・ベベル・影は付けない。*/
 .ta {
   flex: 1;
-  min-width: 0;       /* 横並びで縮められるように */
-  height: 28px;       /* 1 行ぶん（横並びで縦に伸びない）*/
+  min-height: 0;            /* 縦並びで縮められ、内容超過は内部スクロール */
+  width: 100%;
   border: 0;
   outline: 0;
   resize: none;
   background: transparent;
   color: var(--ink);
+  caret-color: var(--ink); /* 文字色基準のキャレット＝淡い紙(白)でも濃い紙(黒)でも視認できる */
   font: inherit;
   font-size: 15px;
   font-weight: 600;
-  line-height: 1.5;
-  overflow: hidden;
-  padding: 2px 6px;
-  border-radius: 7px;
-  transition: background 0.18s ease, box-shadow 0.18s ease;
+  line-height: 1.6;
+  overflow-y: auto;         /* 複数行・あふれたらスクロール */
+  white-space: pre-wrap;    /* 改行と折り返しを両立 */
+  word-break: break-word;
+  padding: 2px 2px;
 }
-.ta::placeholder { color: var(--ink); opacity: 0.42; }
+.ta::placeholder { color: var(--ink); opacity: 0.4; }
 .ta:read-only { cursor: default; }
-/* 閲覧モードはただのメモ表示（入力欄に見せない）。プレースホルダも出さない */
-.note:not(.editing) .ta::placeholder { color: transparent; }
-/* 編集モードのときだけ入力欄らしく見せる（書ける合図）*/
-.note.editing .ta {
-  background: rgba(255, 255, 255, 0.45);
-  box-shadow: inset 0 0 0 1.6px color-mix(in srgb, var(--deep) 60%, transparent);
-}
-.note.editing .ta::selection { background: color-mix(in srgb, var(--deep) 45%, #fff); }
+/* 選択ハイライト：deep を透過側へ寄せて紙色に重ねる（白でも黒でも文字が潰れない）*/
+.ta::selection { background: color-mix(in srgb, var(--deep) 42%, transparent); }
 
-/* アイコン切替（横並びの先頭）: 押すと 絵文字表示 ⇄ 文字表示 を切替（ON 中はもう一度押すと別の絵文字）。
-   ON のときは選んだ絵文字を、OFF のときは「あ」を表示して状態が一目で分かるようにする。*/
-.icon-btn {
-  flex-shrink: 0;
-  width: 27px; height: 27px;
-  border: 0; border-radius: 9px;
+/* 上端バー：右上に閉じる(×)ボタンを明示配置（削除＝ゴミ箱と取り違えない）*/
+.topbar { display: flex; align-items: center; justify-content: flex-end; flex: 0 0 auto; }
+.close-x {
+  width: 28px; height: 28px;
+  margin: -2px -4px 0 0;     /* 箱の角へ寄せる */
+  border: 0; border-radius: 8px;
   cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  font-size: 15px; line-height: 1;
-  background: rgba(70, 40, 20, 0.14); color: var(--ink);
-  transition: background 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
+  background: transparent; color: var(--ink);
+  opacity: 0.7;
+  transition: background 0.14s ease, opacity 0.14s ease;
 }
-.icon-btn:hover { transform: scale(1.1); }
-.icon-btn.on {
-  background: rgba(255, 255, 255, 0.55);
-  box-shadow: inset 0 0 0 1.6px color-mix(in srgb, var(--deep) 55%, transparent);
-}
-/* 文字モード（OFF）の「あ」は控えめな小さい太字に */
-.icon-btn:not(.on) { font-size: 12px; font-weight: 800; }
+.close-x:hover { background: rgba(0, 0, 0, 0.1); opacity: 1; }
+.close-x svg { width: 18px; height: 18px; }
 
-/* 色パレット（横並びの一員）*/
-.palette { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
-.swatch {
-  width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid; padding: 0;
-  cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-.swatch:hover { transform: scale(1.22); }
-.swatch.on { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85), 0 0 0 3.5px var(--ink); transform: scale(1.12); }
-
-/* 操作ボタン（横並びの一員）: 編集 ✎ / 完了 ✓ ・ 削除 ✕ */
-.edit, .del {
+/* アイコンボタン（下端ツールバーの先頭）: クリックで絵文字ピッカーを開いて選び直す（フラット）。*/
+.icon-btn {
   flex-shrink: 0;
-  width: 23px; height: 23px;
-  border: 0; border-radius: 50%;
-  font-size: 12px; line-height: 1;
+  width: 28px; height: 28px;
+  border: 0; border-radius: 8px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; line-height: 1;
+  background: rgba(0, 0, 0, 0.06); color: var(--ink);
+  transition: background 0.14s ease;
+}
+.icon-btn:hover { background: rgba(0, 0, 0, 0.12); }
+
+/* ── 絵文字ピッカー（アイコンボタンから開く・現在の絵文字を選択状態に・重複選択可）────── */
+.icon-picker {
+  position: fixed;
+  z-index: 12;
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: repeat(12, 26px);
+  gap: 2px;
+  padding: 8px;
+  border-radius: 10px;
+  background: #fbf6ec;                          /* フラット：単色 */
+  box-shadow: 0 6px 24px rgba(35, 24, 6, 0.28); /* 単一のやわらかい影 */
+  max-height: 60vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  animation: peta-pick-in 0.12s ease both;
+}
+@keyframes peta-pick-in { from { opacity: 0; } to { opacity: 1; } }
+.icon-picker .emoji {
+  width: 26px; height: 26px;
+  border: 0; border-radius: 6px;
+  background: transparent;
+  font-size: 17px; line-height: 1;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.1s ease;
+}
+.icon-picker .emoji:hover { background: rgba(0, 0, 0, 0.08); }
+.icon-picker .emoji.on { background: var(--pk-accent, #f2c84b); }
+
+/* 下端ツールバー（絵文字｜色｜余白｜削除）*/
+.toolbar { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.toolbar .sp { flex: 1; } /* 余白：削除ボタンを右端へ寄せる */
+
+/* 色パレット（ツールバーの一員・フラットな塗り丸）。色数が増えても狭い箱で欠けないよう、詰まったら折り返す */
+.palette { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; min-width: 0; }
+.swatch {
+  width: 18px; height: 18px; border-radius: 50%; border: 0; padding: 0;
+  cursor: pointer; transition: box-shadow 0.12s ease;
+}
+.swatch:hover { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 0 0 3px rgba(0, 0, 0, 0.22); }
+.swatch.on { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 0 0 3.5px var(--ink); }
+
+/* 削除ボタン（ゴミ箱アイコン・フラット。閉じる(×)と取り違えないよう右端に分離）*/
+.del {
+  flex-shrink: 0;
+  width: 28px; height: 28px;
+  border: 0; border-radius: 8px;
   cursor: pointer;
   display: flex;
   align-items: center; justify-content: center;
-  background: rgba(70, 40, 20, 0.16); color: var(--ink);
-  transition: background 0.15s ease, transform 0.12s ease;
+  background: transparent; color: var(--ink);
+  opacity: 0.75;
+  transition: background 0.14s ease, color 0.14s ease, opacity 0.14s ease;
 }
-.edit:hover, .del:hover { transform: scale(1.1); }
-.del:hover { background: #d6483f; color: #fff; }
-.edit:hover { background: var(--deep); color: #fff; }
-.note.editing .edit { background: #4d9f5a; color: #fff; }
+.del:hover { background: rgba(214, 72, 63, 0.14); color: #d6483f; opacity: 1; }
+.del svg { width: 18px; height: 18px; }
 
 /* ── ＋作成タブ（細く・移動可能）───────────────────────────────────── */
 .creator {
@@ -260,19 +261,11 @@
   width: 30px;
   height: 32px;
   border: 0;
-  /* 付箋と同じ厚み表現＋金口らしい暖色のリム */
-  box-shadow: 0 1px 1.5px rgba(70, 48, 8, 0.2), 0 8px 18px -8px rgba(60, 40, 6, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.65), inset 0 -1.5px 2px rgba(110, 80, 20, 0.14),
-    inset 0 0 0 0.5px rgba(255, 248, 220, 0.4);
-  animation: peta-breathe 4.2s ease-in-out infinite;
+  box-shadow: 0 1px 2px rgba(70, 48, 8, 0.22); /* フラット：単一の影だけ */
 }
 .creator .spine { cursor: pointer; touch-action: none; }
 .note.dragging.creator .spine { cursor: grabbing; }
-.creator:hover { filter: brightness(1.05); }
-@keyframes peta-breathe {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.035); } /* 主張しすぎない静かな呼吸 */
-}
+.creator:hover { box-shadow: 0 2px 6px rgba(70, 48, 8, 0.3); }
 
 /* ── にょき！：隠れた長い紙が端からせり出す ─────────────────────────
    端は固定したまま軸方向の寸法だけ伸ばす（離れず、出てくる）。
@@ -299,14 +292,14 @@
 
 .layer[data-side="top"] .note { top: 0; width: 26px; border-radius: 0 0 2px 2px; --spine-angle: 0deg; flex-direction: column; }
 .layer[data-side="top"] .note.creator { width: 30px; height: 32px; }
-.layer[data-side="top"] .note.expanded { width: 50vw; }
+.layer[data-side="top"] .note.expanded { width: 360px; height: 420px; }
 .layer[data-side="top"] .note.expanded .spine { order: -1; flex: 0 0 14px; }
 .layer[data-side="top"] .note:not(.expanded):not(.dragging):hover { height: 46px; }
 .layer[data-side="top"] .note::after { --gilt-dir: to top; bottom: 0; left: 1px; right: 1px; height: 5px; }
 
 .layer[data-side="bottom"] .note { bottom: 0; width: 26px; border-radius: 2px 2px 0 0; --spine-angle: 360deg; flex-direction: column; }
 .layer[data-side="bottom"] .note.creator { width: 30px; height: 32px; }
-.layer[data-side="bottom"] .note.expanded { width: 50vw; }
+.layer[data-side="bottom"] .note.expanded { width: 360px; height: 420px; }
 .layer[data-side="bottom"] .note.expanded .spine { order: 2; flex: 0 0 14px; }
 .layer[data-side="bottom"] .note:not(.expanded):not(.dragging):hover { height: 46px; }
 .layer[data-side="bottom"] .note::after { --gilt-dir: to bottom; top: 0; left: 1px; right: 1px; height: 5px; }
@@ -321,31 +314,27 @@
   padding: 8px 14px;
   border: 0;
   border-radius: 999px;
-  background: linear-gradient(160deg, #6b5847, #4d3f31);
+  background: #4d3f31;                          /* フラット：単色 */
   color: #fff6e6;
   font-family: "Hiragino Maru Gothic ProN", "Yu Gothic UI", system-ui, sans-serif;
   font-size: 12.5px;
   font-weight: 700;
   letter-spacing: 0.03em;
   cursor: pointer;
-  box-shadow: 0 8px 20px -6px rgba(40, 25, 10, 0.6);
+  box-shadow: 0 4px 14px rgba(35, 24, 6, 0.4); /* 単一のやわらかい影 */
   opacity: 0;
-  transform: translateY(8px) scale(0.92);
-  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
   z-index: 10;
 }
-.close-all span:first-child { animation: peta-spin 6s linear infinite; }
-@keyframes peta-spin { to { transform: rotate(360deg); } }
-.close-all.show { opacity: 1; transform: translateY(0) scale(1); }
-.close-all:hover { background: linear-gradient(160deg, #7a6553, #574836); }
+.close-all.show { opacity: 1; transform: translateY(0); }
+.close-all:hover { background: #5e4d3d; }
 .close-all[data-side="right"] { right: 18px; bottom: 18px; }
 .close-all[data-side="left"] { left: 18px; bottom: 18px; }
 .close-all[data-side="top"] { right: 18px; top: 18px; }
 .close-all[data-side="bottom"] { right: 18px; bottom: 18px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .note, .close-all, .swatch, .del, .edit { transition-duration: 0.01ms; }
-  /* 上下レールは height 遷移を per-side で上書きしているので同等の詳細度で打ち消す */
-  .layer[data-side="top"] .note, .layer[data-side="bottom"] .note { transition-duration: 0.01ms; }
-  .creator, .close-all span:first-child { animation: none; }
+  .note, .close-all, .swatch, .del, .icon-btn, .close-x { transition-duration: 0.01ms; }
+  .icon-picker { animation: none; }
 }
