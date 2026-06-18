@@ -261,23 +261,31 @@
       }
     });
   }
-  async function persistCreatorRatio() {
-    // creatorRatio だけを「最新の settings」に重ねて書く。settings 全体を読んだ値ごと書き戻すと、ドラッグ中に
-    // manage が変更した同期フラグ（syncEnabled/syncScope/syncDomains 等）を古い値で巻き戻し、OFF にした同期が
-    // 再開しうる（Codex）。set 直前に再読し、自分が変える creatorRatio 以外は最新スナップショットを保持する
-    // （単一キー保存なので全体書き戻しは避けられない＝窓は最小化。chrome.storage に CAS は無い）。
-    const fresh = (await chrome.storage.local.get(KEY_SETTINGS))[KEY_SETTINGS] || {};
-    const next = { ...DEFAULTS, ...fresh, creatorRatio: settings.creatorRatio };
-    settingsWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
-    await chrome.storage.local.set({ [KEY_SETTINGS]: next });
+  // settings の特定フィールドだけを「最新の settings」に重ねて書く（storage.js の saveSettings と同じ
+  // verify-before-set 楽観的並行制御）。単発 read→set だと、別コンテキスト（popup/manage）が read〜set の隙に
+  // 他フィールド（特に syncEnabled:false の opt-out）を書いたとき、stale な値ごと書き戻して相手の変更を
+  // 巻き戻す。毎回最新を読み、set 直前に再読してベースが変わっていたら最新へ当て直す（最終試行は最善努力。
+  // 単一キー保存ゆえ全体書き戻しは不可避＝窓は最小化。chrome.storage に CAS は無い。Codex）。
+  async function persistSettingField(field, value) {
+    const MAX = 4;
+    for (let attempt = 0; attempt < MAX; attempt++) {
+      const cur = (await chrome.storage.local.get(KEY_SETTINGS))[KEY_SETTINGS] || {};
+      const baseJSON = JSON.stringify(cur);
+      const next = { ...DEFAULTS, ...cur, [field]: value };
+      const fresh = JSON.stringify((await chrome.storage.local.get(KEY_SETTINGS))[KEY_SETTINGS] || {});
+      if (fresh !== baseJSON && attempt < MAX - 1) continue; // 割り込みあり → 最新で当て直す
+      settingsWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
+      await chrome.storage.local.set({ [KEY_SETTINGS]: next });
+      break;
+    }
   }
-  // 「最後に選んだ色」を次の新規作成の既定色として永続化（persistCreatorRatio と同様に該当フィールドだけ重ね書き）。
-  async function persistDefaultColor(colorId) {
+  function persistCreatorRatio() {
+    return persistSettingField("creatorRatio", settings.creatorRatio);
+  }
+  // 「最後に選んだ色」を次の新規作成の既定色として永続化。
+  function persistDefaultColor(colorId) {
     settings.defaultColor = colorId;
-    const fresh = (await chrome.storage.local.get(KEY_SETTINGS))[KEY_SETTINGS] || {};
-    const next = { ...DEFAULTS, ...fresh, defaultColor: colorId };
-    settingsWriteAt = Date.now();
-    await chrome.storage.local.set({ [KEY_SETTINGS]: next });
+    return persistSettingField("defaultColor", colorId);
   }
 
   // ── 同梱フォントの遅延読み込み（FontFace API＝ArrayBuffer 直渡しでページ CSP を回避）──
