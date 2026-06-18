@@ -1,0 +1,20 @@
+/* ぺたりん 同梱フォントの @font-face（拡張ページ＝popup/manage 用）
+ *
+ * すべて SIL Open Font License 1.1（再配布可）。ライセンス・帰属は NOTICE.md / LICENSE を参照。
+ * family 名は "PetaFont_<id>" に統一（content.js の FontFace API も同名を使う）。
+ * content script（任意ページ上の Shadow DOM）はページ CSP に左右されないよう、この CSS ではなく
+ * FontFace API（ArrayBuffer 直渡し）で読み込む（fonts は web_accessible_resources で公開）。
+ * url はこの CSS と同じ src/fonts/ ディレクトリからの相対。
+ */
+@font-face { font-family: "PetaFont_noto"; src: url("NotoSansJP-Regular.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "PetaFont_plex"; src: url("IBMPlexSansJP-Regular.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "PetaFont_zenkaku"; src: url("ZenKakuGothicNew-Regular.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "PetaFont_lineseed"; src: url("LINESeedJP-Regular.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "PetaFont_mplus2"; src: url("MPLUS2.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "PetaFont_murecho"; src: url("Murecho.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "PetaFont_udev"; src: url("UDEVGothicJPDOC-Regular.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "PetaFont_plemol"; src: url("PlemolJP-Regular.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "PetaFont_moralerspace"; src: url("MoralerspaceNeonJPDOC-Regular.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "PetaFont_yomogi"; src: url("Yomogi-Regular.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "PetaFont_klee"; src: url("KleeOne-Regular.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "PetaFont_hachimaru"; src: url("HachiMaruPop-Regular.woff2") format("woff2"); font-display: swap; }
