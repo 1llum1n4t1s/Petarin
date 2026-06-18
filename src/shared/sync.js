@@ -359,7 +359,13 @@ export function pickSettings(baseS, baseT, localS, remoteS, remoteT, now) {
 export function gcTombstones(tomb, now, exempt) {
   for (const k of Object.keys(tomb)) {
     if (exempt && exempt.has(k)) continue; // 今回初確立の墓石は即 GC しない（監査 I4）
-    if (now - (tomb[k] || 0) > TOMB_TTL) delete tomb[k];
+    const t = tomb[k];
+    // 壊れた墓石値（非有限＝オブジェクト/文字列等）はここで破棄する。`now - t` が NaN になり `> TTL` が常に
+    // false で永久に残り、十分な数が貯まると meta が per-item budget を超えて metaDeferred が永続化し、新しい
+    // 削除が delete_deferred のまま durable な墓石を持てなくなる（マージ対象外ドメインの墓石は mergeDomainNotes の
+    // 修復が届かないのでここで掃く。Codex）。
+    if (typeof t !== "number" || !Number.isFinite(t)) { delete tomb[k]; continue; }
+    if (now - t > TOMB_TTL) delete tomb[k];
   }
   return tomb;
 }
@@ -419,6 +425,10 @@ async function readSync() {
   // 会計初期値へ算入する（値は理解できないので温存）。
   let orphanBytes = 0;
   let orphanCount = 0;
+  // orphan の key→bytes も控える。orphan の key が in-scope ローカルドメインの domainKey と一致する場合、
+  // 後段の sync.set はその slot を「上書き」する（新規 slot を割り当てない）。会計で orphan と当該ドメインを
+  // 二重計上すると上限近傍で誤って item_limit/quota_exceeded になり、上書きで収まる書き込みを skip する（Codex）。
+  const orphanKeyBytes = new Map();
   for (const [k, v] of Object.entries(all)) {
     // meta / settings は別途読んで会計するのでここでは飛ばす。
     if (k === SYNC_KEYS.meta || k === SYNC_KEYS.settings) continue;
@@ -441,8 +451,10 @@ async function readSync() {
     // slot/バイトを占有するので残置として算入する。未知キーは notePrefix でない＝domainKey と衝突
     // しないので上書き事故は無い（notePrefix の不正 note が in-scope の domainKey と FNV 衝突する場合は、
     // そのキーの正当な所有者＝当該ドメインが実データで上書きするのが正しい＝失う実データは無い）。
-    orphanBytes += bytesOf({ [k]: v });
+    const b = bytesOf({ [k]: v });
+    orphanBytes += b;
     orphanCount += 1;
+    orphanKeyBytes.set(k, b);
   }
   // 同期由来の settings.s は信頼境界の外。非オブジェクト（破損）だと pickSettings の `k in s` が
   // TypeError を投げ、設定同期 ON ユーザーの全 note 同期を wedge させる → null 扱いで握る（Codex 指摘）。
@@ -459,6 +471,8 @@ async function readSync() {
     settingsExists,
     orphanBytes,
     orphanCount,
+    orphanKeyBytes, // key→bytes。in-scope domainKey と衝突する orphan は会計から除外する（上書きされる。Codex）
+
     // 生の meta item の実バイト（sanitize 前にスナップショット済み）。破損（非オブジェクト/配列/部分破損）
     // で meta を sanitize しても生が cloud に残り占有するので、今回書き換えない限りこの実サイズで会計する
     // （Codex#5）。未存在は 0。
@@ -612,10 +626,18 @@ async function _reconcile(opts) {
   // 恒久対策（多数の墓石を常に保持）＝墓石のシャーディングは別途課題。
   const metaItem = { v: 1, tomb };
   const metaJSON = JSON.stringify(metaItem);
+  const metaChanged = sync.metaBefore !== metaJSON;
   const metaFits = bytesOf({ [SYNC_KEYS.meta]: metaItem }) <= perItemBudget;
-  if (!metaFits) report.metaDeferred = true;
-  // 今回 meta を書くか＝収まる かつ 読み取り時スナップショット(metaBefore)から変化あり。
-  const willWriteMeta = metaFits && sync.metaBefore !== metaJSON;
+  // 初の墓石 item（cloud に meta 未存在）を満杯ストア(512 item)へ足すと、meta-set が 513 item 目で MAX_ITEMS に
+  // 当たる。以前は「先に remove で枠を空けてから meta」で凌いだが、その meta-set が transient に失敗すると item
+  // 消去済み＋墓石未保存になり、"all" スコープの再マージは local/remote 由来＝shadow だけになった削除ドメインを
+  // 拾えず墓石を再生成できない＝stale/shadow 無し端末が再 publish する（Codex）。よって remove-first はやめ、
+  // 「満杯＋新規 meta が要る」回は削除を metaDeferred と同じ仕組みで保留する（cloud item 温存・shadow 凍結＝
+  // 次回 base チャネルで再検出。枠が空けば meta-first で安全に書ける）。byte 超過の metaDeferred と統一。
+  const metaSlotBlocked = metaChanged && !sync.metaExists && sync.itemCountNow >= SYNC_LIMITS.MAX_ITEMS;
+  if (!metaFits || metaSlotBlocked) report.metaDeferred = true;
+  // 今回 meta を書くか＝収まる かつ 枠あり かつ 読み取り時スナップショット(metaBefore)から変化あり。
+  const willWriteMeta = metaFits && !metaSlotBlocked && metaChanged;
 
   // ドメイン item の組み立て＋容量見積もり（updatedAt 新しいドメイン優先で詰める）。
   // 会計に使う meta サイズは「実際に cloud へ残るもの」＝今回書くなら metaItem、書かない（未変更/
@@ -635,8 +657,17 @@ async function _reconcile(opts) {
     // 判定ではなく「キーが在るか」で数え、生 item の実サイズで会計する（Codex#1）。
     settingsBytes = bytesOf({ [SYNC_KEYS.settings]: sync.rawSettings }); settingsItems = 1;
   }
-  // 取り込めなかった note item（orphan）も cloud に残り総容量と item 数を占有する（Codex#4）。
-  let used = metaBytes + settingsBytes + sync.orphanBytes;
+  // 取り込めなかった note item（orphan）も cloud に残り総容量と item 数を占有する（Codex#4）。ただし orphan の
+  // key が in-scope ドメインの domainKey と一致する場合、そのドメインの sync.set がこの slot を上書きする＝新規
+  // 占有しないので会計から除く（二重計上で誤って item_limit/quota_exceeded にしない。Codex）。
+  const inScopeKeys = new Set(domains.map(domainKey));
+  let orphanBytesEff = 0, orphanCountEff = 0;
+  for (const [k, b] of sync.orphanKeyBytes) {
+    if (inScopeKeys.has(k)) continue; // 当該 in-scope ドメインの書き込みが上書きする slot＝重複計上しない
+    orphanBytesEff += b;
+    orphanCountEff += 1;
+  }
+  let used = metaBytes + settingsBytes + orphanBytesEff;
   // 今回スコープ外で手を付けない既存 cloud item も storage.sync の総容量(100KB)を占有する。これを
   // used に算入しないと、selected スコープで他端末/他サイトの同期データを見落として実 quota を超える
   // 書き込みを試み write_failed を繰り返す（本来は低優先ドメインを決定的に skip すべき。Codex 指摘）。
@@ -648,7 +679,7 @@ async function _reconcile(opts) {
   // バイト予算を通過して setOps に積まれ、バッチが item 超過で write_failed になる。残る item 数も
   // 数えて、超える低優先ドメインは決定的に skip する（Codex 指摘）。meta=1・settings・スコープ外
   // 既存 item を初期計上し、in-scope で同期する／退避で残るドメインごとに +1。
-  let itemCount = 1 /* meta */ + settingsItems + sync.orphanCount;
+  let itemCount = 1 /* meta */ + settingsItems + orphanCountEff;
   for (const d of Object.keys(sync.rawByDomain)) if (!domainSet.has(d)) itemCount += 1;
   const ordered = domains
     .map((d) => ({ d, latest: Math.max(0, ...((mergedByDomain[d] || []).map(tsOf))) }))
@@ -857,23 +888,13 @@ async function _reconcile(opts) {
   try {
     if (removeKeys.length) {
       const metaOp = setOps[SYNC_KEYS.meta];
-      // 新規 meta item（cloud に未存在）を「満杯ストア」へ足すときだけ、remove より先に枠を空けないと
-      // meta-set が MAX_ITEMS に当たって落ち、remove に到達できず削除が永久に伝播しない（恒久 write_failed）。
-      // 満杯でないなら meta-first を保ち、S20（meta-set 失敗時は item を remove しない）を維持する。
-      const mustFreeSlotFirst =
-        metaOp && !sync.metaExists && sync.itemCountNow + 1 > SYNC_LIMITS.MAX_ITEMS;
-      if (metaOp && !mustFreeSlotFirst) {
+      if (metaOp) {
         // ① 墓石 meta を先に永続化してから ② remove。①(set) が失敗すれば catch に落ち remove に到達しない
-        // ＝「item 消去済みだが墓石未保存」の復活窓を作らない（Codex#7 / S20）。新規 meta でも枠が在るので
-        // 513 item 目を足せて落ちない＝この経路が S20 を保つ。
+        // ＝「item 消去済みだが墓石未保存」の復活窓を作らない（Codex#7 / S20）。満杯＋新規 meta で枠が無い回は
+        // 上流で metaDeferred 扱いにして削除自体を保留する（remove-first で墓石喪失する経路は廃止。Codex・S42）。
+        // よってここで removeKeys がある＝既存 meta の更新 か 新規でも枠あり＝meta-set が新規 item を足せる。
         await chrome.storage.sync.set({ [SYNC_KEYS.meta]: metaOp });
         await chrome.storage.sync.remove(removeKeys);
-      } else if (metaOp) {
-        // 満杯ストア＋初の墓石。meta-first は不可能（513 item 目で MAX_ITEMS）なので remove で枠を空けてから
-        // meta を書く。remove 後の meta-set 失敗窓は「満杯＋同期史上初の削除＋shadow 無し端末 rejoin」限定で、
-        // 次回 reconcile が base チャネルで再検出して自己回復する＝恒久 write_failed より軽い（Codex・S42）。
-        await chrome.storage.sync.remove(removeKeys);
-        await chrome.storage.sync.set({ [SYNC_KEYS.meta]: metaOp });
       } else {
         // 既存墓石のみの回（今回 meta を書かない）→ remove 直行（墓石は既永続化済み＝復活窓なし）。
         await chrome.storage.sync.remove(removeKeys);

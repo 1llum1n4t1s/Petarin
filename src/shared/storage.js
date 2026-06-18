@@ -72,23 +72,34 @@ function withLock(task) {
 function _getAllRaw() {
   return chrome.storage.local.get(STORAGE_KEYS.notes).then((r) => r[STORAGE_KEYS.notes] || {});
 }
-// 書き込み直前に最新の notes を読み直し、呼び出し側が変更した touched ドメインだけ all の結果で上書きする。
-// withLock は同一コンテキストの直列化しかしないため、_getAllRaw() から set までの間に background reconcile が
-// 別ドメインを pull すると、全 notes 丸ごと書き戻しでその pull を巻き戻してしまう。touched 以外は最新スナップ
-// ショットから引き継いで巻き戻さない（CAS 不在なので touched ドメイン自体の同時 pull までは守れない＝reconcile
-// が次回収束。Codex）。touched 未指定なら従来どおり all を丸ごと書く（後方互換）。
-async function _mergeFresh(all, touched) {
-  if (!touched || !touched.length) return all;
-  const fresh = await _getAllRaw();
-  for (const d of touched) {
-    if (Object.prototype.hasOwnProperty.call(all, d)) fresh[d] = all[d];
-    else delete fresh[d]; // ドメインごと削除された
+// note 単位の delta（upserts: 追加/更新する Note、deletes: {domain,id}）を「最新の notes」へ適用して書く。
+// withLock は同一コンテキストの直列化しかせず、呼び出し側の _getAllRaw() から set までの間に background
+// reconcile が同/他ドメインを pull しうる。ドメイン配列まるごと差し替え（旧 _mergeFresh の fresh[d]=all[d]）だと
+// 同ドメインに pull された別付箋を巻き戻し、次回 reconcile が「ローカルで削除された」と誤認して無関係な付箋に
+// tombstone を立てる（Codex）。触った note id だけを最新スナップショットへ当てれば、同/他ドメインの pull を温存。
+// deletes を先に、upserts を後に適用（同 id が両方にあれば upsert 優先）。removed があれば localTombs も同 set で書く。
+async function _writeNotes(upserts, deletes, removed) {
+  const withTombs = removed && removed.length;
+  const raw = await chrome.storage.local.get(withTombs ? [STORAGE_KEYS.notes, LOCAL_TOMBS_KEY] : STORAGE_KEYS.notes);
+  const fresh = raw[STORAGE_KEYS.notes] || {};
+  for (const { domain, id } of deletes || []) {
+    if (!fresh[domain]) continue;
+    const left = fresh[domain].filter((n) => n.id !== id);
+    if (left.length) fresh[domain] = left;
+    else delete fresh[domain]; // 空になったドメインはキーごと掃除
   }
-  return fresh;
-}
-async function _commit(all, touched) {
-  const merged = await _mergeFresh(all, touched);
-  return chrome.storage.local.set({ [STORAGE_KEYS.notes]: merged });
+  for (const { domain, note } of upserts || []) {
+    const arr = fresh[domain] || (fresh[domain] = []);
+    const i = arr.findIndex((n) => n.id === note.id);
+    if (i >= 0) arr[i] = note;
+    else arr.push(note);
+  }
+  if (!withTombs) return chrome.storage.local.set({ [STORAGE_KEYS.notes]: fresh });
+  const now = Date.now();
+  const log = raw[LOCAL_TOMBS_KEY] || {};
+  for (const { domain, id } of removed) (log[domain] || (log[domain] = {}))[id] = now;
+  gcLocalTombs(log, now);
+  return chrome.storage.local.set({ [STORAGE_KEYS.notes]: fresh, [LOCAL_TOMBS_KEY]: log });
 }
 
 // 削除時刻のローカルログ（同期しない）。reconcile が tombstone を「reconcile 時刻 now」ではなく
@@ -106,20 +117,6 @@ export function gcLocalTombs(log, now) {
     if (!Object.keys(dom).length) delete log[d];
   }
   return log;
-}
-
-// notes と localTombs を 1 回の set で同時に書く（removed: [{domain,id}]＝この書き込みで実際に消えた付箋）。
-// 同一 onChanged に notes が含まれるので background の reconcile が 1 回起き、その時点で localTombs は
-// 最新＝reconcile が実削除時刻を読める。removed が空なら notes だけ書く（従来の _commit と同じ）。
-async function _commitWithTombs(all, removed, touched) {
-  if (!removed || !removed.length) return _commit(all, touched);
-  const now = Date.now();
-  const raw = await chrome.storage.local.get(LOCAL_TOMBS_KEY);
-  const log = raw[LOCAL_TOMBS_KEY] || {};
-  for (const { domain, id } of removed) (log[domain] || (log[domain] = {}))[id] = now;
-  gcLocalTombs(log, now);
-  const merged = await _mergeFresh(all, touched); // touched 以外の他ドメイン pull を巻き戻さない（Codex）
-  return chrome.storage.local.set({ [STORAGE_KEYS.notes]: merged, [LOCAL_TOMBS_KEY]: log });
 }
 
 export function saveSettings(partial) {
@@ -141,16 +138,17 @@ export async function getNotes(domain) {
   return all[domain] || [];
 }
 
-// 以降の更新系はすべて withLock 内で「読み→改変→書き」を 1 回で完結させる（相互に呼び合わない）。
+// 以降の更新系はすべて withLock 内で「読み→ delta 算出→最新へ delta 適用して書き」で完結させる
+// （書き込みは _writeNotes が note 単位 delta を最新スナップショットへ当てる＝同/他ドメインの pull を巻き戻さない）。
 export function saveNotes(domain, notes) {
   return withLock(async () => {
     const all = await _getAllRaw();
     const keep = new Set((notes || []).map((n) => n.id));
     // 配列置換で「以前あって今回無い」付箋は削除＝実削除時刻を記録する（clearDomain も saveNotes 経由）。
     const removed = (all[domain] || []).filter((n) => !keep.has(n.id)).map((n) => ({ domain, id: n.id }));
-    if (notes && notes.length) all[domain] = notes;
-    else delete all[domain]; // 空になったドメインはキーごと掃除
-    await _commitWithTombs(all, removed, [domain]);
+    const upserts = (notes || []).map((note) => ({ domain, note }));
+    // upsert で新しい配列を反映し removed を消す。並行 pull された別 id の付箋は delete 対象でないので温存される。
+    await _writeNotes(upserts, removed, removed);
   });
 }
 
@@ -158,10 +156,8 @@ export function deleteNote(domain, id) {
   return withLock(async () => {
     const all = await _getAllRaw();
     const had = (all[domain] || []).some((n) => n.id === id);
-    const left = (all[domain] || []).filter((n) => n.id !== id);
-    if (left.length) all[domain] = left;
-    else delete all[domain];
-    await _commitWithTombs(all, had ? [{ domain, id }] : [], [domain]);
+    const ops = had ? [{ domain, id }] : [];
+    await _writeNotes([], ops, ops);
   });
 }
 
@@ -173,8 +169,8 @@ export function updateNote(domain, id, patch) {
     if (!arr) return;
     const i = arr.findIndex((n) => n.id === id);
     if (i < 0) return;
-    arr[i] = { ...arr[i], ...patch, updatedAt: Date.now() };
-    await _commit(all, [domain]);
+    const next = { ...arr[i], ...patch, updatedAt: Date.now() };
+    await _writeNotes([{ domain, note: next }], [], []);
   });
 }
 
@@ -188,11 +184,8 @@ export function deleteNotes(pairs) {
     for (const domain of Object.keys(byDomain)) {
       const present = all[domain] || [];
       for (const n of present) if (byDomain[domain].has(n.id)) removed.push({ domain, id: n.id });
-      const left = present.filter((n) => !byDomain[domain].has(n.id));
-      if (left.length) all[domain] = left;
-      else delete all[domain]; // 空になったドメインはキーごと掃除
     }
-    await _commitWithTombs(all, removed, Object.keys(byDomain));
+    await _writeNotes([], removed, removed);
   });
 }
 
@@ -205,11 +198,13 @@ export function clearDomain(domain) {
 export function restoreNotes(pairs) {
   return withLock(async () => {
     const all = await _getAllRaw();
+    // 既存（読み取り時点）と重複しない付箋だけを upsert（非破壊復元）。最新へ id 単位で当てるので、
+    // 並行 pull された他付箋は温存される。
+    const upserts = [];
     for (const { domain, note } of pairs) {
-      const arr = all[domain] || (all[domain] = []);
-      if (!arr.some((n) => n.id === note.id)) arr.push(note);
+      if (!(all[domain] || []).some((n) => n.id === note.id)) upserts.push({ domain, note });
     }
-    await _commit(all, [...new Set(pairs.map((p) => p.domain))]);
+    await _writeNotes(upserts, [], []);
   });
 }
 

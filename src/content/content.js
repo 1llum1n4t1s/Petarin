@@ -165,22 +165,26 @@
         createdAt: note.createdAt,
         updatedAt: note.updatedAt,
       };
-      // verify-before-set + 再試行。毎回「最新を読む→自分のこの 1 枚だけ適用→set」で、他ドメイン／同ドメインの
-      // 他付箋（background reconcile が pull した変更）を丸ごと書き戻しで巻き戻さない。set 後にもう一度読み、
-      // get〜set の隙に reconcile が割り込んで自分の付箋を消していたら一度だけ最新へ当て直す（reconcile 側も
-      // verify-before-set で content に道を譲るので競合は収束する。chrome.storage に CAS が無いため窓は最小化に
-      // 留め、消えた場合だけ再適用する＝他PCの正当な更新（id 残存・内容違い）とは戦わない。Codex 指摘）。
-      for (let attempt = 0; attempt < 2; attempt++) {
+      // 楽観的並行制御。毎回「最新を読む→自分のこの 1 枚だけ当てる→set 直前にもう一度読んでベースが
+      // 変わっていなければ set」。background reconcile が get〜set の隙に他ドメイン／同ドメインの他付箋を pull
+      // したら（再読でベース不一致を検出）最新を読み直して当て直す＝全 notes 丸ごと書き戻しで pull を巻き戻さない。
+      // 最終試行は最善努力で書く（自分の編集を失わない）。chrome.storage に CAS は無いので set 直前の再読〜set の
+      // 極小窓は残るが reconcile 側も verify-before-set で content に道を譲り収束する（Codex 指摘）。
+      const MAX = 4;
+      for (let attempt = 0; attempt < MAX; attempt++) {
         const all = (await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {};
+        const baseJSON = JSON.stringify(all);
         const list = (all[domain] || []).slice();
         const i = list.findIndex((n) => n && n.id === note.id);
         if (i >= 0) list[i] = saved;
         else list.push(saved);
         all[domain] = list;
+        // set 直前に再読。ベースが変わっていたら（reconcile 割り込み）最新で当て直す（最終試行は強行）。
+        const cur = JSON.stringify((await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {});
+        if (cur !== baseJSON && attempt < MAX - 1) continue;
         notesWriteAt = Date.now(); // set の前に打刻：onChanged が set 完了と同期発火しても自エコーを確実に無視
         await chrome.storage.local.set({ [KEY_NOTES]: all });
-        const after = ((await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {})[domain] || [];
-        if (after.some((n) => n && n.id === note.id)) break; // 自分の付箋が残っていれば完了（内容差は他PC更新として尊重）
+        break;
       }
     });
   }
@@ -213,11 +217,14 @@
     });
   }
   async function persistCreatorRatio() {
-    const raw = await chrome.storage.local.get(KEY_SETTINGS);
-    const cur = { ...DEFAULTS, ...(raw[KEY_SETTINGS] || {}) };
-    cur.creatorRatio = settings.creatorRatio;
+    // creatorRatio だけを「最新の settings」に重ねて書く。settings 全体を読んだ値ごと書き戻すと、ドラッグ中に
+    // manage が変更した同期フラグ（syncEnabled/syncScope/syncDomains 等）を古い値で巻き戻し、OFF にした同期が
+    // 再開しうる（Codex）。set 直前に再読し、自分が変える creatorRatio 以外は最新スナップショットを保持する
+    // （単一キー保存なので全体書き戻しは避けられない＝窓は最小化。chrome.storage に CAS は無い）。
+    const fresh = (await chrome.storage.local.get(KEY_SETTINGS))[KEY_SETTINGS] || {};
+    const next = { ...DEFAULTS, ...fresh, creatorRatio: settings.creatorRatio };
     settingsWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
-    await chrome.storage.local.set({ [KEY_SETTINGS]: cur });
+    await chrome.storage.local.set({ [KEY_SETTINGS]: next });
   }
 
   // ── DOM ヘルパ ────────────────────────────────────────────────────

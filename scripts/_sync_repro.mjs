@@ -1294,34 +1294,46 @@ async function scenarioS41() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// S42（Codex）: 満杯ストア(512 item・meta 未存在)で削除すると、初の墓石 meta を書くのに枠が要る。
-//   remove で先に枠を空けてから meta を書けば write_failed にならず削除が伝播する（meta-first だと
-//   513 item 目で MAX_ITEMS に当たり落ちて削除が永久に詰む）。
-//   load-bearing: maxItems=512 を実 set 時に判定させる（meta-first 実装なら r.error が出て d0 が残る）。
+// S42（Codex 改訂）: 満杯ストア(512 item・meta 未存在)で削除すると、初の墓石 meta に枠が要る。remove-first で
+//   枠を空けてから meta を書く旧方式は、meta-set が transient に失敗すると item 消去済み＋墓石未保存になり、
+//   "all" スコープ再マージが shadow だけの削除ドメインを拾えず墓石を再生成できない＝stale 端末が再 publish する。
+//   よって「満杯＋新規 meta が要る」回は削除を metaDeferred 扱いで保留（cloud item 温存＝データロス無し）。枠が
+//   空けば次回 meta-first で安全に伝播する。
+//   load-bearing: 旧 remove-first 実装だと cloud item が即 remove される（保留にならず item が消える）。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS42() {
-  console.log("S42（Codex）満杯ストア+meta未存在の削除は remove で枠を空けてから初 meta を書く:");
+  console.log("S42（Codex改訂）満杯+meta未存在の削除は保留（remove-first で墓石喪失しない）→枠が空けば伝播:");
   const sync = {}; const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
   const t0 = 42_000_000;
   const notes = {};
-  // gate は meta 用に 1 slot 予約するので、512 ドメインだと同期は 511 まで。満杯(512 item)かつ meta 無しを
-  // 作るため、note 511 を同期した上で未知 item を 1 個直接置いて 512 item に整える（meta はまだ無い）。
+  // gate は meta 用に 1 slot 予約するので 512 ドメインだと同期は 511 まで。満杯(512 item)かつ meta 無しを作るため
+  // note 511 を同期した上で未知 item を 1 個直接置いて 512 item に整える（meta はまだ無い）。
   for (let i = 0; i < 511; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
   seedDevice(A, { notes });
   await reconcileAs(A, mod, { now: t0 }); // cloud=511 note item、墓石空＝meta 未書き込み
   sync["petarin:sync:legacy-blob"] = { junk: "z" }; // 未知 item で 512 に満たす
   ok(Object.keys(sync).length === 512 && !sync[KEY_META], "cloud を 512 item・meta 無しに整える", `items=${Object.keys(sync).length} meta=${!!sync[KEY_META]}`);
-  // d0 を削除（初の墓石＝meta 新規 item が必要）。満杯なので meta-first だと 513 item 目で MAX_ITEMS。
+  const d0Key = mod.domainKey("d0.example.com");
+  // d0 を削除（初の墓石＝meta 新規 item が必要だが満杯）→ 保留される。
   const next = structuredClone(notes);
   delete next["d0.example.com"];
   A.localStore[KEY_NOTES] = next;
   A.ctl.maxItems = 512;
   const r = await reconcileAs(A, mod, { now: t0 + DAY });
+  ok(!r.error, "保留なので write_failed にならない", JSON.stringify(r.error));
+  ok(r.metaDeferred === true, "満杯+新規 meta は metaDeferred 扱い", JSON.stringify(r.metaDeferred));
+  const d0 = r.domains.find((d) => d.domain === "d0.example.com");
+  ok(d0 && d0.synced === false && d0.reason === "delete_deferred", "d0 の削除は delete_deferred で保留", JSON.stringify(d0));
+  ok(!!sync[d0Key], "保留中は cloud item を温存（remove-first で墓石喪失しない＝データロス無し）", String(!!sync[d0Key]));
+  ok(!sync[KEY_META], "meta はまだ書かれない（枠が無い）", String(!!sync[KEY_META]));
+  // 枠が空けば（未知 item を撤去＝511 に）次回 reconcile で meta-first で安全に伝播する。
+  delete sync["petarin:sync:legacy-blob"];
+  const r2 = await reconcileAs(A, mod, { now: t0 + 2 * DAY });
   A.ctl.maxItems = null;
-  ok(!r.error, "満杯+meta未存在の削除で write_failed にならない（remove 先行）", JSON.stringify(r.error));
-  ok(!sync[mod.domainKey("d0.example.com")], "削除したドメインの cloud item が remove される", String(!!sync[mod.domainKey("d0.example.com")]));
-  ok(!!sync[KEY_META], "初の墓石 meta item が cloud に書かれる", String(!!sync[KEY_META]));
+  ok(!r2.error, "枠が空いた回も write_failed にならない", JSON.stringify(r2.error));
+  ok(!sync[d0Key], "枠が空けば d0 の cloud item が remove される（削除伝播）", String(!!sync[d0Key]));
+  ok(!!sync[KEY_META], "墓石 meta item が cloud に書かれる", String(!!sync[KEY_META]));
   ok(Object.keys(sync).length <= 512, "実 cloud item 数が上限 512 を超えない", `items=${Object.keys(sync).length}`);
 }
 
@@ -1509,9 +1521,78 @@ async function scenarioS50() {
   ok(res.settings.collapsedTranslucent === true, "有効な collapsedTranslucent は採用される", JSON.stringify(res.settings));
 }
 
+// ════════════════════════════════════════════════════════════════
+// S51（Codex）: corrupt orphan の key が in-scope ローカルドメインの domainKey と一致する場合、その slot は
+//   当該ドメインの sync.set が上書きする＝会計で二重計上しない（上限近傍で誤って item_limit にしない）。
+//   load-bearing: 旧実装は orphan を常に +1 計上＝baseline 2 で 511 ドメインの 1 つが item_limit になる。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS51() {
+  console.log("S51（Codex）orphan の key が in-scope domainKey と一致するなら二重計上しない（item_limit 誤判定回避）:");
+  const sync = {}; const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 51_000_000;
+  // ex.com の domainKey 上に corrupt orphan（k=domainKey("ex.com") != domainKey("zzz")→orphan）。
+  sync[mod.domainKey("ex.com")] = { d: "zzz", n: [] };
+  const notes = { "ex.com": [note("e", "x", t0)] };
+  for (let i = 0; i < 510; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)]; // 計 511 ローカルドメイン
+  seedDevice(A, { notes });
+  const r = await reconcileAs(A, mod, { now: t0 });
+  ok(!r.error, "reconcile が壊れない", JSON.stringify(r.error));
+  ok(r.domains.filter((d) => d.reason === "item_limit").length === 0, "orphan 二重計上が無く item_limit にならない", JSON.stringify(r.domains.filter((d) => d.reason === "item_limit").map((d) => d.domain)));
+  const ex = r.domains.find((d) => d.domain === "ex.com");
+  ok(ex && ex.synced, "ex.com が同期される（orphan slot を上書き）", JSON.stringify(ex));
+  ok(Object.keys(sync).length <= 512, "cloud item は 512 以内", `items=${Object.keys(sync).length}`);
+}
+
+// ════════════════════════════════════════════════════════════════
+// S52（Codex）: gcTombstones は壊れた墓石値（非有限＝オブジェクト/文字列）を破棄する。NaN 比較で永久に残ると
+//   meta が per-item budget を超えて metaDeferred が永続化し、新しい削除が durable な墓石を持てなくなる。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS52() {
+  console.log("S52（Codex）gcTombstones は壊れた墓石（非有限）を破棄する（metaDeferred 永続化を防ぐ）:");
+  const mod = await loadSync();
+  const now = 52_000_000 + 300 * DAY; // TTL 判定が効くよう十分大きい now
+  const ka = "a.com" + SEP + "x", kb = "b.com" + SEP + "y", kc = "c.com" + SEP + "z", kd = "d.com" + SEP + "w";
+  const tomb = { [ka]: { bad: 1 }, [kb]: "oops", [kc]: now - 1000, [kd]: now - 200 * DAY };
+  mod.gcTombstones(tomb, now, null);
+  ok(!(ka in tomb) && !(kb in tomb), "非有限の墓石（object/string）は破棄される", JSON.stringify(Object.keys(tomb)));
+  ok(kc in tomb, "有限・TTL 内の墓石は保持される", JSON.stringify(Object.keys(tomb)));
+  ok(!(kd in tomb), "TTL 超の墓石は従来どおり破棄される", JSON.stringify(Object.keys(tomb)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S53（Codex）: storage の削除は note 単位 delta を最新へ当てるので、同ドメインに pull された別付箋も巻き戻さない。
+//   load-bearing: 旧ドメイン丸ごと差し替えだと、同ドメインに pull された Z が消える。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS53() {
+  console.log("S53（Codex）storage の削除は同ドメインに pull された別付箋を巻き戻さない（note 単位 delta）:");
+  const { deleteNote } = await import("../src/shared/storage.js?dev=stg2");
+  const store = {};
+  const area = makeArea(store, {}, "local");
+  let firstNotesRead = true;
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => {
+      const res = await area.get(keys);
+      const wantNotes = keys === KEY_NOTES || (Array.isArray(keys) && keys.includes(KEY_NOTES));
+      if (wantNotes && firstNotesRead) {
+        firstNotesRead = false; // caller の読み取り直後に reconcile が同ドメインへ Z を pull したと見立てる
+        store[KEY_NOTES] = { "a.com": [note("X", "x", 1000), note("Y", "y", 1000), note("Z", "pulled", 2000)] };
+      }
+      return res;
+    },
+    set: area.set,
+    remove: area.remove,
+  } } };
+  store[KEY_NOTES] = { "a.com": [note("X", "x", 1000), note("Y", "y", 1000)] };
+  await deleteNote("a.com", "X");
+  const fin = (store[KEY_NOTES]["a.com"] || []);
+  ok(!fin.some((n) => n.id === "X"), "X が削除される", JSON.stringify(fin.map((n) => n.id)));
+  ok(fin.some((n) => n.id === "Y") && fin.some((n) => n.id === "Z"), "同ドメインの Y と pull された Z が温存される", JSON.stringify(fin.map((n) => n.id)));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);
