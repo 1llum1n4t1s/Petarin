@@ -1912,9 +1912,11 @@ async function scenarioS65() {
   const oldBase = { side: "right", collapsedTranslucent: true, translucentOpacity: 0.45, showOnPage: true, creatorRatio: 0.78 };
   // local は getSettings 相当（新フィールドは既定）。remote は別の升級端末が font=yomogi を同期済み。
   const local = { ...oldBase, font: "system", fontSize: 15, lineNumbers: false, defaultColor: "yellow" };
-  const remote = { ...oldBase, font: "yomogi", fontSize: 15, lineNumbers: false, defaultColor: "yellow" };
+  // remote は font も defaultColor も非既定（color 側の移行も検証できるよう defaultColor を pink に。CodeRabbit）。
+  const remote = { ...oldBase, font: "yomogi", fontSize: 15, lineNumbers: false, defaultColor: "pink" };
   const res = mod.pickSettings(oldBase, now - DAY, local, remote, now - 1, now);
   ok(res.settings.font === "yomogi", "他端末の font=yomogi を pull する（既定 system で握り潰さない）", JSON.stringify(res.settings.font));
+  ok(res.settings.defaultColor === "pink", "他端末の defaultColor=pink を pull する（既定 yellow で握り潰さない）", JSON.stringify(res.settings.defaultColor));
   ok(res.changedLocal === true && res.changedRemote === false, "remote 採用＝local へ反映し push はしない", JSON.stringify({ cl: res.changedLocal, cr: res.changedRemote }));
   // 逆: この端末だけ font を変えた（remote は旧 shadow と同じ既定）なら push される。
   const local2 = { ...oldBase, font: "klee", fontSize: 15, lineNumbers: false, defaultColor: "yellow" };
