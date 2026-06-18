@@ -22,11 +22,11 @@
         storage: {
           local: {
             _d: {
-              "petarin:settings": { side: "right", collapsedTranslucent: true, translucentOpacity: 0.45, showOnPage: true, creatorRatio: 0.78 },
+              "petarin:settings": { side: "right", collapsedTranslucent: true, translucentOpacity: 0.45, showOnPage: true, creatorRatio: 0.78, font: "yomogi", fontSize: 16, lineNumbers: true, defaultColor: "mint" },
               "petarin:notes": {
                 [host]: [
-                  { id: "p1", text: "横長の入力欄テスト\n2行目もここに", color: "yellow", posRatio: 0.18, createdAt: now, updatedAt: now },
-                  { id: "p2", text: "あとで読む", color: "mint", posRatio: 0.45, createdAt: now, updatedAt: now },
+                  { id: "p1", text: "# 買い物メモ\n\n- **牛乳** を 1 本\n- りんご 3 個\n- `卵` を忘れずに\n\n> [レシピ](https://example.com) を見る", color: "yellow", icon: "🍎", posRatio: 0.18, createdAt: now, updatedAt: now },
+                  { id: "p2", text: "あとで読む", color: "mint", icon: "📖", posRatio: 0.45, createdAt: now, updatedAt: now },
                 ],
               },
             },
@@ -47,12 +47,16 @@
       <p>あいうえお かきくけこ さしすせそ たちつてと なにぬねの。ロングテキストのダミー。Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore.</p>
       <p>あいうえお かきくけこ さしすせそ たちつてと なにぬねの。ロングテキストのダミー。Lorem ipsum dolor sit amet.</p>
     </div>
-    <!-- content.js は毎回キャッシュバスター付きで読む（編集の反映漏れを防ぐ・dev 専用）。 -->
+    <!-- markdown.js → content.js の順で毎回キャッシュバスター付きで読む（編集の反映漏れを防ぐ・dev 専用）。 -->
     <script>
       (() => {
-        const s = document.createElement("script");
-        s.src = "/src/content/content.js?t=" + Date.now();
-        document.body.appendChild(s);
+        const load = (src) => new Promise((res) => {
+          const s = document.createElement("script");
+          s.src = src + "?t=" + Date.now();
+          s.onload = res;
+          document.body.appendChild(s);
+        });
+        load("/src/shared/markdown.js").then(() => load("/src/content/content.js"));
       })();
     </script>
   </body>
