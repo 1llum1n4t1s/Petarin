@@ -11,12 +11,31 @@ import {
   colorOf,
   DEFAULT_COLOR,
   MAX_CHARS,
+  fontFamilyCss,
   relTime,
   hashHue,
 } from "../shared/storage.js";
 import { isValidDomain } from "../shared/sync.js";
 
 const $ = (sel) => document.querySelector(sel);
+
+// 付箋本文の Markdown を安全に整形（globalThis.PetaMD は manage.html が先読み）。未ロード時は素テキスト。
+function renderMarkdownInto(el, text) {
+  el.replaceChildren();
+  if (globalThis.PetaMD && typeof globalThis.PetaMD.render === "function") {
+    el.append(globalThis.PetaMD.render(text));
+  } else {
+    el.textContent = text;
+  }
+}
+
+// 付箋プレビューの表示フォントを現在設定に合わせる（CSS 変数）。
+async function applyNoteFont() {
+  try {
+    const s = await getSettings();
+    document.body.style.setProperty("--peta-note-font", fontFamilyCss(s.font));
+  } catch {}
+}
 const SEP = "\u001f"; // \u001f = Unit Separator (domain<->id delimiter; never appears in either)
 
 let allNotes = {};
@@ -62,7 +81,9 @@ async function init() {
   });
 
   chrome.storage.onChanged.addListener(async (changes, area) => {
-    if (area !== "local" || !changes["petarin:notes"]) return;
+    if (area !== "local") return;
+    if (changes["petarin:settings"]) await applyNoteFont(); // 書体変更をプレビューへ反映
+    if (!changes["petarin:notes"]) return;
     allNotes = await getAllNotes(); // データは常に最新へ同期
     if (editingKey) { pendingRender = true; return; }      // 編集中は壊さない
     if (pendingEchoes > 0) { pendingEchoes--; return; }    // 自分の書き込みエコー：再描画は各操作側が担当
@@ -71,6 +92,7 @@ async function init() {
 
   setupSync();
   setupBackup();
+  applyNoteFont();
   render();
 }
 
@@ -340,12 +362,14 @@ function buildMemo(domain, note) {
   tools.append(open, del);
   card.append(tools);
 
-  // 本文（クリックでインライン編集）
+  // 本文（クリックでインライン編集）。非編集時は Markdown を整形プレビュー。
   const text = document.createElement("div");
   text.className = "memo-text";
-  text.textContent = note.text?.trim() || "（空の付箋）";
+  if (note.text?.trim()) renderMarkdownInto(text, note.text);
+  else { text.textContent = "（空の付箋）"; text.classList.add("memo-empty"); }
   text.title = "クリックで編集";
-  text.addEventListener("click", () => beginEdit(text, domain, note));
+  // Markdown リンクのクリックはそのリンクを開く（編集には入らない）。
+  text.addEventListener("click", (e) => { if (e.target.closest("a")) return; beginEdit(text, domain, note); });
   card.append(text);
 
   // フッター（アイコン・ドメイン・日付・色）
@@ -439,8 +463,10 @@ function beginEdit(el, domain, note) {
       pendingRender = false;
       await reload();
     } else {
-      // 描画し直さない場合も表示を整える
-      el.textContent = next.trim() || "（空の付箋）";
+      // 描画し直さない場合も表示を整える（非編集時は Markdown プレビューに戻す）。
+      el.classList.toggle("memo-empty", !next.trim());
+      if (next.trim()) renderMarkdownInto(el, next);
+      else el.textContent = "（空の付箋）";
       el.closest(".memo").classList.toggle("untitled", !next.trim());
     }
   };
