@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # ぺたりん — 開発者向けメモ
 
 ドメイン単位の WEB ページ付箋 Chrome 拡張（MV3）。利用者向けの説明は [`README.md`](README.md)。
@@ -70,11 +74,13 @@ pnpm install                 # sharp は pnpm-workspace.yaml の onlyBuiltDepend
 pnpm run generate-icons      # icon.svg → icon-16/48/128.png（sharp。cairo 無し環境は uv run python scripts/_raster_icons.py）
 pnpm run generate-screenshots # webstore 掲載画像を puppeteer-core で生成（webstore/generate-screenshots.js）
 pnpm run build               # generate-icons + generate-screenshots を一括実行
+node scripts/_sync_repro.mjs # 同期エンジンの回帰テスト（依存なし・現在 195 PASS / 0 FAIL）
 ./zip.ps1                    # Windows: petarin-chrome.zip を作成（./zip.sh は mac/linux）
 ```
 
-- **ローカルプレビュー**（chrome API をモックしてレールを実ページ風に確認）: `uv run python scripts/_preview_server.py` → http://127.0.0.1:8777/docs/preview-rail.html 。Claude Preview を使う場合は `.claude/launch.json` の `static` 構成（同サーバを port 8777 で起動）。
+- **テスト**: 自動テストは同期エンジンの回帰スイート `node scripts/_sync_repro.mjs` のみ（依存なし・S1〜S65 の決定的シナリオ）。**`shared/sync.js` / `shared/storage.js` の同期・設定まわりを触ったら必ず実行**する（墓石/容量/設定マージはエッジの巣）。単一シナリオを見たいときは出力を `S65` 等で grep。lint や UI の自動テストは無い。
+- **Firefox 配信は別マニフェスト**: `manifest.firefox.json` を [`.github/workflows/publish.yml`](.github/workflows/publish.yml) が `manifest.json` として配置し `web-ext` で署名する（Chrome は `manifest.json`）。**`content_scripts` の js 追加・`web_accessible_resources` の追加は両マニフェストに入れる**（片方だけだと Firefox で content script 依存（例: `shared/markdown.js`）や同梱フォントが読めない）。`firefox-build/` は生成物（gitignore）。
+- **ローカルプレビュー**（chrome API をモックしてレールを実ページ風に確認）: `uv run python scripts/_preview_server.py` → http://127.0.0.1:8777/docs/preview-rail.html 。Claude Preview を使う場合は `.claude/launch.json` の `static` 構成（同サーバを port 8777 で起動）。`docs/preview-popup.html` は popup を同様にモック確認（HTML は手書きミラーなので UI/設定変更時は追従が要る）。
 - **実機確認（unpacked）**: `chrome://extensions`（または `edge://extensions`）で「デベロッパーモード」ON →「パッケージ化されていない拡張機能を読み込む」でリポジトリルート（`manifest.json` のある場所）を選択。コード変更後は拡張カードの 🔄 で再読込。
-- **自動テスト / lint は未整備**。動作確認はローカルプレビューか unpacked 実機（content の Shadow DOM レール・popup・manage デスク）で行う。
 
-バージョン更新はゆろさんの明示指示時のみ（`/vava`）。`manifest.json` / `package.json` の version は普段は維持する。
+バージョン更新はゆろさんの明示指示時のみ（`/vava`）。`manifest.json` / `manifest.firefox.json` / `package.json` の version は普段は維持する。
