@@ -1077,9 +1077,107 @@ async function scenarioS32() {
   ok(!(localNotes(A)["ex.com"] || []).some((n) => n.id === "N"), "N は削除されたまま（並行編集なし＝delete-wins）", JSON.stringify(localNotes(A)["ex.com"] || []));
 }
 
+// ════════════════════════════════════════════════════════════════
+// S33（Codex）: 正規ハッシュでないキーに置かれた note item は canonical 取り込みせず orphan 扱い
+//   （別キー残置で会計漏れ＆正規キーへ二重書きになるのを防ぐ）。誤キー item は温存する。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS33() {
+  console.log("S33（Codex）正規ハッシュでないキーの note item は canonical 取り込みせず orphan 扱い:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 33_000_000;
+  // 1) STALE を good.com として正規同期 → cloud に正規キーで「中身入り encoded item」ができる
+  seedDevice(A, { notes: { "good.com": [note("STALE", "古い本文", t0)] } });
+  await reconcileAs(A, mod, { now: t0 });
+  const goodKey = mod.domainKey("good.com");
+  const staleItem = sync[goodKey];
+  // 2) その item を誤キー(other.com のハッシュ)へ移動（d は good.com のまま）＝別キーに置かれた stale を再現。
+  const wrongKey = mod.domainKey("other.com");
+  delete sync[goodKey];
+  sync[wrongKey] = staleItem;
+  // base を失った再取り込み状況（shadow クリア）＋ local は別ノート G に差し替え。
+  A.localStore["petarin:sync:shadow"] = { notes: {}, settings: null, settingsT: 0 };
+  A.localStore[KEY_NOTES] = { "good.com": [note("G", "新本文", t0 + DAY)] };
+  const r = await reconcileAs(A, mod, { now: t0 + DAY });
+  const good = r.domains.find((d) => d.domain === "good.com");
+  // guard 無しだと誤キー item が good.com の remote として decode され STALE が canonical に混入（count:2）。
+  ok(good && good.synced && good.count === 1, "誤キー item は取り込まれず good.com は local の G のみ（STALE ゾンビ混入なし）", JSON.stringify(good));
+  ok(!!sync[wrongKey] && sync[wrongKey].d === "good.com", "誤キー item は canonical 取り込みされず温存（orphan）", String(!!sync[wrongKey]));
+  ok(!!sync[goodKey], "good.com は正規キーへ書かれる", String(!!sync[goodKey]));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S34（Codex）: 破損 meta（配列）は sanitize されるが生 item は cloud に残るので、生サイズで会計し
+//   容量超過を決定的に skip する（生を会計しないと undercount → write_failed）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS34() {
+  console.log("S34（Codex）破損 meta(配列)を生サイズで会計し容量超過を決定的に skip する:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 34_000_000;
+  const badMeta = new Array(80).fill("zzzz"); // 配列＝破損。sanitize されるが生は cloud に残り占有
+  sync["petarin:sync:meta"] = badMeta;
+  const rawMetaBytes = new TextEncoder().encode(JSON.stringify({ "petarin:sync:meta": badMeta })).length;
+  seedDevice(A, { notes: { "a.com": [note("n1", "x".repeat(50), t0)] } });
+  // totalBudget = 生 meta + わずか。生 meta を会計しないと a.com が収まり（旧バグ）、会計すれば quota_exceeded。
+  const r = await reconcileAs(A, mod, { now: t0, totalBudget: rawMetaBytes + 20 });
+  ok(!r.error, "破損 meta の生サイズを会計し write_failed にならない", JSON.stringify(r.error));
+  const a = r.domains.find((d) => d.domain === "a.com");
+  ok(a && !a.synced && a.reason === "quota_exceeded", "生 meta 算入で a.com は quota_exceeded で決定的 skip", JSON.stringify(a));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S35（Codex）: d=__proto__（プロトタイプ汚染キー）の note item は isValidDomain で弾かれ orphan 扱い。
+//   素の {} マップを汚染せず、同期ドメインとして扱わず、item は温存する。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS35() {
+  console.log("S35（Codex）d=__proto__ の note item は汚染せず orphan として bytes/会計に算入:");
+  const mod = await loadSync();
+  const t0 = 35_000_000;
+  const ppItem = { d: "__proto__", n: [] };
+  // 対照: __proto__ item 無し
+  const sync0 = {}; const C = makeDevice(sync0, "dev-C");
+  seedDevice(C, { notes: { "ok.com": [note("k", "x", t0)] } });
+  const r0 = await reconcileAs(C, mod, { now: t0 });
+  // __proto__ item 在り（正規ハッシュ上＝#A は通過し #B の isValidDomain 拒否だけが防壁）
+  const sync1 = {}; const A = makeDevice(sync1, "dev-A");
+  const ppKey = mod.domainKey("__proto__");
+  sync1[ppKey] = ppItem;
+  seedDevice(A, { notes: { "ok.com": [note("k", "x", t0)] } });
+  const r1 = await reconcileAs(A, mod, { now: t0 });
+  const ppBytes = new TextEncoder().encode(JSON.stringify({ [ppKey]: ppItem })).length;
+  ok(!r1.error, "__proto__ item で reconcile が壊れない", JSON.stringify(r1.error));
+  // guard 無しだと rawByDomain["__proto__"]=v が proto setter を起動し Object.keys から漏れ＝会計漏れ（diff=0）。
+  ok(r1.usedBytes - r0.usedBytes === ppBytes, "__proto__ item の bytes が orphan として usedBytes に算入（会計漏れしない）", `diff=${r1.usedBytes - r0.usedBytes} expect=${ppBytes}`);
+  ok(!r1.domains.some((d) => d.domain === "__proto__"), "__proto__ は同期ドメインとして扱わない（orphan）", JSON.stringify(r1.domains.map((d) => d.domain)));
+  ok(!!sync1[ppKey], "__proto__ item は温存（消さない）", String(!!sync1[ppKey]));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S36（監査）: 部分破損 meta `{v:1, tomb:[配列]}`（外殻 object で array-guard を通過し meta===rawMeta）でも、
+//   生 meta サイズを sanitize 前にスナップショットして会計する（return 時に測ると in-place sanitize 後に
+//   化けて under-count → write_failed する経路を塞ぐ）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS36() {
+  console.log("S36（監査）部分破損 meta {v:1,tomb:[配列]} も生サイズで会計（sanitize 後に化けない）:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 36_000_000;
+  const badTomb = new Array(500).fill("z"); // tomb が配列＝部分破損。外殻 object なので array-guard を通過する
+  sync["petarin:sync:meta"] = { v: 1, tomb: badTomb };
+  const rawMetaBytes = new TextEncoder().encode(JSON.stringify({ "petarin:sync:meta": { v: 1, tomb: badTomb } })).length;
+  seedDevice(A, { notes: {} }); // domains 空＝used は meta 分のみ
+  const r = await reconcileAs(A, mod, { now: t0 });
+  ok(!r.error, "部分破損 meta で reconcile が壊れない", JSON.stringify(r.error));
+  ok(r.usedBytes === rawMetaBytes, "tomb 配列の生サイズが usedBytes に算入される（sanitize 後の小サイズに化けない）", `usedBytes=${r.usedBytes} raw=${rawMetaBytes}`);
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);

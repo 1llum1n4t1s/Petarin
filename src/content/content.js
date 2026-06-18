@@ -95,6 +95,14 @@
     const from = pool.length ? pool : ICONS;
     return from[Math.floor(Math.random() * from.length)];
   }
+  // 旧データ(icon 無し)の補完は端末間で一致する「決定的」選択にする。ランダムだと端末ごとに別アイコンを
+  // 付け、updatedAt 同値の LWW（同値は local 優先）で互いに勝ち合い毎サイクル push し合う churn を起こす
+  // （Codex 指摘）。id の安定ハッシュで選べば全端末が同じ結果に収束し、updatedAt を変えずに済む。
+  function legacyIcon(id) {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+    return ICONS[h % ICONS.length];
+  }
 
   // ── 状態 ──────────────────────────────────────────────────────────
   let settings = { ...DEFAULTS };
@@ -418,7 +426,7 @@
     const bar = el("div", { class: "toolbar" });
 
     // アイコン（絵文字）ボタン。クリックで絵文字ピッカーを開いて明示選択する。
-    if (!note.icon) { note.icon = pickIcon(note.id); upsertNotePersist(note); } // 旧データ(icon 無し)へ自動付与
+    if (!note.icon) { note.icon = legacyIcon(note.id); upsertNotePersist(note); } // 旧データ(icon 無し)へ決定的付与（端末間で収束・churn 回避）
     const iconBtn = el("button", { class: "icon-btn on", type: "button", tabindex: "-1", title: "クリックで絵文字を選ぶ" });
     iconBtn.textContent = note.icon;
     iconBtn.addEventListener("pointerdown", (e) => e.preventDefault());

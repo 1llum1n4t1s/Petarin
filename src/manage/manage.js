@@ -14,6 +14,7 @@ import {
   relTime,
   hashHue,
 } from "../shared/storage.js";
+import { isValidDomain } from "../shared/sync.js";
 
 const $ = (sel) => document.querySelector(sel);
 const SEP = "\u001f"; // \u001f = Unit Separator (domain<->id delimiter; never appears in either)
@@ -586,15 +587,22 @@ async function importNotes(e) {
     showToast("ぺたりんの書き出しファイルじゃないみたい");
     return;
   }
-  // [{domain, note}] へ展開して restoreNotes で非破壊マージ
+  // [{domain, note}] へ展開して restoreNotes で非破壊マージ。
+  // バックアップは利用者が編集できる外部入力なので、ドメインは sync と同じ健全性チェックを通す
+  // （`https://${domain}/` 連結で別オリジンへ飛ぶ細工キーを弾く。Codex 指摘）。
+  // また復元は「今」の操作なので updatedAt を now に更新し、同期削除の墓石(削除時刻)に LWW で勝たせる
+  // （古い updatedAt のまま戻すと次の reconcile で再削除される。undo と同じ。Codex 指摘）。
+  const now = Date.now();
   const pairs = [];
+  let skipped = 0;
   for (const domain of Object.keys(notes)) {
     if (!Array.isArray(notes[domain])) continue;
+    if (!isValidDomain(domain)) { skipped++; continue; }
     for (const note of notes[domain]) {
-      if (note && typeof note.id === "string") pairs.push({ domain, note });
+      if (note && typeof note.id === "string") pairs.push({ domain, note: { ...note, updatedAt: now } });
     }
   }
-  if (!pairs.length) { showToast("取り込める付箋が無かったよ"); return; }
+  if (!pairs.length) { showToast(skipped ? "取り込めるドメインが無かった（不正なドメイン名はスキップ）" : "取り込める付箋が無かったよ"); return; }
   expectEcho();
   await restoreNotes(pairs);
   await reload();

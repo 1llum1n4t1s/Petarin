@@ -86,7 +86,11 @@ const indexById = (arr) => {
 // 別オリジンへ飛ばすフィッシングに化けうるので、取り込み時に弾く。punycode 済み英数 .- と IPv6 の
 // [::1]（: [ ]）は許可。
 export const isValidDomain = (d) =>
-  typeof d === "string" && d.length > 0 && d.length < 256 && !/[\s/@?#\\]/.test(d);
+  typeof d === "string" && d.length > 0 && d.length < 256 && !/[\s/@?#\\]/.test(d) &&
+  // プロトタイプ汚染キーを弾く。素の {} マップへ代入すると __proto__ は own プロパティを作らず
+  // setter を起動し、Object.keys に乗らない＝rawByDomain の会計から漏れて write_failed の元になる
+  // （d が真の hostname ならこれらの語にはならない。Codex 指摘）。
+  d !== "__proto__" && d !== "constructor" && d !== "prototype";
 
 // ════════════════════════════════════════════════════════════════
 //  符号化層（sync 容量対策: ①スキーマ圧縮 ②gzip。ローカルは無加工のまま）
@@ -319,6 +323,10 @@ async function readSync() {
   // primitive へのプロパティ代入は strict mode で throw し reconcile 全体が reject＝全同期停止する
   // ため、型ガードして不正値は新規初期化で握る（byDomain item と同じ防御を meta にも揃える）。
   const rawMeta = all[SYNC_KEYS.meta];
+  // 会計用の生 meta バイトは sanitize の in-place 変更より前にスナップショットする。well-formed な外殻
+  // object の場合 meta===rawMeta（同一参照）なので、後段の `meta.tomb={}` は rawMeta も書き換える。
+  // return 時に測ると {v:1,tomb:[巨大配列]} 等の部分破損が sanitize 後サイズに化け under-count する（監査）。
+  const rawMetaBytes = rawMeta !== undefined ? bytesOf({ [SYNC_KEYS.meta]: rawMeta }) : 0;
   const meta =
     rawMeta && typeof rawMeta === "object" && !Array.isArray(rawMeta) ? rawMeta : { v: 1, tomb: {} };
   // 配列も typeof==="object" を通すが、tomb[key]=now は配列の非インデックスプロパティとなり
@@ -336,8 +344,10 @@ async function readSync() {
   for (const [k, v] of Object.entries(all)) {
     // meta / settings は別途読んで会計するのでここでは飛ばす。
     if (k === SYNC_KEYS.meta || k === SYNC_KEYS.settings) continue;
-    // 健全な note item だけ取り込む（不正・危険なドメイン名は弾く。A1-001）。
-    if (k.startsWith(SYNC_KEYS.notePrefix) && v && typeof v === "object" && isValidDomain(v.d)) {
+    // 健全な note item だけ取り込む（不正・危険なドメイン名は弾く A1-001／キーが d の正規ハッシュ
+    // でないものは別キーに置かれた stale/改竄＝canonical として取り込むと正規キーへ二重書き＆元キー残置で
+    // 会計漏れ→write_failed になるので orphan 扱いにする。Codex 指摘）。
+    if (k.startsWith(SYNC_KEYS.notePrefix) && v && typeof v === "object" && isValidDomain(v.d) && k === domainKey(v.d)) {
       rawByDomain[v.d] = v;
       try {
         byDomain[v.d] = await decodeDomainItem(v);
@@ -370,6 +380,10 @@ async function readSync() {
     rawSettings: settingsItem,
     orphanBytes,
     orphanCount,
+    // 生の meta item の実バイト（sanitize 前にスナップショット済み）。破損（非オブジェクト/配列/部分破損）
+    // で meta を sanitize しても生が cloud に残り占有するので、今回書き換えない限りこの実サイズで会計する
+    // （Codex#5）。未存在は 0。
+    rawMetaBytes,
     byDomain,
     rawByDomain,
     corrupt,
@@ -511,15 +525,18 @@ async function _reconcile(opts) {
   // 前進させない（下の push 節で gate）＝次回 base チャネルで削除を再検出し、meta が縮めば墓石を書ける（監査 R2b）。
   // 恒久対策（多数の墓石を常に保持）＝墓石のシャーディングは別途課題。
   const metaItem = { v: 1, tomb };
+  const metaJSON = JSON.stringify(metaItem);
   const metaFits = bytesOf({ [SYNC_KEYS.meta]: metaItem }) <= perItemBudget;
   if (!metaFits) report.metaDeferred = true;
+  // 今回 meta を書くか＝収まる かつ 読み取り時スナップショット(metaBefore)から変化あり。
+  const willWriteMeta = metaFits && sync.metaBefore !== metaJSON;
 
   // ドメイン item の組み立て＋容量見積もり（updatedAt 新しいドメイン優先で詰める）。
-  // 会計に使う meta サイズは「実際に cloud へ残るもの」＝書くなら metaItem、据え置きなら旧 cloud meta
-  // （metaBefore）。間引き廃止で『used 計上後に meta が縮む』不整合は無い（監査 R3/R4）。
-  const metaBytes = metaFits
-    ? bytesOf({ [SYNC_KEYS.meta]: metaItem })
-    : bytesOf({ [SYNC_KEYS.meta]: JSON.parse(sync.metaBefore) });
+  // 会計に使う meta サイズは「実際に cloud へ残るもの」＝今回書くなら metaItem、書かない（未変更/
+  // metaDeferred）なら既存の生 meta item の実サイズ。破損で sanitize された meta も生が cloud に残り
+  // 占有するので、sanitize 後の小さい値ではなく生サイズで数える（Codex#5）。間引き廃止で『used 計上後に
+  // meta が縮む』不整合は無い（監査 R3/R4）。
+  const metaBytes = willWriteMeta ? bytesOf({ [SYNC_KEYS.meta]: metaItem }) : sync.rawMetaBytes;
   // settings item の会計は「cloud に残るか」で決める。今回書くなら setOps、書かないが既存ならその item。
   // 設定同期を後で OFF にしても以前の settings item は cloud に残り item/バイトを占有する（cfg.syncSettings
   // ではなく実在で数える。Codex 指摘）。
@@ -653,10 +670,10 @@ async function _reconcile(opts) {
   for (const d of sync.corrupt) report.domains.push({ domain: d, count: 0, synced: false, reason: "decode_error" });
   report.usedBytes = used;
 
-  // meta を setOps に載せる（収まる場合のみ。metaDeferred 時は据え置き＝下で shadow も前進させない）。
-  // 変化検出は「読み取り時のスナップショット metaBefore」と行う（tomb は上で in-place 変更済みのため、
-  // ライブの sync.meta と比べると常に一致してしまい書かれない＝旧実装の潜在バグ）。
-  if (metaFits && sync.metaBefore !== JSON.stringify(metaItem)) {
+  // meta を setOps に載せる（収まる かつ 変化ありの willWriteMeta 時のみ。metaDeferred 時は据え置き＝
+  // 下で shadow も前進させない）。変化検出は「読み取り時のスナップショット metaBefore」と行う（tomb は
+  // 上で in-place 変更済みのため、ライブの sync.meta と比べると常に一致してしまい書かれない＝旧実装の潜在バグ）。
+  if (willWriteMeta) {
     setOps[SYNC_KEYS.meta] = metaItem;
   }
 
