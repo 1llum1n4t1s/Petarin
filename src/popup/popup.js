@@ -7,9 +7,25 @@ import {
   COLORS,
   colorOf,
   SIDES,
+  FONTS,
+  FONT_SIZES,
+  DEFAULT_FONT,
+  DEFAULT_FONT_SIZE,
+  fontById,
+  fontFamilyCss,
   relTime,
   hashHue,
 } from "../shared/storage.js";
+
+// 付箋本文の Markdown を安全に整形（globalThis.PetaMD は popup.html が先読み）。未ロード時は素テキスト。
+function renderMarkdownInto(el, text) {
+  el.replaceChildren();
+  if (globalThis.PetaMD && typeof globalThis.PetaMD.render === "function") {
+    el.append(globalThis.PetaMD.render(text));
+  } else {
+    el.textContent = text;
+  }
+}
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -25,7 +41,9 @@ async function init() {
   currentDomain = await getCurrentDomain();
 
   renderSidePicker();
+  populateFontControls();
   syncToggles();
+  applyNoteFont();
   bindEvents();
   renderList();
 
@@ -39,7 +57,9 @@ async function init() {
     if (changes["petarin:settings"]) {
       settings = await getSettings();
       renderSidePicker();
+      populateFontControls();
       syncToggles();
+      applyNoteFont();
       renderList();
     }
   });
@@ -63,6 +83,50 @@ function renderSidePicker() {
 function syncToggles() {
   $("#translucentToggle").checked = !!settings.collapsedTranslucent;
   $("#showOnPageToggle").checked = !!settings.showOnPage;
+  $("#lineNumbersToggle").checked = !!settings.lineNumbers;
+}
+
+// 書体・サイズのセレクトを生成し現在値を選択。書体オプションは各フォントで表示してプレビューに。
+function populateFontControls() {
+  const fontSel = $("#fontSelect");
+  // option には実フォントを当てない。ドロップダウンを開くと全 option のラベル描画で同梱フォントが
+  // 一斉に解決され ~21MB を一括デコードしてしまうため（プレビューは下の #fontSample で選択中の 1 書体だけ）。
+  fontSel.replaceChildren(
+    ...FONTS.map((f) => {
+      const o = document.createElement("option");
+      o.value = f.id;
+      o.textContent = f.label;
+      return o;
+    })
+  );
+  fontSel.value = fontById(settings.font).id; // 未知 id は system に正規化
+  if (fontSel.value !== settings.font) fontSel.value = DEFAULT_FONT;
+  updateFontSample();
+
+  const sizeSel = $("#fontSizeSelect");
+  const cur = Number.isFinite(settings.fontSize) ? settings.fontSize : DEFAULT_FONT_SIZE;
+  // 候補に無い値（同期由来など）も選べるよう、現在値を一覧に混ぜる。
+  const sizes = FONT_SIZES.includes(cur) ? FONT_SIZES : [...FONT_SIZES, cur].sort((a, b) => a - b);
+  sizeSel.replaceChildren(
+    ...sizes.map((px) => {
+      const o = document.createElement("option");
+      o.value = String(px);
+      o.textContent = `${px} px`;
+      return o;
+    })
+  );
+  sizeSel.value = String(cur);
+}
+
+// 付箋プレビューの表示フォントを現在設定に合わせる（CSS 変数）。
+function applyNoteFont() {
+  document.body.style.setProperty("--peta-note-font", fontFamilyCss(settings.font));
+}
+
+// 選択中フォントのライブプレビュー（その 1 書体だけ読み込まれる）。
+function updateFontSample() {
+  const s = $("#fontSample");
+  if (s) s.style.fontFamily = fontFamilyCss($("#fontSelect").value || settings.font);
 }
 
 function bindEvents() {
@@ -80,6 +144,22 @@ function bindEvents() {
 
   $("#showOnPageToggle").addEventListener("change", async (e) => {
     settings = await saveSettings({ showOnPage: e.target.checked });
+  });
+
+  $("#fontSelect").addEventListener("change", async (e) => {
+    settings = await saveSettings({ font: e.target.value });
+    updateFontSample();
+    applyNoteFont();
+    renderList(); // プレビューを新しいフォントで描き直す
+  });
+
+  $("#fontSizeSelect").addEventListener("change", async (e) => {
+    const px = parseInt(e.target.value, 10);
+    settings = await saveSettings({ fontSize: Number.isFinite(px) ? px : DEFAULT_FONT_SIZE });
+  });
+
+  $("#lineNumbersToggle").addEventListener("change", async (e) => {
+    settings = await saveSettings({ lineNumbers: e.target.checked });
   });
 
   $("#searchInput").addEventListener("input", (e) => {
@@ -218,7 +298,8 @@ function buildCard(note, domain) {
 
   const text = document.createElement("div");
   text.className = "nc-text";
-  text.textContent = note.text?.trim() || "（空の付箋）";
+  if (note.text?.trim()) renderMarkdownInto(text, note.text);
+  else { text.textContent = "（空の付箋）"; text.classList.add("nc-empty"); }
   card.append(text);
 
   // フッター：格納時アイコン（絵文字・設定時のみ）＋ 更新日時
@@ -249,8 +330,10 @@ function buildCard(note, domain) {
   });
   card.append(del);
 
-  // カードクリックでそのドメインを開く（どこに貼ったか忘れた付箋へ飛べる）
-  card.addEventListener("click", () => {
+  // カードクリックでそのドメインを開く（どこに貼ったか忘れた付箋へ飛べる）。
+  // プレビュー内の Markdown リンクをクリックしたときはそのリンクを優先し、ドメインは開かない。
+  card.addEventListener("click", (e) => {
+    if (e.target.closest("a")) return;
     chrome.tabs.create({ url: `https://${domain}/` });
   });
 

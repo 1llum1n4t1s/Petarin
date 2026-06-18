@@ -218,6 +218,32 @@ main { padding: 4px 16px 18px; display: flex; flex-direction: column; gap: 14px;
 .switch input:checked + .track { background: var(--accent-warm); }
 .switch input:checked + .track .thumb { transform: translateX(18px); }
 
+/* 書体・サイズのセレクト行（スイッチ行と同じ罫線・見出しスタイルに揃える）*/
+.select-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 9px 0;
+  border-top: 1px dashed var(--line);
+}
+.select-label { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+.select-label small { display: block; font-weight: 500; font-size: 10.5px; color: var(--ink-soft); margin-top: 2px; }
+.select-row select {
+  flex-shrink: 0; max-width: 56%;
+  font: inherit; font-size: 12px; font-weight: 600;
+  color: var(--ink); background: #fffdf7;
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 5px 8px; cursor: pointer;
+}
+.select-row select:focus-visible { outline: 2px solid var(--accent-warm); outline-offset: 1px; }
+
+/* 選択中フォントのライブプレビュー（1 書体だけ読み込む）*/
+.font-sample {
+  margin: 2px 0 2px; padding: 7px 10px;
+  border: 1px dashed var(--line); border-radius: 8px;
+  background: #fffdf7; color: var(--ink);
+  font-size: 15px; line-height: 1.4;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
 /* ── 付箋デスクを開く（管理タブ入口）──────────────────────────────── */
 .open-desk {
   display: flex; align-items: center; gap: 12px; width: 100%;
@@ -302,10 +328,22 @@ main { padding: 4px 16px 18px; display: flex; flex-direction: column; gap: 14px;
   border-top-right-radius: 3px;
 }
 .note-card .nc-text {
+  font-family: var(--peta-note-font, inherit);
   font-size: 13px; font-weight: 700; line-height: 1.5; word-break: break-word;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.note-card.untitled .nc-text { opacity: 0.5; font-style: italic; }
+/* Markdown を入れたカードは block 子要素を持つので line-clamp を解き、高さで切り詰める。*/
+.note-card .nc-text:has(> *) {
+  display: block; -webkit-line-clamp: initial;
+  max-height: 4.4em; overflow: hidden;
+}
+.note-card .nc-text :is(p, ul, ol, blockquote, pre, h1, h2, h3, h4, h5, h6) { margin: 0 0 0.2em; }
+.note-card .nc-text :is(h1, h2, h3, h4, h5, h6) { font-size: 1em; font-weight: 800; }
+.note-card .nc-text ul, .note-card .nc-text ol { padding-left: 1.2em; }
+.note-card .nc-text code { font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }
+.note-card .nc-text pre { white-space: pre-wrap; }
+.note-card .nc-text a { color: inherit; }
+.note-card.untitled .nc-text, .note-card .nc-text.nc-empty { opacity: 0.5; font-style: italic; }
 .note-card .nc-foot { display: flex; align-items: center; gap: 5px; margin-top: 7px; }
 .note-card .nc-icon { font-size: 12px; line-height: 1; flex-shrink: 0; }
 .note-card .nc-date { font-size: 9.5px; opacity: 0.6; }
