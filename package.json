@@ -1,6 +1,6 @@
 {
   "name": "petarin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "private": true,
   "description": "ぺたりん: 見ているページのドメインごとに付箋をぺたりと貼れる Chrome 拡張機能。画面の端からそっと顔を出す WEB 付箋。",
