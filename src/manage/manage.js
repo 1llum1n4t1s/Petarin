@@ -699,7 +699,14 @@ function renderSyncPanel() {
 // 同期サイト一覧（scope=selected はチェックボックス、all は読み取り専用）。
 function renderSyncDomains(report) {
   const box = $("#syncDomainList");
-  const domains = Object.keys(allNotes).filter((d) => (allNotes[d] || []).length).sort();
+  const local = Object.keys(allNotes).filter((d) => (allNotes[d] || []).length);
+  // レポートにしか出ないドメイン（最後の付箋を消したが削除が保留＝cloud に残り他端末ではまだ見える）も
+  // 行として出す。allNotes 基準だけだと delete_deferred のドメインが一覧から消え、削除が未伝播なことを
+  // ユーザーが把握できない（Codex）。少なくとも delete_deferred は report-only でも表示する。
+  const reportOnly = report
+    ? (report.domains || []).filter((x) => x.reason === "delete_deferred" && !local.includes(x.domain)).map((x) => x.domain)
+    : [];
+  const domains = [...new Set([...local, ...reportOnly])].sort();
   const statusOf = (d) => (report ? (report.domains || []).find((x) => x.domain === d) || null : null);
   box.replaceChildren(...domains.map((d) => {
     const row = document.createElement("label");
@@ -763,8 +770,11 @@ function renderSyncReport(report) {
   $("#syncGaugeFill").style.width = pct + "%";
   $("#syncGaugeText").textContent = `${(used / 1024).toFixed(1)} / ${Math.round(quota / 1024)} KB`;
   $(".sp-gauge-bar").classList.toggle("warn", pct >= 85);
-  // 「削除保留(delete_deferred)」は容量超過ではなく count:0 の一過性状態。容量警告サマリには数えない。
+  // 「削除保留(delete_deferred)」は容量超過ではなく count:0 の一過性状態。容量警告サマリには数えないが、
+  // 「削除が他端末へまだ伝わっていない」ことは別途知らせる（cloud item を意図的に残しており、放置すると
+  // ユーザーは削除が反映されたと誤解する。Codex）。
   const skipped = (report.domains || []).filter((d) => !d.synced && d.reason !== "delete_deferred");
+  const deferred = (report.domains || []).filter((d) => d.reason === "delete_deferred");
   const note = $("#syncNote");
   if (report.error) {
     // 書込自体が失敗（容量上限 API・レート制限など）。一過性のことが多く次回 reconcile で再 push される。
@@ -775,6 +785,10 @@ function renderSyncReport(report) {
     note.classList.add("warn");
     note.removeAttribute("title");
     note.textContent = `${skipped.length} サイトが容量上限で未同期です（その付箋はこの端末にのみ残ります）。`;
+  } else if (deferred.length) {
+    note.classList.add("warn");
+    note.removeAttribute("title");
+    note.textContent = `${deferred.length} サイトの削除が保留中です（容量に空きができ次第、他の端末へ自動で反映されます）。`;
   } else {
     note.classList.remove("warn");
     note.removeAttribute("title");

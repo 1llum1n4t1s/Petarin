@@ -82,32 +82,60 @@ function _getAllRaw() {
 // なる（非破壊復元用）。restoreNotes/import/undo は読み取り時点で重複除外しても、set までの隙に reconcile が
 // 同 id を pull すると、陳腐な重複チェックを通った upsert が最新の pull 済みノートを無条件上書きしてしまう
 // （他端末の編集を握り潰す）。fresh に対して再チェックすれば非破壊復元の契約を最新スナップショットでも守れる（Codex）。
+// upsert は 2 形: ①{domain, note}＝whole-note 上書き挿入 ②{domain, id, patch, now}＝最新ノートへフィールド単位
+// パッチ（色・本文等）。②は読み取り時点の stale な note を whole で書き戻さず、set 直前に読んだ fresh の同 id
+// ノートへ patch を当てる＝reconcile が割り込んで pull した他端末の編集を巻き戻さない（Codex）。
 async function _writeNotes(upserts, deletes, removed, opts) {
   const ifAbsent = !!(opts && opts.ifAbsent);
   const withTombs = removed && removed.length;
-  const raw = await chrome.storage.local.get(withTombs ? [STORAGE_KEYS.notes, LOCAL_TOMBS_KEY] : STORAGE_KEYS.notes);
-  const fresh = raw[STORAGE_KEYS.notes] || {};
-  for (const { domain, id } of deletes || []) {
-    if (!fresh[domain]) continue;
-    const left = fresh[domain].filter((n) => n.id !== id);
-    if (left.length) fresh[domain] = left;
-    else delete fresh[domain]; // 空になったドメインはキーごと掃除
+  const keys = withTombs ? [STORAGE_KEYS.notes, LOCAL_TOMBS_KEY] : STORAGE_KEYS.notes;
+  // 楽観的並行制御。petarin:notes / localTombs は単一キーで、別コンテキスト（別タブ・manage・popup）は
+  // それぞれ独立の withLock を持つため whole-key set が競合しうる。毎回最新を読んで delta を当て、set 直前に
+  // もう一度読んでベースが変わっていたら（別コンテキストの削除/編集 or reconcile の pull）最新へ当て直す。
+  // これで「後勝ちが相手の削除を巻き戻し localTombs を取りこぼす」競合を閉じる（content.js と同方針）。最終試行は
+  // 最善努力。chrome.storage に CAS は無いので set 直前〜set の極小窓のみ残り、次回 reconcile/書き込みで収束（Codex）。
+  const MAX = 4;
+  for (let attempt = 0; attempt < MAX; attempt++) {
+    const raw = await chrome.storage.local.get(keys);
+    const baseJSON = JSON.stringify(raw);
+    const fresh = raw[STORAGE_KEYS.notes] || {};
+    for (const { domain, id } of deletes || []) {
+      if (!fresh[domain]) continue;
+      const left = fresh[domain].filter((n) => n.id !== id);
+      if (left.length) fresh[domain] = left;
+      else delete fresh[domain]; // 空になったドメインはキーごと掃除
+    }
+    for (const u of upserts || []) {
+      if (u.patch) {
+        // フィールド単位パッチ: fresh の同 id ノートにだけ当てる。対象がドメインごと/個別に消えていれば
+        // （並行削除・pull）何もしない＝stale な内容で復活させない。
+        const arr = fresh[u.domain];
+        if (!arr) continue;
+        const i = arr.findIndex((n) => n.id === u.id);
+        if (i >= 0) arr[i] = { ...arr[i], ...u.patch, updatedAt: u.now };
+        continue;
+      }
+      const arr = fresh[u.domain] || (fresh[u.domain] = []);
+      const i = arr.findIndex((n) => n.id === u.note.id);
+      if (i >= 0) { if (ifAbsent) continue; arr[i] = u.note; } // ifAbsent: 既存（pull 済み等）は温存
+      else arr.push(u.note);
+    }
+    const out = { [STORAGE_KEYS.notes]: fresh };
+    if (withTombs) {
+      const now = Date.now();
+      const log = raw[LOCAL_TOMBS_KEY] || {};
+      for (const { domain, id } of removed) {
+        if (!Object.prototype.hasOwnProperty.call(log, domain)) ownSet(log, domain, {});
+        ownSet(log[domain], id, now);
+      }
+      gcLocalTombs(log, now);
+      out[LOCAL_TOMBS_KEY] = log;
+    }
+    // set 直前にベース（notes[+localTombs]）を再読。変わっていたら最新へ delta を当て直す（最終試行は強行）。
+    const cur = JSON.stringify(await chrome.storage.local.get(keys));
+    if (cur !== baseJSON && attempt < MAX - 1) continue;
+    return chrome.storage.local.set(out);
   }
-  for (const { domain, note } of upserts || []) {
-    const arr = fresh[domain] || (fresh[domain] = []);
-    const i = arr.findIndex((n) => n.id === note.id);
-    if (i >= 0) { if (ifAbsent) continue; arr[i] = note; } // ifAbsent: 既存（pull 済み等）は温存
-    else arr.push(note);
-  }
-  if (!withTombs) return chrome.storage.local.set({ [STORAGE_KEYS.notes]: fresh });
-  const now = Date.now();
-  const log = raw[LOCAL_TOMBS_KEY] || {};
-  for (const { domain, id } of removed) {
-    if (!Object.prototype.hasOwnProperty.call(log, domain)) ownSet(log, domain, {});
-    ownSet(log[domain], id, now);
-  }
-  gcLocalTombs(log, now);
-  return chrome.storage.local.set({ [STORAGE_KEYS.notes]: fresh, [LOCAL_TOMBS_KEY]: log });
 }
 
 // 削除時刻のローカルログ（同期しない）。reconcile が tombstone を「reconcile 時刻 now」ではなく
@@ -190,15 +218,11 @@ export function deleteNote(domain, id) {
 }
 
 // 1 枚の付箋の一部フィールドを書き換える（本文・色など）。updatedAt は自動更新。
+// パッチは _writeNotes 内で「set 直前に読んだ最新ノート」に当てる（読み取り時点の stale な note を whole で
+// 書き戻さない＝reconcile が割り込んで pull した他端末の編集を色変更等で巻き戻さない。Codex）。
 export function updateNote(domain, id, patch) {
   return withLock(async () => {
-    const all = await _getAllRaw();
-    const arr = all[domain];
-    if (!arr) return;
-    const i = arr.findIndex((n) => n.id === id);
-    if (i < 0) return;
-    const next = { ...arr[i], ...patch, updatedAt: Date.now() };
-    await _writeNotes([{ domain, note: next }], [], []);
+    await _writeNotes([{ domain, id, patch, now: Date.now() }], [], []);
   });
 }
 

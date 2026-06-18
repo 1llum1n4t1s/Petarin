@@ -716,7 +716,8 @@ async function scenarioS19() {
 
   const syncedCount = r.domains.filter((d) => d.synced).length;
   const itemLimited = r.domains.filter((d) => d.reason === "item_limit").length;
-  ok(syncedCount <= 511, "同期ドメイン item 数が上限(meta 込み 512)内", `synced=${syncedCount}`);
+  // 墓石なし＝meta item は cloud に存在せず今回も書かない（slot 予約しない）。note 512 item ちょうどまで収まる。
+  ok(syncedCount === 512, "同期ドメイン item 数が上限 512 ちょうどまで（meta 不在なので予約しない）", `synced=${syncedCount}`);
   ok(itemLimited > 0, "超過ドメインは item_limit で決定的に skip", `item_limit=${itemLimited}`);
   ok(!r.error, "write_failed にならない（reject しない）", JSON.stringify(r.error));
 }
@@ -830,13 +831,13 @@ async function scenarioS24() {
   const t0 = 24_000_000;
   sync[KEY_SYNC_SETTINGS] = { s: { side: "left" }, t: 1000 }; // 以前 ON だった残置 settings item
   const notes = {};
-  for (let i = 0; i < 511; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
+  for (let i = 0; i < 512; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
   seedDevice(A, { notes, settings: { syncSettings: false } }); // 今は設定同期 OFF
   const r = await reconcileAs(A, mod, { now: t0 });
 
   const synced = r.domains.filter((d) => d.synced).length;
-  // meta(1) + 残置 settings(1) = 2 を予約 → 同期できるドメインは最大 510
-  ok(synced <= 510, "残置 settings を数え、同期ドメインは 510 以内", `synced=${synced}`);
+  // meta 不在で slot 予約なし + 残置 settings(1) = 1 を予約 → 512 ドメイン中 511 が同期、1 が item_limit。
+  ok(synced <= 511, "残置 settings を数え、同期ドメインは 511 以内", `synced=${synced}`);
   ok(r.domains.some((d) => d.reason === "item_limit"), "超過分は item_limit で skip", `item_limit=${r.domains.filter((d) => d.reason === "item_limit").length}`);
 }
 
@@ -873,12 +874,12 @@ async function scenarioS26() {
   const t0 = 26_000_000;
   sync[KEY_SYNC_SETTINGS] = { s: "破損", t: 1000 }; // .s が非オブジェクト＝readSync で null へ sanitize
   const notes = {};
-  for (let i = 0; i < 511; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
+  for (let i = 0; i < 512; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
   seedDevice(A, { notes, settings: { syncSettings: false } });
   const r = await reconcileAs(A, mod, { now: t0 });
   const synced = r.domains.filter((d) => d.synced).length;
-  // meta(1) + 破損 settings(1) = 2 を予約 → 同期できるドメインは最大 510
-  ok(synced <= 510, "破損 settings を数え、同期ドメインは 510 以内", `synced=${synced}`);
+  // meta 不在で slot 予約なし + 破損 settings(1) = 1 を予約 → 512 ドメイン中 511 が同期、1 が item_limit。
+  ok(synced <= 511, "破損 settings を数え、同期ドメインは 511 以内", `synced=${synced}`);
   ok(r.domains.some((d) => d.reason === "item_limit"), "超過分は item_limit で skip", `item_limit=${r.domains.filter((d) => d.reason === "item_limit").length}`);
   ok(!r.error, "write_failed にならない（reject しない）", JSON.stringify(r.error));
 }
@@ -895,12 +896,12 @@ async function scenarioS27() {
   // fnv1a は 8 桁 hex を返すので "zzzzzzzz" は実ドメインと絶対衝突しない。d が数値＝isValidDomain 失敗で orphan。
   sync["petarin:sync:n:zzzzzzzz"] = { d: 123, n: [] };
   const notes = {};
-  for (let i = 0; i < 511; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
+  for (let i = 0; i < 512; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
   seedDevice(A, { notes });
   const r = await reconcileAs(A, mod, { now: t0 });
   const synced = r.domains.filter((d) => d.synced).length;
-  // meta(1) + orphan(1) = 2 を予約 → 同期できるドメインは最大 510
-  ok(synced <= 510, "orphan item を数え、同期ドメインは 510 以内", `synced=${synced}`);
+  // meta 不在で slot 予約なし + orphan(1) = 1 を予約 → 512 ドメイン中 511 が同期、1 が item_limit。
+  ok(synced <= 511, "orphan item を数え、同期ドメインは 511 以内", `synced=${synced}`);
   ok(r.domains.some((d) => d.reason === "item_limit"), "超過分は item_limit で skip", `item_limit=${r.domains.filter((d) => d.reason === "item_limit").length}`);
   ok(!!sync["petarin:sync:n:zzzzzzzz"], "orphan item は理解できない値なので保守的に温存（消さない）", String(!!sync["petarin:sync:n:zzzzzzzz"]));
 }
@@ -988,8 +989,8 @@ async function scenarioS30() {
   A.ctl.maxItems = null;
   ok(!r.error, "未知キーを会計に算入し write_failed にならない", JSON.stringify(r.error));
   const synced = r.domains.filter((d) => d.synced).length;
-  // meta(1 予約) + 未知5 = 6 を予約 → 同期は最大 506
-  ok(synced <= 506, "未知キー5件を数え、同期ドメインは 506 以内", `synced=${synced}`);
+  // meta 不在で slot 予約なし + 未知5 = 5 を予約 → 511 ドメイン中 507 が同期、4 が item_limit。
+  ok(synced <= 507, "未知キー5件を数え、同期ドメインは 507 以内", `synced=${synced}`);
   ok(r.domains.some((d) => d.reason === "item_limit"), "超過分は item_limit で決定的に skip", `item_limit=${r.domains.filter((d) => d.reason === "item_limit").length}`);
   const shardsLeft = Object.keys(sync).filter((k) => k.startsWith("petarin:sync:meta:shard")).length;
   ok(shardsLeft === 5, "未知キーは温存される（消さない）", `shards=${shardsLeft}`);
@@ -1768,9 +1769,138 @@ async function scenarioS60() {
   ok(!wrote, "opt-out 後は cloud に付箋 item を書かない", JSON.stringify(Object.keys(sync)));
 }
 
+// ════════════════════════════════════════════════════════════════
+// S61（Codex）: meta slot は「meta item が cloud に実在」or「今回 meta を書く」ときだけ数える。
+//   meta 不在かつ今回書かない通常回で 1 を予約すると、512 item を上限ちょうどで in-place 更新する回に最後の
+//   ドメインが item_limit と誤報告され 1 ドメインが未同期に落ちる。load-bearing: 予約有無で 512↔511 が変わる。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS61() {
+  console.log("S61（Codex）meta slot は meta が実在 or 今回書く時だけ数える:");
+  // (a) meta 不在・墓石なし → slot 予約せず 512 ドメインがちょうど収まる
+  {
+    const sync = {};
+    const A = makeDevice(sync, "dev-A");
+    const mod = await loadSync();
+    const notes = {};
+    for (let i = 0; i < 512; i++) notes[`d${i}.ex.com`] = [note("n" + i, "x", 61_000_000)];
+    seedDevice(A, { notes });
+    const r = await reconcileAs(A, mod, { now: 61_000_000 });
+    const synced = r.domains.filter((d) => d.synced).length;
+    ok(synced === 512, "meta 不在なら 512 ドメインがちょうど収まる（phantom slot を予約しない）", `synced=${synced}`);
+  }
+  // (b) cloud に meta item が実在 → slot を数え 511 まで・1 が item_limit
+  {
+    const sync = { "petarin:sync:meta": { v: 1, tomb: {} } };
+    const A = makeDevice(sync, "dev-A");
+    const mod = await loadSync();
+    const notes = {};
+    for (let i = 0; i < 512; i++) notes[`d${i}.ex.com`] = [note("n" + i, "x", 61_000_000)];
+    seedDevice(A, { notes });
+    const r = await reconcileAs(A, mod, { now: 61_000_000 });
+    const synced = r.domains.filter((d) => d.synced).length;
+    ok(synced === 511, "meta が実在するなら slot を数え 511 まで", `synced=${synced}`);
+    ok(r.domains.some((d) => d.reason === "item_limit"), "超過分は item_limit", `il=${r.domains.filter((d) => d.reason === "item_limit").length}`);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// S62（Codex）: push 直前にスコープ/見た目同期を狭めたら、外したばかりの note/settings op を external に送らない。
+//   in-flight 中に selected からドメインを外す／syncSettings を切る競合。push 相の直前に再読して落とす。
+//   load-bearing: 再読・除外が無いと冒頭スナップショットのまま out-of-scope データを push する。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS62() {
+  console.log("S62（Codex）push 直前にスコープ/見た目同期を狭めたら out-of-scope の op を送らない:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 62_000_000;
+  seedDevice(A, {
+    notes: { "a.com": [note("a", "x", t0)], "b.com": [note("b", "y", t0)] },
+    settings: { syncScope: "selected", syncDomains: ["a.com", "b.com"], syncSettings: true, side: "left" },
+  });
+  const realGet = A.chrome.storage.local.get;
+  let sread = 0;
+  A.chrome.storage.local.get = async (keys) => {
+    const res = await realGet(keys);
+    const wantSettings = keys === KEY_SETTINGS || (Array.isArray(keys) && keys.includes(KEY_SETTINGS));
+    if (wantSettings && ++sread === 1) {
+      // 冒頭 read 直後に b.com をスコープから外し、見た目同期も OFF にしたと見立てる
+      A.localStore[KEY_SETTINGS] = { ...A.localStore[KEY_SETTINGS], syncDomains: ["a.com"], syncSettings: false };
+    }
+    return res;
+  };
+  const r = await reconcileAs(A, mod, { now: t0 });
+  ok(!!sync[mod.domainKey("a.com")], "スコープ内の a.com は push される", String(!!sync[mod.domainKey("a.com")]));
+  ok(!sync[mod.domainKey("b.com")], "外したばかりの b.com は push されない", String(!!sync[mod.domainKey("b.com")]));
+  ok(!sync[KEY_SYNC_SETTINGS], "外したばかりの見た目設定は push されない", JSON.stringify(Object.keys(sync)));
+  const bRow = r.domains.find((d) => d.domain === "b.com");
+  ok(bRow && !bRow.synced && bRow.reason === "scope_changed", "b.com は scope_changed で未同期報告", JSON.stringify(bRow));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S63（Codex）: 2 コンテキストが別ノートを同時削除しても、後勝ちが相手の削除/墓石を巻き戻さない（_writeNotes
+//   の verify-before-set + retry）。各 withLock は独立なので whole-key set が競合する。
+//   load-bearing: retry が無いと冒頭スナップショットのまま set し、相手が消したノートを復活＋墓石を取りこぼす。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS63() {
+  console.log("S63（Codex）2 コンテキストの別ノート同時削除で後勝ちが相手の削除/墓石を巻き戻さない:");
+  const { deleteNote } = await import("../src/shared/storage.js?dev=stg6");
+  const store = { [KEY_NOTES]: { "ex.com": [note("X", "x", 1000), note("Y", "y", 1000)] } };
+  const area = makeArea(store, {}, "local");
+  let reads = 0;
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => {
+      const res = await area.get(keys);
+      const wantNotes = keys === KEY_NOTES || (Array.isArray(keys) && keys.includes(KEY_NOTES));
+      // _writeNotes の base-read（2 回目の notes 読み）直後に、別コンテキスト B が Y を削除 commit 済みと見立てる
+      if (wantNotes && ++reads === 2) {
+        // B の墓石時刻は実 now 近傍にする（_writeNotes は実 Date.now() で GC するため、古い固定値だと TTL 刈りされる）。
+        store[KEY_NOTES] = { "ex.com": [note("X", "x", 1000)] };
+        store[KEY_LOCAL_TOMBS] = { "ex.com": { Y: Date.now() - 1000 } };
+      }
+      return res;
+    },
+    set: area.set, remove: area.remove,
+  } } };
+  await deleteNote("ex.com", "X"); // A は X を削除
+  const ids = (store[KEY_NOTES]["ex.com"] || []).map((n) => n.id);
+  const tombs = store[KEY_LOCAL_TOMBS]["ex.com"] || {};
+  ok(!ids.includes("X") && !ids.includes("Y"), "X も Y も復活しない（両コンテキストの削除を保持）", JSON.stringify(ids));
+  ok(Object.prototype.hasOwnProperty.call(tombs, "X") && Object.prototype.hasOwnProperty.call(tombs, "Y"), "墓石は X・Y 両方残る", JSON.stringify(Object.keys(tombs)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S64（Codex）: updateNote は set 直前の fresh ノートに patch を当てる。読み取り時点の stale な note を whole で
+//   書き戻すと、reconcile が割り込んで pull した他端末の編集（本文等）を色変更等で巻き戻す。
+//   load-bearing: フィールド単位 patch でなく whole-note だと pull 済みの本文が古い版へ戻る。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS64() {
+  console.log("S64（Codex）updateNote は set 直前の fresh ノートに patch を当て pull 済み編集を巻き戻さない:");
+  const { updateNote } = await import("../src/shared/storage.js?dev=stg7");
+  const store = { [KEY_NOTES]: { "ex.com": [note("X", "古い本文", 1000, { color: "yellow" })] } };
+  const area = makeArea(store, {}, "local");
+  let reads = 0;
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => {
+      const res = await area.get(keys);
+      const wantNotes = keys === KEY_NOTES || (Array.isArray(keys) && keys.includes(KEY_NOTES));
+      // base-read 直後に reconcile が X の新しい版を pull したと見立てる（本文だけ別端末で編集）
+      if (wantNotes && ++reads === 1) {
+        store[KEY_NOTES] = { "ex.com": [note("X", "他端末の新編集", 9999, { color: "yellow" })] };
+      }
+      return res;
+    },
+    set: area.set, remove: area.remove,
+  } } };
+  await updateNote("ex.com", "X", { color: "blue" }); // 色だけ変更
+  const x = (store[KEY_NOTES]["ex.com"] || []).find((n) => n.id === "X");
+  ok(x && x.text === "他端末の新編集", "pull 済みの本文を色変更で巻き戻さない", x ? JSON.stringify(x.text) : "X 消失");
+  ok(x && x.color === "blue", "色変更は最新ノートに適用される", x ? JSON.stringify(x.color) : "");
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56, scenarioS57, scenarioS58, scenarioS59, scenarioS60]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56, scenarioS57, scenarioS58, scenarioS59, scenarioS60, scenarioS61, scenarioS62, scenarioS63, scenarioS64]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);

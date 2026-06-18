@@ -690,7 +690,11 @@ async function _reconcile(opts) {
   // バイト予算を通過して setOps に積まれ、バッチが item 超過で write_failed になる。残る item 数も
   // 数えて、超える低優先ドメインは決定的に skip する（Codex 指摘）。meta=1・settings・スコープ外
   // 既存 item を初期計上し、in-scope で同期する／退避で残るドメインごとに +1。
-  let itemCount = 1 /* meta */ + settingsItems + sync.orphanCount;
+  // meta slot は「cloud に meta item が実在する」か「今回 meta を書く」ときだけ 1 数える。meta 不在かつ今回も
+  // 書かない通常の no-tombstone 回で 1 を予約すると、512 item を上限ちょうどで in-place 更新する回に最後の
+  // ドメインが item_limit と誤報告され、結果バッチは 512 keys のままなのに 1 ドメインが未同期に落ちる（Codex）。
+  const metaItems = sync.metaExists || willWriteMeta ? 1 : 0;
+  let itemCount = metaItems + settingsItems + sync.orphanCount;
   for (const d of Object.keys(sync.rawByDomain)) if (!domainSet.has(d)) itemCount += 1;
   const ordered = domains
     .map((d) => ({ d, latest: Math.max(0, ...((mergedByDomain[d] || []).map(tsOf))) }))
@@ -904,12 +908,43 @@ async function _reconcile(opts) {
   // ユーザーが同期を OFF にしたかもしれない。external な chrome.storage.sync への set/remove の直前に再読し、
   // 既に無効化されていたら push 相を丸ごと中止する（OFF 後に編集を送信しない＝opt-out を尊重）。local 側の
   // 反映（pull 方向）は既に適用済み＝安全。shadow も前進させず（早期 return）、再 ON 時に再 push される（Codex）。
-  if (!(await getSettings()).syncEnabled) {
+  const freshSettings = await getSettings();
+  if (!freshSettings.syncEnabled) {
     report.abortedByOptOut = true;
     for (const d of report.domains) if (d.synced) { d.synced = false; d.reason = d.reason || "opt_out"; }
     report.settingsSynced = false;
     return report;
   }
+  // スコープ／見た目同期フラグも push 直前に再読する。in-flight 中にユーザーが対象を狭めた（selected から
+  // ドメインを外す／all→selected）や見た目同期を外した場合、その対象の note/settings op を push しない
+  // （opt-out した直後のデータを external に送らない）。落とした op があれば shadow を前進させず _dirty で
+  // 再 reconcile に委ね、新 config で out-of-scope 凍結まで正しく処理し直す（Codex）。
+  const freshCfg = {
+    syncScope: freshSettings.syncScope || "selected",
+    syncDomains: freshSettings.syncDomains || [],
+    syncSettings: !!freshSettings.syncSettings,
+  };
+  const freshScope = new Set(
+    scopeDomains(freshCfg, Object.keys(localNotes), Object.keys(sync.byDomain))
+      .filter((d) => isValidDomain(d) && !sync.corrupt.has(d))
+  );
+  let scopeNarrowed = false;
+  if (!freshCfg.syncSettings && setOps[SYNC_KEYS.settings] !== undefined) {
+    delete setOps[SYNC_KEYS.settings]; // 見た目同期を外した → settings item を push しない
+    report.settingsSynced = false;
+    scopeNarrowed = true;
+  }
+  for (const d of domains) {
+    if (freshScope.has(d)) continue; // まだスコープ内 → そのまま
+    const k = domainKey(d);
+    if (setOps[k] !== undefined) { delete setOps[k]; scopeNarrowed = true; }
+    const ri = removeKeys.indexOf(k);
+    if (ri >= 0) { removeKeys.splice(ri, 1); scopeNarrowed = true; }
+    delete nextShadowNotes[d]; // スコープ外になった → shadow を前進させない（次回 (b) 凍結で base 復元）
+    const row = report.domains.find((r) => r.domain === d);
+    if (row && row.synced) { row.synced = false; row.reason = "scope_changed"; }
+  }
+  if (scopeNarrowed) _dirty = true; // 新 config で再 reconcile（凍結・再 push 判断をやり直す）
   const hasSet = Object.keys(setOps).length > 0;
   let pushOk = true;
   try {
