@@ -78,7 +78,12 @@ function _getAllRaw() {
 // 同ドメインに pull された別付箋を巻き戻し、次回 reconcile が「ローカルで削除された」と誤認して無関係な付箋に
 // tombstone を立てる（Codex）。触った note id だけを最新スナップショットへ当てれば、同/他ドメインの pull を温存。
 // deletes を先に、upserts を後に適用（同 id が両方にあれば upsert 優先）。removed があれば localTombs も同 set で書く。
-async function _writeNotes(upserts, deletes, removed) {
+// opts.ifAbsent=true のとき upsert は「最新スナップショットに同 id が無いときだけ挿入」する条件付き upsert に
+// なる（非破壊復元用）。restoreNotes/import/undo は読み取り時点で重複除外しても、set までの隙に reconcile が
+// 同 id を pull すると、陳腐な重複チェックを通った upsert が最新の pull 済みノートを無条件上書きしてしまう
+// （他端末の編集を握り潰す）。fresh に対して再チェックすれば非破壊復元の契約を最新スナップショットでも守れる（Codex）。
+async function _writeNotes(upserts, deletes, removed, opts) {
+  const ifAbsent = !!(opts && opts.ifAbsent);
   const withTombs = removed && removed.length;
   const raw = await chrome.storage.local.get(withTombs ? [STORAGE_KEYS.notes, LOCAL_TOMBS_KEY] : STORAGE_KEYS.notes);
   const fresh = raw[STORAGE_KEYS.notes] || {};
@@ -91,13 +96,16 @@ async function _writeNotes(upserts, deletes, removed) {
   for (const { domain, note } of upserts || []) {
     const arr = fresh[domain] || (fresh[domain] = []);
     const i = arr.findIndex((n) => n.id === note.id);
-    if (i >= 0) arr[i] = note;
+    if (i >= 0) { if (ifAbsent) continue; arr[i] = note; } // ifAbsent: 既存（pull 済み等）は温存
     else arr.push(note);
   }
   if (!withTombs) return chrome.storage.local.set({ [STORAGE_KEYS.notes]: fresh });
   const now = Date.now();
   const log = raw[LOCAL_TOMBS_KEY] || {};
-  for (const { domain, id } of removed) (log[domain] || (log[domain] = {}))[id] = now;
+  for (const { domain, id } of removed) {
+    if (!Object.prototype.hasOwnProperty.call(log, domain)) ownSet(log, domain, {});
+    ownSet(log[domain], id, now);
+  }
   gcLocalTombs(log, now);
   return chrome.storage.local.set({ [STORAGE_KEYS.notes]: fresh, [LOCAL_TOMBS_KEY]: log });
 }
@@ -108,6 +116,14 @@ async function _writeNotes(upserts, deletes, removed) {
 //   形: { [domain]: { [id]: deletedAt } }。local 専用。content.js も同キー・同構造へ書く（import 不可なので literal 複製）。
 export const LOCAL_TOMBS_KEY = "petarin:sync:localTombs";
 export const LOCAL_TOMB_TTL = 180 * 24 * 60 * 60 * 1000; // sync.js の TOMB_TTL と揃える
+
+// 継承プロパティ名（__proto__ / constructor / toString 等）の id・domain でも own な JSON 直列化可能
+// エントリを作る。素の obj[key]=v だと key="__proto__" は own プロパティを作らず prototype 差し替えに
+// なり（値が数値なら無視され）削除記録が永続化されない → 再 ON 時に reconcile が tomb 不在で stale な
+// cloud ノートを復活させる。defineProperty なら own+enumerable で残り、JSON 往復も汚染なく保たれる（Codex）。
+function ownSet(obj, key, val) {
+  Object.defineProperty(obj, key, { value: val, writable: true, enumerable: true, configurable: true });
+}
 
 // TTL 超過の削除記録を刈る（破壊的）。空ドメインはキーごと掃除。
 export function gcLocalTombs(log, now) {
@@ -216,7 +232,9 @@ export function restoreNotes(pairs) {
     for (const { domain, note } of pairs) {
       if (!(all[domain] || []).some((n) => n.id === note.id)) upserts.push({ domain, note });
     }
-    await _writeNotes(upserts, [], []);
+    // ifAbsent: set 直前の最新スナップショットに対しても「同 id が無いときだけ挿入」を再確認する。
+    // 読み取り〜set の隙に reconcile が同 id を pull していたら上書きせず温存（非破壊復元の契約。Codex）。
+    await _writeNotes(upserts, [], [], { ifAbsent: true });
   });
 }
 

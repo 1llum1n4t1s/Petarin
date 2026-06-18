@@ -87,6 +87,9 @@
   const noteEl = (id) => layer.querySelector(`.note[data-id="${esc(id)}"]`);
   const noteText = (note) => (typeof note.text === "string" ? note.text : "");
   const isEmpty = (note) => !noteText(note).trim();
+  // 継承プロパティ名（__proto__ 等）の key でも own な JSON 直列化可能エントリを作る（storage.js の同名と同義。
+  // 素の obj[key]=v だと key="__proto__" は own を作らず prototype 差し替えになる）。localTombs の id 記録に使う。
+  const ownSet = (obj, key, val) => Object.defineProperty(obj, key, { value: val, writable: true, enumerable: true, configurable: true });
 
   // 同ドメインの他の付箋と重複しないアイコンをランダムに選ぶ（出尽くしたら重複許容）
   function pickIcon(excludeId) {
@@ -210,8 +213,11 @@
         const now = Date.now();
         const log = raw[KEY_LOCAL_TOMBS] || {};
         if (removed.length) {
-          const dom = log[domain] || (log[domain] = {});
-          for (const id of removed) dom[id] = now;
+          // 継承プロパティ名（__proto__ 等）の id でも own な記録を残す（素の dom[id]=now だと
+          // id="__proto__" は own を作らず削除記録が消え、再 ON 時に stale cloud ノートが復活する。Codex）。
+          if (!Object.prototype.hasOwnProperty.call(log, domain)) ownSet(log, domain, {});
+          const dom = log[domain];
+          for (const id of removed) ownSet(dom, id, now);
         }
         for (const d of Object.keys(log)) { // TTL GC（同期しない local ログ）
           const dm = log[d];

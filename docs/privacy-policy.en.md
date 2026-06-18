@@ -22,9 +22,10 @@ The Extension includes an **optional** feature to sync your notes across multipl
 
 Only if you **turn it on yourself** in the "Notes Desk" settings, the notes for the domains you choose to sync are synchronized across your devices through your browser's built-in sync storage (`chrome.storage.sync`) — that is, via **the sync service provided by your browser vendor** (your Google, Microsoft, or Mozilla account, whichever you are signed into in your browser).
 
+- In addition, only if you **separately turn on** "appearance settings" sync, your display preferences (which edge notes cling to, color, on-page show/hide, and note placement) are also synced across your devices through the same path. The settings that control sync itself are kept per device and are never synced.
 - Data handled through this path is governed by your browser vendor's privacy policy. The developer cannot access it.
 - Sync only works within the same browser family (Chrome, Edge, and Firefox are separate silos; cross-browser sync is not possible).
-- You can turn it off at any time in the settings; no further external transmission occurs afterward.
+- Turning it off stops further sync (transmission) from this device, but data you have already synced remains in the browser's sync storage so your other devices can still use it (this action does not delete it).
 
 ## Why Each Permission Is Used
 

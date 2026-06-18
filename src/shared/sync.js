@@ -289,6 +289,16 @@ export function mergeDomainNotes(base, local, remote, domain, tomb, now, domTomb
     if (dead >= tsOf(win) || survivorUnchanged) continue;
     if (tomb[tk]) delete tomb[tk]; // 復活したので墓石を撤去
 
+    // 旧データ(icon 無し)の移行 churn を断つ。content.js は描画時に icon 無しノートへ決定的 icon を
+    // 付与するが updatedAt は据え置く。ページ未オープンの他端末は icon="" のまま残り、updatedAt 同値の
+    // LWW（同値は local 優先）で「空 icon ↔ 付与済み icon」を相互に上書きし合い毎サイクル push する。
+    // 勝者の icon が空でも、もう一方の生存版が icon を持っていればそれを採用すれば（icon は決定的移行ゆえ
+    // 失わせない）updatedAt を変えずに端末間で収束し、本物の編集（text 等の LWW）は壊さない（Codex）。
+    if (!win.icon) {
+      const iconned = candidates.find((c) => c.icon);
+      if (iconned) win = { ...win, icon: iconned.icon };
+    }
+
     out.push(win);
   }
 
@@ -890,6 +900,16 @@ async function _reconcile(opts) {
   //   ・remove を残り item set より前に置くことで、item/byte 上限ちょうどでの「1 ドメイン削除＋1 追加」が、
   //     削除前の枠を掴んだまま set されて一時的に上限超過し reject される事故を防ぐ（Codex#2）。
   //   削除が無い回は従来どおり一括 set（順序を割る必要なし）。
+  // opt-out レース: 関数冒頭で syncEnabled=true を読んだ後、merge/gzip 等の多数の await を跨ぐ間に
+  // ユーザーが同期を OFF にしたかもしれない。external な chrome.storage.sync への set/remove の直前に再読し、
+  // 既に無効化されていたら push 相を丸ごと中止する（OFF 後に編集を送信しない＝opt-out を尊重）。local 側の
+  // 反映（pull 方向）は既に適用済み＝安全。shadow も前進させず（早期 return）、再 ON 時に再 push される（Codex）。
+  if (!(await getSettings()).syncEnabled) {
+    report.abortedByOptOut = true;
+    for (const d of report.domains) if (d.synced) { d.synced = false; d.reason = d.reason || "opt_out"; }
+    report.settingsSynced = false;
+    return report;
+  }
   const hasSet = Object.keys(setOps).length > 0;
   let pushOk = true;
   try {

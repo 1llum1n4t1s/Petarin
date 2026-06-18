@@ -1664,9 +1664,113 @@ async function scenarioS56() {
   ok(!out3.some((n) => n.id === "realid"), "own の localTombs 記録がある id は削除として扱う（loggedDelete 健全）", JSON.stringify(out3.map((n) => n.id)));
 }
 
+// ════════════════════════════════════════════════════════════════
+// S57（Codex）: 旧データ(icon 無し)の render-time 移行 churn を merge 層で収束させる。
+//   content.js は描画時に icon 無しノートへ決定的 icon を付与するが updatedAt は据え置く。ページ未オープンの
+//   他端末は icon="" のまま残り、updatedAt 同値 LWW（同値は local 優先）で空 icon ↔ 付与済み icon を毎サイクル
+//   相互上書きする。勝者の icon が空でももう一方の生存版の icon を採れば updatedAt を変えず収束する。
+//   load-bearing: この採用が無いと空 icon の勝者がそのまま残り churn が止まらない。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS57() {
+  console.log("S57（Codex）旧 icon 移行の churn を merge で収束（空 icon の勝者へ他方の決定的 icon を採用）:");
+  const mod = await loadSync();
+  const now = 57_000_000;
+  // updatedAt 同値・片方だけ移行済み。LWW は同値で local 優先＝勝者は icon="".
+  const out = mod.mergeDomainNotes([], [note("X", "本文", now, { icon: "" })], [note("X", "本文", now, { icon: "🍎" })], "ex.com", {}, now, undefined);
+  const x = out.find((n) => n.id === "X");
+  ok(x && x.icon === "🍎", "空 icon の勝者へ他方の icon が採用される（churn 収束）", x ? JSON.stringify(x.icon) : "X 消失");
+  // 本物の編集（新しい updatedAt・icon 未設定）でも、もう一方の icon は失わない。
+  const out2 = mod.mergeDomainNotes([], [note("X", "新編集", now + 1000, { icon: "" })], [note("X", "旧", now, { icon: "🍎" })], "ex.com", {}, now + 2000, undefined);
+  const x2 = out2.find((n) => n.id === "X");
+  ok(x2 && x2.text === "新編集" && x2.icon === "🍎", "新編集を勝たせつつ icon は保持", x2 ? JSON.stringify({ t: x2.text, i: x2.icon }) : "X 消失");
+  // 両側 icon 空なら空のまま（不要な書き換えをしない）。
+  const out3 = mod.mergeDomainNotes([], [note("Y", "y", now, { icon: "" })], [note("Y", "y", now, { icon: "" })], "ex.com", {}, now, undefined);
+  const y = out3.find((n) => n.id === "Y");
+  ok(y && y.icon === "", "両側空 icon は空のまま（churn を生まない）", y ? JSON.stringify(y.icon) : "Y 消失");
+}
+
+// ════════════════════════════════════════════════════════════════
+// S58（Codex）: 予約名 id（__proto__）の削除でも localTombs に own 記録が残る（storage.js の書き込み経路）。
+//   素の dom[id]=now だと id="__proto__" は own を作らず prototype 差し替えになり削除記録が消える → 再 ON 時に
+//   reconcile が tomb 不在で stale な cloud ノートを復活させる。defineProperty で own+enumerable を保証する。
+//   load-bearing: ownSet が無いと own プロパティが作られず hasOwnProperty が偽になる。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS58() {
+  console.log("S58（Codex）予約名 id(__proto__) の削除でも localTombs に own 記録が残る:");
+  const { deleteNote } = await import("../src/shared/storage.js?dev=stg4");
+  const store = { [KEY_NOTES]: { "ex.com": [{ id: "__proto__", text: "x", color: "yellow", icon: "", posRatio: 0.5, createdAt: 1, updatedAt: 1 }] } };
+  const area = makeArea(store, {}, "local");
+  globalThis.chrome = { storage: { local: { get: area.get, set: area.set, remove: area.remove } } };
+  await deleteNote("ex.com", "__proto__");
+  const dom = (store[KEY_LOCAL_TOMBS] || {})["ex.com"] || {};
+  ok(Object.prototype.hasOwnProperty.call(dom, "__proto__"), "id=__proto__ の墓石が own プロパティとして残る", JSON.stringify(Object.keys(dom)));
+  ok(typeof dom["__proto__"] === "number", "墓石値が数値（実削除時刻）", JSON.stringify(dom["__proto__"]));
+  // JSON 往復でもプロトタイプ汚染なく own 記録が保たれる。
+  const round = JSON.parse(JSON.stringify(store[KEY_LOCAL_TOMBS]));
+  ok(Object.prototype.hasOwnProperty.call(round["ex.com"] || {}, "__proto__"), "JSON 往復後も own 記録が残る", JSON.stringify(Object.keys(round["ex.com"] || {})));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S59（Codex）: restoreNotes は set 直前の最新スナップショットに pull 済み同 id があれば上書きしない（非破壊復元）。
+//   読み取り時点で重複なし→ upsert を積む→ set 直前に reconcile が同 id を pull、という競合で陳腐な upsert が
+//   pull 済みノートを無条件上書きすると他端末の編集を握り潰す。_writeNotes の ifAbsent で fresh に対し再確認する。
+//   load-bearing: ifAbsent が無いと古い復元版で上書きされる。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS59() {
+  console.log("S59（Codex）restoreNotes は set 直前に pull 済み同 id があれば上書きしない:");
+  const { restoreNotes } = await import("../src/shared/storage.js?dev=stg5");
+  const store = { [KEY_NOTES]: {} }; // 復元開始時は空（読み取り時点で重複なし）
+  const area = makeArea(store, {}, "local");
+  let firstNotesRead = true;
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => {
+      const res = await area.get(keys);
+      const wantNotes = keys === KEY_NOTES || (Array.isArray(keys) && keys.includes(KEY_NOTES));
+      if (wantNotes && firstNotesRead) {
+        firstNotesRead = false; // 読み取り直後に reconcile が同 id を pull したと見立てる
+        store[KEY_NOTES] = { "ex.com": [note("X", "他端末の編集（pull 済み）", 9999)] };
+      }
+      return res;
+    },
+    set: area.set, remove: area.remove,
+  } } };
+  await restoreNotes([{ domain: "ex.com", note: note("X", "復元しようとした古い版", 1000) }]);
+  const x = (store[KEY_NOTES]["ex.com"] || []).find((n) => n.id === "X");
+  ok(x && x.text === "他端末の編集（pull 済み）", "pull 済みの最新版が温存され古い復元で上書きされない", x ? JSON.stringify(x.text) : "X 消失");
+}
+
+// ════════════════════════════════════════════════════════════════
+// S60（Codex）: push 直前に syncEnabled=false なら external な sync 書き込みを中止する（opt-out 尊重）。
+//   関数冒頭で syncEnabled=true を読んだ後、merge/gzip の await を跨ぐ間にユーザーが OFF にした競合。
+//   set/remove 直前に再読し無効化済みなら push 相を中止する（OFF 後に編集を送信しない）。
+//   load-bearing: 再読・中止が無いと冒頭スナップショットのまま cloud へ push してしまう。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS60() {
+  console.log("S60（Codex）push 直前に syncEnabled=false なら cloud 書き込みを中止する:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 60_000_000;
+  seedDevice(A, { notes: { "ex.com": [note("X", "本文", t0)] } });
+  const realGet = A.chrome.storage.local.get;
+  let settingsReads = 0;
+  A.chrome.storage.local.get = async (keys) => {
+    const res = await realGet(keys);
+    const wantSettings = keys === KEY_SETTINGS || (Array.isArray(keys) && keys.includes(KEY_SETTINGS));
+    if (wantSettings && ++settingsReads === 1) {
+      A.localStore[KEY_SETTINGS] = { ...A.localStore[KEY_SETTINGS], syncEnabled: false }; // 冒頭 read 直後に OFF
+    }
+    return res;
+  };
+  const report = await reconcileAs(A, mod, { now: t0 });
+  ok(report.abortedByOptOut === true, "report.abortedByOptOut が立つ", JSON.stringify({ a: report.abortedByOptOut }));
+  const wrote = Object.keys(sync).some((k) => k.startsWith("petarin:sync:n:"));
+  ok(!wrote, "opt-out 後は cloud に付箋 item を書かない", JSON.stringify(Object.keys(sync)));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56, scenarioS57, scenarioS58, scenarioS59, scenarioS60]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);
