@@ -9,7 +9,7 @@
 
 // 契約キーは storage.js を単一の源として参照する（literal 直書きだとキー変更時に追従漏れする。CodeRabbit 指摘）。
 // storage.js はモジュール本体で chrome を触らないので、chrome モック前に静的 import しても安全。
-import { LOCAL_TOMBS_KEY, MAX_CHARS, DEFAULT_COLOR } from "../src/shared/storage.js";
+import { LOCAL_TOMBS_KEY, MAX_CHARS, DEFAULT_COLOR, DEFAULT_SETTINGS } from "../src/shared/storage.js";
 
 let PASS = 0, FAIL = 0;
 function ok(cond, name, detail) {
@@ -1507,18 +1507,19 @@ async function scenarioS49() {
 
 // ════════════════════════════════════════════════════════════════
 // S50（Codex）: 同期 settings の不正値（side=bogus, 非数/範囲外の数値, 非boolean）は採用しない（型・範囲検証）。
-//   object-but-malformed は non-object ガードを通過するので値ごとに弾く。
+//   object-but-malformed は non-object ガードを通過するので値ごとに弾く。不正値は除外ではなく既定値へ
+//   フォールバックする（pick が SYNCABLE 全キーを既定で埋める＝absent-in-shadow を localChanged と誤認しない。S65）。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS50() {
-  console.log("S50（Codex）同期 settings の不正値（side=bogus 等）は採用しない（型・範囲検証）:");
+  console.log("S50（Codex）同期 settings の不正値（side=bogus 等）は採用しない＝既定へフォールバック:");
   const mod = await loadSync();
   const now = 50_000_000;
   const remote = { side: "bogus", creatorRatio: "x", translucentOpacity: 5, showOnPage: "yes", collapsedTranslucent: true };
   const res = mod.pickSettings(null, 0, {}, remote, now - 1, now); // 初回 pull 経路（base 無し＋remote）
-  ok(!("side" in res.settings), "不正な side は採用されない", JSON.stringify(res.settings));
-  ok(!("creatorRatio" in res.settings), "非数 creatorRatio は採用されない", JSON.stringify(res.settings));
-  ok(!("translucentOpacity" in res.settings), "範囲外 translucentOpacity は採用されない", JSON.stringify(res.settings));
-  ok(!("showOnPage" in res.settings), "非boolean showOnPage は採用されない", JSON.stringify(res.settings));
+  ok(res.settings.side === DEFAULT_SETTINGS.side, "不正な side は既定へフォールバック（採用しない）", JSON.stringify(res.settings));
+  ok(res.settings.creatorRatio === DEFAULT_SETTINGS.creatorRatio, "非数 creatorRatio は既定へフォールバック", JSON.stringify(res.settings));
+  ok(res.settings.translucentOpacity === DEFAULT_SETTINGS.translucentOpacity, "範囲外 translucentOpacity は既定へフォールバック", JSON.stringify(res.settings));
+  ok(res.settings.showOnPage === DEFAULT_SETTINGS.showOnPage, "非boolean showOnPage は既定へフォールバック", JSON.stringify(res.settings));
   ok(res.settings.collapsedTranslucent === true, "有効な collapsedTranslucent は採用される", JSON.stringify(res.settings));
 }
 
@@ -1898,9 +1899,35 @@ async function scenarioS64() {
   ok(x && x.color === "blue", "色変更は最新ノートに適用される", x ? JSON.stringify(x.color) : "");
 }
 
+// ════════════════════════════════════════════════════════════════
+// S65（Codex P2）: アップグレードで新フィールド（font/fontSize/lineNumbers/defaultColor）が旧 shadow に
+//   無くても、それを「ローカル変更」と誤認しない。pick が SYNCABLE 全キーを既定で埋めるので absent-in-shadow
+//   は「既定のまま」扱いになり、他端末が同期済みの非既定 font/color を既定で握り潰さない。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS65() {
+  console.log("S65（Codex P2）アップグレードで新フィールドが旧 shadow に無くても他端末の選択を既定で上書きしない:");
+  const mod = await loadSync();
+  const now = 65_000_000;
+  // 旧版が書いた shadow（新フィールドを持たない）。
+  const oldBase = { side: "right", collapsedTranslucent: true, translucentOpacity: 0.45, showOnPage: true, creatorRatio: 0.78 };
+  // local は getSettings 相当（新フィールドは既定）。remote は別の升級端末が font=yomogi を同期済み。
+  const local = { ...oldBase, font: "system", fontSize: 15, lineNumbers: false, defaultColor: "yellow" };
+  const remote = { ...oldBase, font: "yomogi", fontSize: 15, lineNumbers: false, defaultColor: "yellow" };
+  const res = mod.pickSettings(oldBase, now - DAY, local, remote, now - 1, now);
+  ok(res.settings.font === "yomogi", "他端末の font=yomogi を pull する（既定 system で握り潰さない）", JSON.stringify(res.settings.font));
+  ok(res.changedLocal === true && res.changedRemote === false, "remote 採用＝local へ反映し push はしない", JSON.stringify({ cl: res.changedLocal, cr: res.changedRemote }));
+  // 逆: この端末だけ font を変えた（remote は旧 shadow と同じ既定）なら push される。
+  const local2 = { ...oldBase, font: "klee", fontSize: 15, lineNumbers: false, defaultColor: "yellow" };
+  const res2 = mod.pickSettings(oldBase, now - DAY, local2, { ...oldBase }, now - 1, now);
+  ok(res2.settings.font === "klee" && res2.changedRemote === true, "自端末だけの font 変更は push される", JSON.stringify(res2.settings.font));
+  // 全端末が既定のままなら、移行直後に無駄な push/差分を出さない（churn 回避）。
+  const res3 = mod.pickSettings(oldBase, now - DAY, local, { ...oldBase }, now - 1, now);
+  ok(res3.changedLocal === false && res3.changedRemote === false, "全員既定なら移行で churn しない", JSON.stringify({ cl: res3.changedLocal, cr: res3.changedRemote }));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56, scenarioS57, scenarioS58, scenarioS59, scenarioS60, scenarioS61, scenarioS62, scenarioS63, scenarioS64]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56, scenarioS57, scenarioS58, scenarioS59, scenarioS60, scenarioS61, scenarioS62, scenarioS63, scenarioS64, scenarioS65]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);

@@ -340,8 +340,14 @@ function isValidSettingValue(k, v) {
 export function pickSettings(baseS, baseT, localS, remoteS, remoteT, now) {
   const pick = (s) => {
     const o = {};
-    // 型・範囲が妥当なフィールドだけ採用する（不正値は落として既定/ローカルにフォールバック。Codex）。
-    for (const k of SYNCABLE_SETTINGS) if (s && k in s && isValidSettingValue(k, s[k])) o[k] = s[k];
+    // 妥当な値があれば採用、無ければ既定値で埋める（不正値も既定へフォールバック。Codex）。
+    // 既定で埋めるのは「旧 shadow に存在しない新フィールド（font/fontSize/lineNumbers/defaultColor 等）」を
+    // 「ローカルでの変更」ではなく「既定のまま」として扱うため。埋めないと base にだけ無く local/remote には
+    // getSettings の既定が入り、localChanged を誤検出して、アップグレード時に他端末が同期済みの非既定の
+    // 書体/色を既定で上書きしてしまう（absent-in-shadow ≠ local edit。Codex P2）。
+    for (const k of SYNCABLE_SETTINGS) {
+      o[k] = s && k in s && isValidSettingValue(k, s[k]) ? s[k] : DEFAULT_SETTINGS[k];
+    }
     return o;
   };
   const eq = (a, b) => JSON.stringify(pick(a)) === JSON.stringify(pick(b));
