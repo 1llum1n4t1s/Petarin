@@ -72,8 +72,23 @@ function withLock(task) {
 function _getAllRaw() {
   return chrome.storage.local.get(STORAGE_KEYS.notes).then((r) => r[STORAGE_KEYS.notes] || {});
 }
-function _commit(all) {
-  return chrome.storage.local.set({ [STORAGE_KEYS.notes]: all });
+// 書き込み直前に最新の notes を読み直し、呼び出し側が変更した touched ドメインだけ all の結果で上書きする。
+// withLock は同一コンテキストの直列化しかしないため、_getAllRaw() から set までの間に background reconcile が
+// 別ドメインを pull すると、全 notes 丸ごと書き戻しでその pull を巻き戻してしまう。touched 以外は最新スナップ
+// ショットから引き継いで巻き戻さない（CAS 不在なので touched ドメイン自体の同時 pull までは守れない＝reconcile
+// が次回収束。Codex）。touched 未指定なら従来どおり all を丸ごと書く（後方互換）。
+async function _mergeFresh(all, touched) {
+  if (!touched || !touched.length) return all;
+  const fresh = await _getAllRaw();
+  for (const d of touched) {
+    if (Object.prototype.hasOwnProperty.call(all, d)) fresh[d] = all[d];
+    else delete fresh[d]; // ドメインごと削除された
+  }
+  return fresh;
+}
+async function _commit(all, touched) {
+  const merged = await _mergeFresh(all, touched);
+  return chrome.storage.local.set({ [STORAGE_KEYS.notes]: merged });
 }
 
 // 削除時刻のローカルログ（同期しない）。reconcile が tombstone を「reconcile 時刻 now」ではなく
@@ -96,14 +111,15 @@ export function gcLocalTombs(log, now) {
 // notes と localTombs を 1 回の set で同時に書く（removed: [{domain,id}]＝この書き込みで実際に消えた付箋）。
 // 同一 onChanged に notes が含まれるので background の reconcile が 1 回起き、その時点で localTombs は
 // 最新＝reconcile が実削除時刻を読める。removed が空なら notes だけ書く（従来の _commit と同じ）。
-async function _commitWithTombs(all, removed) {
-  if (!removed || !removed.length) return _commit(all);
+async function _commitWithTombs(all, removed, touched) {
+  if (!removed || !removed.length) return _commit(all, touched);
   const now = Date.now();
   const raw = await chrome.storage.local.get(LOCAL_TOMBS_KEY);
   const log = raw[LOCAL_TOMBS_KEY] || {};
   for (const { domain, id } of removed) (log[domain] || (log[domain] = {}))[id] = now;
   gcLocalTombs(log, now);
-  return chrome.storage.local.set({ [STORAGE_KEYS.notes]: all, [LOCAL_TOMBS_KEY]: log });
+  const merged = await _mergeFresh(all, touched); // touched 以外の他ドメイン pull を巻き戻さない（Codex）
+  return chrome.storage.local.set({ [STORAGE_KEYS.notes]: merged, [LOCAL_TOMBS_KEY]: log });
 }
 
 export function saveSettings(partial) {
@@ -134,7 +150,7 @@ export function saveNotes(domain, notes) {
     const removed = (all[domain] || []).filter((n) => !keep.has(n.id)).map((n) => ({ domain, id: n.id }));
     if (notes && notes.length) all[domain] = notes;
     else delete all[domain]; // 空になったドメインはキーごと掃除
-    await _commitWithTombs(all, removed);
+    await _commitWithTombs(all, removed, [domain]);
   });
 }
 
@@ -145,7 +161,7 @@ export function deleteNote(domain, id) {
     const left = (all[domain] || []).filter((n) => n.id !== id);
     if (left.length) all[domain] = left;
     else delete all[domain];
-    await _commitWithTombs(all, had ? [{ domain, id }] : []);
+    await _commitWithTombs(all, had ? [{ domain, id }] : [], [domain]);
   });
 }
 
@@ -158,7 +174,7 @@ export function updateNote(domain, id, patch) {
     const i = arr.findIndex((n) => n.id === id);
     if (i < 0) return;
     arr[i] = { ...arr[i], ...patch, updatedAt: Date.now() };
-    await _commit(all);
+    await _commit(all, [domain]);
   });
 }
 
@@ -176,7 +192,7 @@ export function deleteNotes(pairs) {
       if (left.length) all[domain] = left;
       else delete all[domain]; // 空になったドメインはキーごと掃除
     }
-    await _commitWithTombs(all, removed);
+    await _commitWithTombs(all, removed, Object.keys(byDomain));
   });
 }
 
@@ -193,7 +209,7 @@ export function restoreNotes(pairs) {
       const arr = all[domain] || (all[domain] = []);
       if (!arr.some((n) => n.id === note.id)) arr.push(note);
     }
-    await _commit(all);
+    await _commit(all, [...new Set(pairs.map((p) => p.domain))]);
   });
 }
 

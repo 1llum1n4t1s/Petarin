@@ -272,6 +272,12 @@ export function mergeDomainNotes(base, local, remote, domain, tomb, now, domTomb
     // さらに、墓石がある時に「生存版が base から未編集（tsOf 一致）」なら、updatedAt が（クロックスキューで）
     // 削除時刻より未来でも削除を優先する。これをしないと、時計が進んだ端末で作られた未編集ノートを他端末
     // から削除できない（未来日時のまま復活し続ける）。復活は base から実際に編集された版に限る（Codex/5c 指摘）。
+    // 墓石 deletedAt が壊れて非有限（オブジェクト/文字列等）だと、`>=` 比較が NaN になり「stale remote が
+    // 削除に勝った」と誤判定→truthy 墓石を delete してノートを復活＋cloud meta から backstop を消す（Codex）。
+    // 非有限なら now に修復して永続化し、削除の意図を尊重する（壊れた墓石でも「削除済み」を維持）。
+    if (tomb[tk] !== undefined && (typeof tomb[tk] !== "number" || !Number.isFinite(tomb[tk]))) {
+      tomb[tk] = now;
+    }
     const dead = tomb[tk] || 0;
     const survivorUnchanged = dead > 0 && !!b && tsOf(win) === tsOf(b);
     if (dead >= tsOf(win) || survivorUnchanged) continue;
@@ -287,10 +293,29 @@ export function mergeDomainNotes(base, local, remote, domain, tomb, now, domTomb
 
 // 設定（単一オブジェクト）の三方向マージ。SYNCABLE_SETTINGS のフィールドのみ対象。
 //  返り値: { settings, settingsT, changedLocal, changedRemote }
+// 同期由来 settings の各フィールドの型・範囲検証。non-object ガード（readSync）の後でも
+// `{s:{side:"bogus", creatorRatio:"x"}}` のような object-but-malformed は値が不正なまま通り、content.js が
+// side で CSS/軸を選び creatorRatio を座標に乗算するためレールが壊れる/ずれる。値ごとに検証して不正は採らない（Codex）。
+const VALID_SIDES = ["right", "left", "top", "bottom"];
+function isValidSettingValue(k, v) {
+  switch (k) {
+    case "side":
+      return VALID_SIDES.includes(v);
+    case "collapsedTranslucent":
+    case "showOnPage":
+      return typeof v === "boolean";
+    case "translucentOpacity":
+    case "creatorRatio":
+      return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
+    default:
+      return false;
+  }
+}
 export function pickSettings(baseS, baseT, localS, remoteS, remoteT, now) {
   const pick = (s) => {
     const o = {};
-    for (const k of SYNCABLE_SETTINGS) if (s && k in s) o[k] = s[k];
+    // 型・範囲が妥当なフィールドだけ採用する（不正値は落として既定/ローカルにフォールバック。Codex）。
+    for (const k of SYNCABLE_SETTINGS) if (s && k in s && isValidSettingValue(k, s[k])) o[k] = s[k];
     return o;
   };
   const eq = (a, b) => JSON.stringify(pick(a)) === JSON.stringify(pick(b));

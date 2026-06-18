@@ -9,7 +9,7 @@
 
 // 契約キーは storage.js を単一の源として参照する（literal 直書きだとキー変更時に追従漏れする。CodeRabbit 指摘）。
 // storage.js はモジュール本体で chrome を触らないので、chrome モック前に静的 import しても安全。
-import { LOCAL_TOMBS_KEY } from "../src/shared/storage.js";
+import { LOCAL_TOMBS_KEY, MAX_CHARS, DEFAULT_COLOR } from "../src/shared/storage.js";
 
 let PASS = 0, FAIL = 0;
 function ok(cond, name, detail) {
@@ -1338,8 +1338,8 @@ function normalizeImportedNoteRef(note, now) {
   if (posRatio < 0) posRatio = 0; else if (posRatio > 1) posRatio = 1;
   return {
     id: note.id,
-    text: typeof note.text === "string" ? note.text.slice(0, 2000) : "",
-    color: typeof note.color === "string" ? note.color : "yellow",
+    text: typeof note.text === "string" ? note.text.slice(0, MAX_CHARS) : "",
+    color: typeof note.color === "string" ? note.color : DEFAULT_COLOR,
     icon: typeof note.icon === "string" ? note.icon : "",
     posRatio,
     createdAt: num(note.createdAt, now),
@@ -1446,9 +1446,72 @@ async function scenarioS47() {
   ok(!sync[exKey], "cloud item が削除される（quota が空く）", String(!!sync[exKey]));
 }
 
+// ════════════════════════════════════════════════════════════════
+// S48（Codex）: storage の削除系は「最新を読み直し touched ドメインだけ上書き」で commit する。
+//   _getAllRaw()〜set の隙に reconcile が他ドメインを pull しても巻き戻さない。
+//   load-bearing: get フックで「caller の読み取り直後に b.com が pull された」状況を作り、b.com 残存を確認。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS48() {
+  console.log("S48（Codex）storage の削除は touched ドメインだけ最新へ適用（他ドメインの pull を巻き戻さない）:");
+  const { deleteNote } = await import("../src/shared/storage.js?dev=stg1");
+  const store = {};
+  const area = makeArea(store, {}, "local");
+  let firstNotesRead = true;
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => {
+      const res = await area.get(keys);
+      const wantNotes = keys === KEY_NOTES || (Array.isArray(keys) && keys.includes(KEY_NOTES));
+      if (wantNotes && firstNotesRead) {
+        firstNotesRead = false; // caller の最初の notes 読み取り直後に reconcile が b.com を pull したと見立てる
+        store[KEY_NOTES] = { "a.com": [note("X", "x", 1000), note("Y", "y", 1000)], "b.com": [note("Z", "pulled", 2000)] };
+      }
+      return res;
+    },
+    set: area.set,
+    remove: area.remove,
+  } } };
+  store[KEY_NOTES] = { "a.com": [note("X", "x", 1000), note("Y", "y", 1000)] }; // 初期（b.com はまだ無い）
+  await deleteNote("a.com", "X");
+  const fin = store[KEY_NOTES];
+  ok((fin["a.com"] || []).every((n) => n.id !== "X"), "a.com の X が削除される", JSON.stringify(fin["a.com"]));
+  ok(fin["b.com"] && fin["b.com"].some((n) => n.id === "Z"), "他ドメイン b.com の pull が巻き戻されない", JSON.stringify(fin["b.com"]));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S49（Codex）: 壊れた墓石 deletedAt（非有限＝オブジェクト/文字列）は now に修復して削除を維持する。
+//   旧コードは NaN 比較で「stale remote が勝った」と誤判定→truthy 墓石を delete し、ノート復活＋backstop 消失。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS49() {
+  console.log("S49（Codex）壊れた墓石 deletedAt（非有限）は修復して削除維持（復活＋backstop 消失を防ぐ）:");
+  const mod = await loadSync();
+  const base = 49_000_000;
+  const tk = "ex.com" + SEP + "V";
+  const tomb = { [tk]: { bad: 1 } }; // 非有限（オブジェクト）
+  const out = mod.mergeDomainNotes([note("V", "x", base - 1000)], [], [note("V", "x", base - 1000)], "ex.com", tomb, base, undefined);
+  ok(!out.some((n) => n.id === "V"), "壊れた墓石でも V は復活しない（削除維持）", JSON.stringify(out.map((n) => n.id)));
+  ok(typeof tomb[tk] === "number" && Number.isFinite(tomb[tk]), "壊れた墓石 deletedAt が有限値へ修復・永続化される", JSON.stringify(tomb[tk]));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S50（Codex）: 同期 settings の不正値（side=bogus, 非数/範囲外の数値, 非boolean）は採用しない（型・範囲検証）。
+//   object-but-malformed は non-object ガードを通過するので値ごとに弾く。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS50() {
+  console.log("S50（Codex）同期 settings の不正値（side=bogus 等）は採用しない（型・範囲検証）:");
+  const mod = await loadSync();
+  const now = 50_000_000;
+  const remote = { side: "bogus", creatorRatio: "x", translucentOpacity: 5, showOnPage: "yes", collapsedTranslucent: true };
+  const res = mod.pickSettings(null, 0, {}, remote, now - 1, now); // 初回 pull 経路（base 無し＋remote）
+  ok(!("side" in res.settings), "不正な side は採用されない", JSON.stringify(res.settings));
+  ok(!("creatorRatio" in res.settings), "非数 creatorRatio は採用されない", JSON.stringify(res.settings));
+  ok(!("translucentOpacity" in res.settings), "範囲外 translucentOpacity は採用されない", JSON.stringify(res.settings));
+  ok(!("showOnPage" in res.settings), "非boolean showOnPage は採用されない", JSON.stringify(res.settings));
+  ok(res.settings.collapsedTranslucent === true, "有効な collapsedTranslucent は採用される", JSON.stringify(res.settings));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);
