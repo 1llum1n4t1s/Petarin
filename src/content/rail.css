@@ -141,6 +141,36 @@
 /* 展開時の背（spine）はページ側の細い差し色帯にする（製本の背のようなフラットなアクセント）*/
 .note.expanded .spine { flex: 0 0 14px; background: var(--deep); }
 
+/* 編集面（行番号ガター＋テキストエリア）とプレビュー面の出し分け。
+   .note.editing → 編集面、.note.previewing → プレビュー面。*/
+.editor { display: none; flex: 1; min-height: 0; }
+.preview { display: none; flex: 1; min-height: 0; }
+.note.editing .editor { display: flex; }
+.note.previewing .preview { display: block; overflow-y: auto; }
+
+/* 行番号ガター（行番号 ON のときだけ表示）。textarea と同じ行高で右寄せ。*/
+.gutter {
+  display: none;
+  flex: 0 0 auto;
+  text-align: right;
+  padding: 2px 8px 2px 2px;
+  margin-right: 6px;
+  border-right: 1px solid color-mix(in srgb, var(--ink) 22%, transparent);
+  color: var(--ink);
+  opacity: 0.42;
+  font-family: var(--peta-font, inherit);
+  font-size: var(--peta-size, 15px);
+  line-height: 1.6;
+  white-space: pre;
+  overflow: hidden;          /* 数字はクリップ。スクロールは JS で textarea に同期 */
+  user-select: none;
+  -webkit-user-select: none;
+  min-width: 1.6em;
+}
+.editor.with-gutter .gutter { display: block; }
+/* 行番号 ON の間は折り返さない（論理行＝1 視覚行でガターと一致させる）。横はスクロール。*/
+.editor.with-gutter .ta { white-space: pre; overflow-x: auto; word-break: normal; }
+
 /* フラット：紙面（付箋の地色）にそのまま書く。フィールド枠・ベベル・影は付けない。*/
 .ta {
   flex: 1;
@@ -152,9 +182,9 @@
   background: transparent;
   color: var(--ink);
   caret-color: var(--ink); /* 文字色基準のキャレット＝淡い紙(白)でも濃い紙(黒)でも視認できる */
-  font: inherit;
-  font-size: 15px;
-  font-weight: 600;
+  font-family: var(--peta-font, inherit);
+  font-size: var(--peta-size, 15px);
+  font-weight: 500;
   line-height: 1.6;
   overflow-y: auto;         /* 複数行・あふれたらスクロール */
   white-space: pre-wrap;    /* 改行と折り返しを両立 */
@@ -166,8 +196,80 @@
 /* 選択ハイライト：deep を透過側へ寄せて紙色に重ねる（白でも黒でも文字が潰れない）*/
 .ta::selection { background: color-mix(in srgb, var(--deep) 42%, transparent); }
 
-/* 上端バー：右上に閉じる(×)ボタンを明示配置（削除＝ゴミ箱と取り違えない）*/
-.topbar { display: flex; align-items: center; justify-content: flex-end; flex: 0 0 auto; }
+/* ── プレビュー（Markdown 整形表示）。クリックで編集へ入れるよう手のひらカーソル。──────── */
+.preview {
+  color: var(--ink);
+  font-family: var(--peta-font, inherit);
+  font-size: var(--peta-size, 15px);
+  line-height: 1.7;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  cursor: text;
+  padding: 2px 2px;
+}
+.preview .pv-empty { opacity: 0.4; font-style: italic; }
+.preview > :first-child { margin-top: 0; }
+.preview > :last-child { margin-bottom: 0; }
+.preview p { margin: 0 0 0.5em; }
+.preview h1, .preview h2, .preview h3, .preview h4, .preview h5, .preview h6 {
+  margin: 0.6em 0 0.35em; line-height: 1.3; font-weight: 700;
+}
+.preview h1 { font-size: 1.5em; border-bottom: 1px solid color-mix(in srgb, var(--ink) 22%, transparent); padding-bottom: 0.15em; }
+.preview h2 { font-size: 1.32em; }
+.preview h3 { font-size: 1.18em; }
+.preview h4 { font-size: 1.06em; }
+.preview h5 { font-size: 0.98em; }
+.preview h6 { font-size: 0.92em; opacity: 0.85; }
+.preview strong { font-weight: 800; }
+.preview em { font-style: italic; }
+.preview del { opacity: 0.7; }
+.preview a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.preview ul, .preview ol { margin: 0 0 0.5em; padding-left: 1.5em; }
+.preview li { margin: 0.12em 0; }
+.preview blockquote {
+  margin: 0 0 0.5em; padding: 0.1em 0.8em;
+  border-left: 3px solid color-mix(in srgb, var(--deep) 70%, transparent);
+  opacity: 0.92;
+}
+.preview hr { border: 0; border-top: 1px solid color-mix(in srgb, var(--ink) 28%, transparent); margin: 0.7em 0; }
+.preview code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+  padding: 0.1em 0.35em; border-radius: 4px;
+}
+.preview pre {
+  margin: 0 0 0.5em; padding: 0.6em 0.8em; border-radius: 6px;
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+  overflow-x: auto;
+}
+.preview pre code { background: transparent; padding: 0; font-size: 0.86em; }
+
+/* 上端バー：左＝プレビュー/編集トグル、中ほど＝文字数、右＝閉じる(×)。*/
+.topbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.mode-btn {
+  width: 28px; height: 28px;
+  margin: -2px 0 0 -4px;
+  border: 0; border-radius: 8px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--ink);
+  opacity: 0.7;
+  transition: background 0.14s ease, opacity 0.14s ease;
+}
+.mode-btn:hover { background: rgba(0, 0, 0, 0.1); opacity: 1; }
+.mode-btn svg { width: 18px; height: 18px; }
+/* 文字数（編集中のみ表示）。右寄せして閉じるボタンの手前に置く。*/
+.charcount {
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  opacity: 0.55;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.note:not(.editing) .charcount { visibility: hidden; }
 .close-x {
   width: 28px; height: 28px;
   margin: -2px -4px 0 0;     /* 箱の角へ寄せる */

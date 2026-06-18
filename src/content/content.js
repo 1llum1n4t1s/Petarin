@@ -67,7 +67,33 @@
     translucentOpacity: 0.45,
     showOnPage: true,
     creatorRatio: 0.78,
+    font: "system",
+    fontSize: 15,
+    lineNumbers: false,
+    defaultColor: DEFAULT_COLOR,
   };
+
+  // 同梱フォント（shared/storage.js の FONTS と id 集合を一致させること。content は import 不可で手動複製）。
+  // 値が空＝端末標準スタック。それ以外は src/fonts/<file> を FontFace API で読む（ページ CSP 非依存）。
+  const SYSTEM_FONT_STACK =
+    '"Hiragino Maru Gothic ProN","Hiragino Maru Gothic Pro","Yu Gothic UI","BIZ UDPGothic","Segoe UI",system-ui,sans-serif';
+  const FONT_FILES = {
+    noto: "NotoSansJP-Regular.woff2",
+    plex: "IBMPlexSansJP-Regular.woff2",
+    zenkaku: "ZenKakuGothicNew-Regular.woff2",
+    lineseed: "LINESeedJP-Regular.woff2",
+    mplus2: "MPLUS2.woff2",
+    murecho: "Murecho.woff2",
+    udev: "UDEVGothicJPDOC-Regular.woff2",
+    plemol: "PlemolJP-Regular.woff2",
+    moralerspace: "MoralerspaceNeonJPDOC-Regular.woff2",
+    yomogi: "Yomogi-Regular.woff2",
+    klee: "KleeOne-Regular.woff2",
+    hachimaru: "HachiMaruPop-Regular.woff2",
+  };
+  const fontFamilyCss = (id) =>
+    FONT_FILES[id] ? `"PetaFont_${id}", ${SYSTEM_FONT_STACK}` : SYSTEM_FONT_STACK;
+  const loadedFonts = new Set(); // 読み込み済み（or 読み込み中）の font id（重複 fetch 防止）
 
   const DIM = {
     collapsed: { v: { w: 30, h: 32 }, h: { w: 26, h: 32 } }, // 格納タブ（高さは 2 倍）
@@ -245,6 +271,41 @@
     settingsWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
     await chrome.storage.local.set({ [KEY_SETTINGS]: next });
   }
+  // 「最後に選んだ色」を次の新規作成の既定色として永続化（persistCreatorRatio と同様に該当フィールドだけ重ね書き）。
+  async function persistDefaultColor(colorId) {
+    settings.defaultColor = colorId;
+    const fresh = (await chrome.storage.local.get(KEY_SETTINGS))[KEY_SETTINGS] || {};
+    const next = { ...DEFAULTS, ...fresh, defaultColor: colorId };
+    settingsWriteAt = Date.now();
+    await chrome.storage.local.set({ [KEY_SETTINGS]: next });
+  }
+
+  // ── 同梱フォントの遅延読み込み（FontFace API＝ArrayBuffer 直渡しでページ CSP を回避）──
+  // chrome.runtime.getURL の fetch は content script 文脈で許可され、ページの font-src CSP に縛られない。
+  // 読み込んだ FontFace は document.fonts に足すと Shadow DOM 内のテキストにも適用される。
+  async function ensureFont(id) {
+    const file = FONT_FILES[id];
+    if (!file || loadedFonts.has(id)) return;
+    loadedFonts.add(id); // 先に印を付けて多重 fetch を防ぐ（失敗時は下で解除）
+    try {
+      const buf = await (await fetch(chrome.runtime.getURL(`src/fonts/${file}`))).arrayBuffer();
+      const ff = new FontFace(`PetaFont_${id}`, buf, { display: "swap" });
+      await ff.load();
+      document.fonts.add(ff);
+    } catch (e) {
+      loadedFonts.delete(id); // 次回再試行できるように
+      console.warn("[petarin] フォント読み込みに失敗（標準フォントで表示）:", id, e);
+    }
+  }
+  // レール全体に現在のフォント／サイズを反映（CSS 変数）。選択フォントは遅延ロード。
+  function applyFont() {
+    if (!layer) return;
+    const id = FONT_FILES[settings.font] ? settings.font : "system";
+    const size = Number.isFinite(settings.fontSize) ? clamp(settings.fontSize, 8, 96) : 15;
+    layer.style.setProperty("--peta-font", fontFamilyCss(id));
+    layer.style.setProperty("--peta-size", size + "px");
+    if (id !== "system") ensureFont(id);
+  }
 
   // ── DOM ヘルパ ────────────────────────────────────────────────────
   function el(tag, props = {}, ...kids) {
@@ -279,6 +340,8 @@
   }
   const ICON_CLOSE = ["M6 6 18 18", "M18 6 6 18"];                                  // ×
   const ICON_TRASH = ["M4 7h16", "M9 7V5h6v2", "M6 7l1 13h10l1-13", "M10 10.5v6", "M14 10.5v6"]; // ゴミ箱
+  const ICON_EDIT = ["M4 20h4L18.5 9.5a2 2 0 0 0-2.83-2.83L5 17.17V20z", "M14 8l2 2"]; // ✎ 編集へ
+  const ICON_EYE = ["M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z", "M12 9.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6z"]; // 👁 プレビューへ
 
   // ── 初期化 ────────────────────────────────────────────────────────
   async function init() {
@@ -386,6 +449,7 @@
     layer.dataset.side = settings.side;
     layer.dataset.translucent = settings.collapsedTranslucent ? "1" : "0";
     layer.style.setProperty("--peta-dim", String(settings.translucentOpacity));
+    applyFont();
 
     const frag = document.createDocumentFragment();
     for (const note of notes) frag.append(buildNote(note));
@@ -442,19 +506,40 @@
 
     const body = el("div", { class: "body" });
 
-    // 上端バー：右上に「閉じる(×)」を明示配置（削除＝ゴミ箱と取り違えないように分離）。
+    // 上端バー：左＝プレビュー/編集トグル＋文字数、右＝閉じる(×)（削除＝ゴミ箱と取り違えないよう分離）。
     const topbar = el("div", { class: "topbar" });
+    const modeBtn = el("button", { class: "mode-btn", type: "button", tabindex: "-1" });
+    modeBtn.addEventListener("pointerdown", (e) => e.preventDefault());
+    modeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (editingId === note.id) exitEdit(note.id); // 編集 → プレビュー
+      else enterEdit(note.id);                       // プレビュー → 編集
+    });
+    const charCount = el("span", { class: "charcount", "aria-hidden": "true" });
     const closeBtn = el("button", { class: "close-x", type: "button", tabindex: "-1", title: "閉じる", "aria-label": "閉じる" }, svgIcon(ICON_CLOSE, 2));
     closeBtn.addEventListener("pointerdown", (e) => e.preventDefault());
     closeBtn.addEventListener("click", (e) => { e.stopPropagation(); toggle(note.id); }); // 展開中なので畳む
-    topbar.append(closeBtn);
+    topbar.append(modeBtn, charCount, closeBtn);
     body.append(topbar);
 
-    // 本文（複数行・普通の付箋のように自由に書ける）。展開中は常に編集可能。
-    const ta = el("textarea", { class: "ta", maxlength: String(MAX_CHARS), placeholder: "ここに書いてね", spellcheck: "false" });
+    // 編集面：行番号ガター＋テキストエリア（生の Markdown コードを書く）。
+    const editor = el("div", { class: "editor" });
+    const gutter = el("div", { class: "gutter", "aria-hidden": "true" });
+    const ta = el("textarea", { class: "ta", maxlength: String(MAX_CHARS), placeholder: "ここに書いてね（Markdown 対応）", spellcheck: "false" });
     ta.value = noteText(note);
     bindEditor(ta, note, wrap);
-    body.append(ta);
+    editor.append(gutter, ta);
+    body.append(editor);
+
+    // プレビュー面：Markdown を整形して表示（非編集時）。クリックで編集へ（リンクはそのまま開く）。
+    const preview = el("div", { class: "preview" });
+    preview.addEventListener("pointerdown", (e) => { if (!e.target.closest("a")) e.stopPropagation(); });
+    preview.addEventListener("click", (e) => {
+      if (e.target.closest("a")) return; // リンクは普通に開く（編集に入らない）
+      e.stopPropagation();
+      enterEdit(note.id);
+    });
+    body.append(preview);
 
     // 下端ツールバー：絵文字｜色｜（余白）｜削除
     const bar = el("div", { class: "toolbar" });
@@ -483,6 +568,7 @@
         note.color = col.id;
         note.updatedAt = Date.now();
         upsertNotePersist(note);
+        persistDefaultColor(col.id); // 「最後に選んだ色」＝次の新規作成の初期色として記憶
         wrap.style.setProperty("--paper", col.paper);
         wrap.style.setProperty("--deep", col.deep);
         wrap.style.setProperty("--ink", col.ink);
@@ -561,18 +647,101 @@
     activeIconPicker = { picker, btn, onDown, onKey };
   }
 
-  // 状態（展開/編集）を要素へ反映。クラス切り替えで width などがトランジションする。
+  // 状態（展開／編集 or プレビュー）を要素へ反映。クラス切り替えで width などがトランジションする。
+  // 展開中はさらに editing（生の Markdown を編集）と previewing（整形表示）の 2 サブ状態を持つ。
   function applyState(wrap, note) {
     const isExp = expanded.has(note.id);
+    const isEdit = isExp && editingId === note.id;
     wrap.classList.toggle("expanded", isExp);
-    wrap.classList.toggle("editing", editingId === note.id); // フォーカス中の箱を強調
+    wrap.classList.toggle("editing", isEdit);
+    wrap.classList.toggle("previewing", isExp && !isEdit);
     place(wrap, note.posRatio, isExp ? expandedDim() : collapsedDim());
 
     const ta = wrap.querySelector(".ta");
-    if (ta) ta.readOnly = !isExp; // 展開中は常に編集可能（普通の付箋のように直接書ける）
+    if (ta) ta.readOnly = !isEdit; // 編集サブ状態のときだけ書き込み可
     wrap.classList.add("has-icon"); // 格納時は絵文字を表示（旧データは buildNote で自動付与）
     const head = wrap.querySelector(".spine .head");
     if (head) head.textContent = note.icon || "";
+
+    if (isExp) {
+      if (isEdit) {
+        const editor = wrap.querySelector(".editor");
+        if (editor) editor.classList.toggle("with-gutter", !!settings.lineNumbers);
+        updateGutter(wrap);
+        updateCharCount(wrap);
+      } else {
+        renderPreview(wrap, note);
+      }
+      updateModeBtn(wrap, isEdit);
+    }
+  }
+
+  // プレビュー面に Markdown を整形描画（空なら淡いプレースホルダ）。innerHTML を使わず DOM で組む。
+  function renderPreview(wrap, note) {
+    const pv = wrap.querySelector(".preview");
+    if (!pv) return;
+    const text = noteText(note);
+    if (!text.trim()) {
+      pv.replaceChildren(el("p", { class: "pv-empty" }, "（まだ何も書かれていません。クリックで編集）"));
+      return;
+    }
+    if (globalThis.PetaMD && typeof globalThis.PetaMD.render === "function") {
+      pv.replaceChildren(globalThis.PetaMD.render(text));
+    } else {
+      pv.replaceChildren(el("p", {}, text)); // 念のためのフォールバック（生テキスト）
+    }
+  }
+
+  // 行番号ガターを textarea の論理行数ぶん作る（行番号 ON のときのみ）。スクロールは bindEditor で同期。
+  function updateGutter(wrap) {
+    const g = wrap.querySelector(".gutter");
+    const ta = wrap.querySelector(".ta");
+    if (!g || !ta) return;
+    if (!settings.lineNumbers) { g.textContent = ""; return; }
+    const lines = ta.value.split("\n").length;
+    let s = "1";
+    for (let i = 2; i <= lines; i++) s += "\n" + i;
+    g.textContent = s;
+    g.scrollTop = ta.scrollTop;
+  }
+
+  // 文字数表示（編集中のみ意味を持つ）。maxlength は UTF-16 単位なので length をそのまま使う。
+  function updateCharCount(wrap) {
+    const cc = wrap.querySelector(".charcount");
+    const ta = wrap.querySelector(".ta");
+    if (!cc || !ta) return;
+    cc.textContent = `${ta.value.length} / ${MAX_CHARS}`;
+  }
+
+  // プレビュー/編集トグルボタンの見た目（編集中＝👁プレビューへ / プレビュー中＝✎編集へ）。
+  function updateModeBtn(wrap, isEdit) {
+    const btn = wrap.querySelector(".mode-btn");
+    if (!btn) return;
+    btn.replaceChildren(svgIcon(isEdit ? ICON_EYE : ICON_EDIT));
+    btn.title = isEdit ? "プレビュー表示にする" : "編集する（Markdown）";
+    btn.setAttribute("aria-label", btn.title);
+  }
+
+  // プレビュー → 編集（生 Markdown）へ。
+  function enterEdit(id) {
+    const note = notes.find((n) => n.id === id);
+    const wrap = noteEl(id);
+    if (!note || !wrap || !expanded.has(id)) return;
+    editingId = id;
+    applyState(wrap, note);
+    focusEditor(id);
+  }
+
+  // 編集 → プレビューへ（箱は開いたまま）。保存を確定して整形表示に戻す。
+  function exitEdit(id) {
+    const note = notes.find((n) => n.id === id);
+    const wrap = noteEl(id);
+    if (!note || !wrap) return;
+    if (editingId === id) editingId = null;
+    const ta = wrap.querySelector(".ta");
+    if (ta && root.activeElement === ta) ta.blur(); // 保存＋取りこぼし取り込みは blur ハンドラが担う
+    upsertNotePersist(note);
+    applyState(wrap, note); // blur の発火タイミングに依存せず、即座にプレビューへ切り替える
   }
 
   function buildCreator() {
@@ -646,9 +815,15 @@
     } else {
       collapseAll();        // 大きい箱は重ねない＝開く前に他の展開を畳む（アコーディオン）
       expanded.add(id);     // 端からスライドして箱が出る
-      editingId = id;       // 開いたら即編集（普通の付箋のように直接書ける）
-      applyState(wrap, note);
-      focusEditor(id);      // 本文へフォーカス
+      // 中身があればまずプレビュー（整形表示）、空なら即編集（新規作成と同じ書き心地）。
+      if (isEmpty(note)) {
+        editingId = id;
+        applyState(wrap, note);
+        focusEditor(id);
+      } else {
+        editingId = null;
+        applyState(wrap, note); // プレビュー描画
+      }
     }
     updateCloseAll();
   }
@@ -676,7 +851,7 @@
     const note = {
       id: `n_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
       text: "",
-      color: DEFAULT_COLOR,
+      color: colorOf(settings.defaultColor).id, // 「最後に選んだ色」で開始（未知 id は黄にフォールバック）
       icon: pickIcon(null), // 既定は重複しない絵文字を自動付与（格納時はこれを表示）
       posRatio: clamp(settings.creatorRatio - 0.18 - notes.length * 0.015, 0.02, 0.96),
       createdAt: Date.now(),
@@ -713,11 +888,13 @@
 
   function collapseAll() {
     if (!expanded.size) return;
-    const active = root.activeElement;
-    if (active && active.blur) active.blur();
+    // 先に展開・編集状態を解除してから blur する。こうすると textarea の blur ハンドラが
+    // 「箱はまだ開いている」と誤認してプレビューへ戻す処理を走らせない（閉じる動作を優先）。
     const ids = [...expanded];
     expanded.clear();
     editingId = null;
+    const active = root.activeElement;
+    if (active && active.blur) active.blur();
     const removedIds = [];
     for (const id of ids) {
       const note = notes.find((n) => n.id === id);
@@ -748,11 +925,17 @@
     render();
   }
 
-  // ── エディタ（普通の付箋のように複数行を自由に書ける）──────────────
+  // ── エディタ（生の Markdown コードを複数行で書く。非編集時はプレビューへ）──────────
   function bindEditor(ta, note, wrap) {
     let saveTimer = 0;
     const queueSave = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => upsertNotePersist(note), 280); };
-    const commit = () => { note.text = ta.value; note.updatedAt = Date.now(); queueSave(); };
+    const commit = () => {
+      note.text = ta.value;
+      note.updatedAt = Date.now();
+      updateGutter(wrap);   // 行数が変われば行番号も更新
+      updateCharCount(wrap); // 文字数表示を更新
+      queueSave();
+    };
 
     // ページ側のキーボードショートカットに入力を奪われないよう伝播を止める。
     // 改行（Enter）はそのまま通す＝複数行入力を許可する。Esc だけは閉じる動作に充てる。
@@ -767,10 +950,16 @@
     ta.addEventListener("input", (e) => { e.stopPropagation(); commit(); });
     ta.addEventListener("compositionend", commit); // IME 確定後の最終値も保存
     ta.addEventListener("focus", () => { editingId = note.id; }); // フォーカス中の箱を編集対象に
+    // 行番号ガターを縦スクロールに追従させる。
+    ta.addEventListener("scroll", () => { const g = wrap.querySelector(".gutter"); if (g) g.scrollTop = ta.scrollTop; });
     ta.addEventListener("blur", () => {
       clearTimeout(saveTimer);
-      // 保存が確定してから取りこぼし分を取り込む（順序を保証）
+      const stillOpen = expanded.has(note.id);
+      if (editingId === note.id) editingId = null;
+      // 保存が確定してから取りこぼし分を取り込む（順序を保証）。
       upsertNotePersist(note).finally(() => syncCatchUp());
+      // 箱が開いたまま編集を抜けた（＝閉じてはいない）なら、整形プレビューに戻す。
+      if (stillOpen && expanded.has(note.id)) applyState(wrap, note);
     });
     // 格納中（readonly）はクリックでキャレットを出さない。トグルへの伝播も止める。
     ta.addEventListener("pointerdown", (e) => {
