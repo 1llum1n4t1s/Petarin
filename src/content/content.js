@@ -193,27 +193,38 @@
   function removeNotesPersist(ids) {
     const drop = new Set(ids);
     return withWrite(async () => {
-      const raw = await chrome.storage.local.get([KEY_NOTES, KEY_LOCAL_TOMBS]);
-      const all = raw[KEY_NOTES] || {};
-      const before = all[domain] || [];
-      const removed = before.filter((n) => n && drop.has(n.id)).map((n) => n.id);
-      const list = before.filter((n) => n && !drop.has(n.id));
-      if (list.length) all[domain] = list;
-      else delete all[domain]; // 空になったドメインはキーごと掃除
-      // 実削除時刻を localTombs へ記録（notes と同一 set で書く＝reconcile が最新を読める。Codex#5）。
-      const now = Date.now();
-      const log = raw[KEY_LOCAL_TOMBS] || {};
-      if (removed.length) {
-        const dom = log[domain] || (log[domain] = {});
-        for (const id of removed) dom[id] = now;
+      // upsert と同じ楽観的並行制御。毎回「最新を読む→対象 id だけ削除して当てる→set 直前に再読し、ベースが
+      // 変わっていたら（reconcile が他ドメイン/他付箋を pull）最新へ当て直す」。全 notes 丸ごと書き戻しで pull を
+      // 巻き戻さない（次回 reconcile が無関係付箋に tombstone を立てる誤動作を防ぐ。Codex）。最終試行は最善努力。
+      const MAX = 4;
+      for (let attempt = 0; attempt < MAX; attempt++) {
+        const raw = await chrome.storage.local.get([KEY_NOTES, KEY_LOCAL_TOMBS]);
+        const all = raw[KEY_NOTES] || {};
+        const baseJSON = JSON.stringify(all);
+        const before = all[domain] || [];
+        const removed = before.filter((n) => n && drop.has(n.id)).map((n) => n.id);
+        const list = before.filter((n) => n && !drop.has(n.id));
+        if (list.length) all[domain] = list;
+        else delete all[domain]; // 空になったドメインはキーごと掃除
+        // 実削除時刻を localTombs へ記録（notes と同一 set で書く＝reconcile が最新を読める。Codex#5）。
+        const now = Date.now();
+        const log = raw[KEY_LOCAL_TOMBS] || {};
+        if (removed.length) {
+          const dom = log[domain] || (log[domain] = {});
+          for (const id of removed) dom[id] = now;
+        }
+        for (const d of Object.keys(log)) { // TTL GC（同期しない local ログ）
+          const dm = log[d];
+          for (const id of Object.keys(dm)) if (now - (dm[id] || 0) > LOCAL_TOMB_TTL) delete dm[id];
+          if (!Object.keys(dm).length) delete log[d];
+        }
+        // set 直前に notes を再読。ベースが変わっていたら最新で当て直す（最終試行は強行＝削除を取りこぼさない）。
+        const cur = JSON.stringify((await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {});
+        if (cur !== baseJSON && attempt < MAX - 1) continue;
+        notesWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
+        await chrome.storage.local.set({ [KEY_NOTES]: all, [KEY_LOCAL_TOMBS]: log });
+        break;
       }
-      for (const d of Object.keys(log)) { // TTL GC（同期しない local ログ）
-        const dm = log[d];
-        for (const id of Object.keys(dm)) if (now - (dm[id] || 0) > LOCAL_TOMB_TTL) delete dm[id];
-        if (!Object.keys(dm).length) delete log[d];
-      }
-      notesWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
-      await chrome.storage.local.set({ [KEY_NOTES]: all, [KEY_LOCAL_TOMBS]: log });
     });
   }
   async function persistCreatorRatio() {

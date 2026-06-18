@@ -657,17 +657,12 @@ async function _reconcile(opts) {
     // 判定ではなく「キーが在るか」で数え、生 item の実サイズで会計する（Codex#1）。
     settingsBytes = bytesOf({ [SYNC_KEYS.settings]: sync.rawSettings }); settingsItems = 1;
   }
-  // 取り込めなかった note item（orphan）も cloud に残り総容量と item 数を占有する（Codex#4）。ただし orphan の
-  // key が in-scope ドメインの domainKey と一致する場合、そのドメインの sync.set がこの slot を上書きする＝新規
-  // 占有しないので会計から除く（二重計上で誤って item_limit/quota_exceeded にしない。Codex）。
-  const inScopeKeys = new Set(domains.map(domainKey));
-  let orphanBytesEff = 0, orphanCountEff = 0;
-  for (const [k, b] of sync.orphanKeyBytes) {
-    if (inScopeKeys.has(k)) continue; // 当該 in-scope ドメインの書き込みが上書きする slot＝重複計上しない
-    orphanBytesEff += b;
-    orphanCountEff += 1;
-  }
-  let used = metaBytes + settingsBytes + orphanBytesEff;
+  // 取り込めなかった note item（orphan）も cloud に残り総容量と item 数を占有する（Codex#4）。まず全 orphan を
+  // baseline に計上する。orphan の key が in-scope ドメインの domainKey と一致しても、そのドメインが実際に書かれる
+  // とは限らない（domain_too_large/item_limit/quota_exceeded/delete_deferred で skip されると orphan は cloud に
+  // 残る）。先に一律除外すると skip 時に baseline から落ちたまま orphan が残り undercount→write_failed になる。
+  // よって「書き込みが実際に accept された key の orphan だけ」をループ内で差し引く（Codex 再指摘）。
+  let used = metaBytes + settingsBytes + sync.orphanBytes;
   // 今回スコープ外で手を付けない既存 cloud item も storage.sync の総容量(100KB)を占有する。これを
   // used に算入しないと、selected スコープで他端末/他サイトの同期データを見落として実 quota を超える
   // 書き込みを試み write_failed を繰り返す（本来は低優先ドメインを決定的に skip すべき。Codex 指摘）。
@@ -679,7 +674,7 @@ async function _reconcile(opts) {
   // バイト予算を通過して setOps に積まれ、バッチが item 超過で write_failed になる。残る item 数も
   // 数えて、超える低優先ドメインは決定的に skip する（Codex 指摘）。meta=1・settings・スコープ外
   // 既存 item を初期計上し、in-scope で同期する／退避で残るドメインごとに +1。
-  let itemCount = 1 /* meta */ + settingsItems + orphanCountEff;
+  let itemCount = 1 /* meta */ + settingsItems + sync.orphanCount;
   for (const d of Object.keys(sync.rawByDomain)) if (!domainSet.has(d)) itemCount += 1;
   const ordered = domains
     .map((d) => ({ d, latest: Math.max(0, ...((mergedByDomain[d] || []).map(tsOf))) }))
@@ -766,6 +761,11 @@ async function _reconcile(opts) {
     // 符号化（スキーマ圧縮＋必要なら gzip。小さい方を採用）。容量判定は符号化後のサイズで行う。
     const item = await encodeDomainItem(domain, merged, key);
     const size = bytesOf({ [key]: item });
+    // この key に orphan が居れば、書き込みはその slot を上書きする＝差し引きで純増は size-ov バイト・1-ovSlot
+    // item。orphan は baseline に計上済みなので、accept された時だけ差し引く（skip 時は orphan が cloud に残る
+    // ので差し引かない＝undercount しない。Codex 再指摘）。
+    const ov = sync.orphanKeyBytes.get(key) || 0;
+    const ovSlot = sync.orphanKeyBytes.has(key) ? 1 : 0;
     // skip するドメインでも、既存 cloud item があれば remove せず残る＝item/バイトを占有し続ける。
     // 後続ドメインの判定が実体とズレて write_failed に倒れないよう、残存分を会計に積む（Codex#12）。
     const retainExisting = () => {
@@ -777,20 +777,21 @@ async function _reconcile(opts) {
       retainExisting();
       continue; // shadow は pre-seed の remote を保持（base を失わない）
     }
-    if (itemCount + 1 > SYNC_LIMITS.MAX_ITEMS) {
-      // item 数上限(512)超過 → このドメインは sync しない（決定的 skip で write_failed を避ける）
+    if (itemCount + 1 - ovSlot > SYNC_LIMITS.MAX_ITEMS) {
+      // item 数上限(512)超過 → このドメインは sync しない（決定的 skip で write_failed を避ける）。orphan slot を
+      // 上書きする場合は純増 0 なので差し引いて判定する。
       report.domains.push({ domain, count: merged.length, synced: false, reason: "item_limit" });
       retainExisting();
       continue; // shadow は pre-seed の remote を保持（base を失わない）
     }
-    if (used + size > totalBudget) {
-      // 合計 100KB 予算を超過 → 古いドメインから溢れる（未同期バッジ）
+    if (used + size - ov > totalBudget) {
+      // 合計 100KB 予算を超過 → 古いドメインから溢れる（未同期バッジ）。orphan を上書きする分は差し引く。
       report.domains.push({ domain, count: merged.length, synced: false, reason: "quota_exceeded" });
       retainExisting();
       continue; // shadow は pre-seed の remote を保持（base を失わない）
     }
-    used += size;
-    itemCount += 1;
+    used += size - ov;        // orphan を上書きするなら純増は size-ov
+    itemCount += 1 - ovSlot;  // orphan slot を再利用するなら item 数は増えない
     // 書き込み要否は「符号化形 同士」で比較する（生 Note で比較すると展開時の正規化差で
     // 無限 re-push になりうるため）。
     if (JSON.stringify(sync.rawByDomain[domain] || null) !== JSON.stringify(item)) {

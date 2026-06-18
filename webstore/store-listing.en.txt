@@ -9,7 +9,7 @@ Chrome Web Store listing (English)
 Petarin
 
 ■ Summary (max 132 chars)
-Per-domain sticky notes for web pages. They cling to the screen edge and tuck away until needed. Manage all from the popup. Local-only.
+Per-domain sticky notes for web pages. They cling to the screen edge and tuck away until needed. Manage all from the popup. Local by default (optional multi-PC sync).
 
 ■ Description (max 16,000 chars)
 Petarin lets you stick notes to web pages, scoped to each site's domain. Notes cling to the edge of the screen and stay neatly tucked away so they never get in the way — open them only when you need them.
@@ -31,8 +31,11 @@ Opened a lot of notes? Click outside the page, press Esc, or use the "collapse a
 🔹 See everything from the popup and manager
 From the toolbar icon, browse every saved note grouped per domain. Search notes and sites, jump to a domain from its note card, choose the placement (right/left/top/bottom), toggle translucency, and turn the on-page rail on or off.
 
-🔹 Privacy first — zero external transmission
-Notes and settings are stored entirely in the browser's local storage (storage.local) and are never sent to any external server. No account required.
+🔹 Privacy first — zero external transmission by default
+By default, notes and settings are stored entirely in the browser's local storage (storage.local) and are never sent to any server operated by the developer. No account required.
+
+🔹 Multi-PC sync (optional, off by default)
+Only if you turn it on yourself in the manager (Notes Desk), the notes for the domains you choose are synced across your devices through the browser's built-in sync storage (storage.sync) — that is, via your browser's own sync service (Google / Microsoft / Mozilla, whichever you are signed into). It is off by default, and while off there is zero external transmission. Sync works only within the same browser family (Chrome, Edge, and Firefox are separate silos).
 
 ------------------------------------------------------------
 
@@ -58,7 +61,7 @@ Stick notes to the edge of the screen, scoped to each page's domain, and manage 
 ■ Permission justification
 
   storage:
-  To save the notes (text, color, icon, placement) and user settings (placement, translucency, on-page toggle) only in on-device storage (chrome.storage.local). Nothing is sent to any external server.
+  To save the notes (text, color, icon, placement) and user settings (placement, translucency, on-page toggle) in on-device storage (chrome.storage.local). Nothing is sent to any server operated by the developer. Only if the user turns on optional multi-PC sync, the notes for the selected domains are synced across the user's devices through the browser's built-in sync storage (chrome.storage.sync); off by default.
 
   activeTab:
   To determine the domain of the current tab in the popup and the management page (note desk) so the notes for that domain can be listed and shown. The tab's page content is not read.
@@ -66,7 +69,7 @@ Stick notes to the edge of the screen, scoped to each page's domain, and manage 
 ■ Host permission justification
 
   http://*/* and https://*/*:
-  To draw the sticky-note rail (content script) at the edge of every http(s) page so notes can be stuck on each page. The rail is rendered in an isolated Shadow DOM only; it never reads or modifies the page DOM (no interference with the page's own content) and performs no external transmission. Note data is stored only in on-device chrome.storage.local.
+  To draw the sticky-note rail (content script) at the edge of every http(s) page so notes can be stuck on each page. The rail is rendered in an isolated Shadow DOM only; it never reads or modifies the page DOM (no interference with the page's own content) and performs no external transmission. Note data is stored in on-device chrome.storage.local (and, if the user turns on optional multi-PC sync, via chrome.storage.sync through the browser's sync service).
 
 ■ Are you using remote code?
 No

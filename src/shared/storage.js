@@ -121,9 +121,21 @@ export function gcLocalTombs(log, now) {
 
 export function saveSettings(partial) {
   return withLock(async () => {
-    const current = await getSettings();
-    const next = { ...current, ...partial };
-    await chrome.storage.local.set({ [STORAGE_KEYS.settings]: next });
+    // partial だけを「最新の settings」に重ねて書く。別コンテキスト（manage/popup/content）が read〜set の隙に
+    // 他フィールドを書いても古い値で巻き戻さない。特に同期 opt-out（syncEnabled:false）を、別の書き込みが先に
+    // 読んだ syncEnabled:true で上書きして同期を再開させない（set 直前に再読し、ベースが変わっていたら最新へ
+    // partial を当て直す。最終試行は最善努力。単一キー保存ゆえ全体書き戻しは不可避＝窓は最小化。Codex）。
+    const MAX = 4;
+    let next;
+    for (let attempt = 0; attempt < MAX; attempt++) {
+      const current = await getSettings();
+      const baseJSON = JSON.stringify(current);
+      next = { ...current, ...partial };
+      const fresh = JSON.stringify(await getSettings());
+      if (fresh !== baseJSON && attempt < MAX - 1) continue; // 割り込みあり → 最新で当て直す
+      await chrome.storage.local.set({ [STORAGE_KEYS.settings]: next });
+      break;
+    }
     return next;
   });
 }

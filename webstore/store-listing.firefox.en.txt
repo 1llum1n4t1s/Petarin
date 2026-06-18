@@ -8,7 +8,7 @@ Firefox AMO listing (English)
 Petarin
 
 ■ Summary (max 250 chars)
-Sticky notes for web pages, organized per domain. Notes cling to the screen edge and tuck away until needed. Click to open and jot a memo with colors and emoji icons. Search and manage all your sticky notes from the popup. All data stays local.
+Sticky notes for web pages, organized per domain. Notes cling to the screen edge and tuck away until needed. Click to open and jot a memo with colors and emoji icons. Search and manage all your sticky notes from the popup. Data stays local by default, with optional multi-PC sync.
 
 ■ Description (max 16,000 chars)
 Petarin lets you stick notes to web pages, scoped to each site's domain. Notes cling to the edge of the screen and stay neatly tucked away so they never get in the way — open them only when you need them.
@@ -30,10 +30,13 @@ Opened a lot of notes? Click outside the page, press Esc, or use the "collapse a
 🔹 See everything from the popup and manager
 From the toolbar icon, browse every saved note grouped per domain. Search notes and sites, jump to a domain from its note card, choose the placement (right/left/top/bottom), toggle translucency, and turn the on-page rail on or off.
 
-🔹 Privacy first — zero external transmission
-Notes and settings are stored entirely in the browser's local storage (storage.local) and are never sent to any external server. No account required.
+🔹 Privacy first — zero external transmission by default
+By default, notes and settings are stored entirely in the browser's local storage (storage.local) and are never sent to any server operated by the developer. No account required.
+
+🔹 Multi-PC sync (optional, off by default)
+Only if you turn it on yourself in the manager, the notes for the domains you choose are synced across your devices through the browser's built-in sync storage (storage.sync) — on Firefox, via your Mozilla account sync. It is off by default, and while off there is zero external transmission. Sync works only within the same browser family.
 
 ■ Permissions
-- storage … to save notes and settings locally
+- storage … to save notes and settings locally (and, only if you turn on optional multi-PC sync, via storage.sync through the browser's sync service)
 - activeTab … to determine the domain of the current tab
-No network requests are made.
+By default no network requests are made (only when you turn on multi-PC sync are the selected domains' notes synced via the browser's sync service).

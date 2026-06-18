@@ -1590,9 +1590,64 @@ async function scenarioS53() {
   ok(fin.some((n) => n.id === "Y") && fin.some((n) => n.id === "Z"), "同ドメインの Y と pull された Z が温存される", JSON.stringify(fin.map((n) => n.id)));
 }
 
+// ════════════════════════════════════════════════════════════════
+// S54（Codex 再）: orphan の key が in-scope ドメインの domainKey と一致しても、そのドメインが skip
+//   （domain_too_large 等）されると orphan は cloud に残る。会計から先に一律除外すると undercount→write_failed
+//   になるので、orphan は baseline に残し「書き込みが accept された key だけ」差し引く。skip 時は残ったまま。
+//   load-bearing: round4 の一律除外だと skip 時に orphan が会計から落ちて diff=0 になる。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS54() {
+  console.log("S54（Codex再）skip されるドメインの key の orphan は会計に残す（accept 時のみ差し引く）:");
+  const mod = await loadSync();
+  const t0 = 54_000_000;
+  const dk = mod.domainKey("big.com");
+  const orphan = { d: "zzz", n: [] };
+  // 対照: orphan 無し（big.com は perItemBudget=10 で domain_too_large skip）
+  const sync0 = {}; const C = makeDevice(sync0, "dev-C");
+  seedDevice(C, { notes: { "big.com": [note("b", "x".repeat(50), t0)] } });
+  const r0 = await reconcileAs(C, mod, { now: t0, perItemBudget: 10 });
+  // with: big.com の domainKey 上に orphan を置く（big.com は skip される＝orphan は上書きされず残る）
+  const sync1 = {}; const A = makeDevice(sync1, "dev-A");
+  sync1[dk] = orphan;
+  seedDevice(A, { notes: { "big.com": [note("b", "x".repeat(50), t0)] } });
+  const r1 = await reconcileAs(A, mod, { now: t0, perItemBudget: 10 });
+  const ob = mod.bytesOf({ [dk]: orphan });
+  ok(r1.domains.find((d) => d.domain === "big.com" && d.reason === "domain_too_large"), "big.com は domain_too_large で skip", JSON.stringify(r1.domains));
+  ok(r1.usedBytes - r0.usedBytes === ob, "skip された key の orphan bytes は usedBytes に残る（undercount しない）", `diff=${r1.usedBytes - r0.usedBytes} expect=${ob}`);
+}
+
+// ════════════════════════════════════════════════════════════════
+// S55（Codex）: saveSettings は read〜set 間に別コンテキストが書いた同期 opt-out（syncEnabled:false）を
+//   古い値で巻き戻さない（set 直前に再読し、ベースが変わっていたら最新へ partial を当て直す）。
+//   load-bearing: 単純 read→merge→set だと最初に読んだ syncEnabled:true で上書きして同期が再開する。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS55() {
+  console.log("S55（Codex）saveSettings は read〜set 間の同期 opt-out を巻き戻さない:");
+  const { saveSettings } = await import("../src/shared/storage.js?dev=stg3");
+  const store = { [KEY_SETTINGS]: { syncEnabled: true, side: "right" } };
+  const area = makeArea(store, {}, "local");
+  let firstRead = true;
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => {
+      const res = await area.get(keys);
+      const wantSettings = keys === KEY_SETTINGS || (Array.isArray(keys) && keys.includes(KEY_SETTINGS));
+      if (wantSettings && firstRead) {
+        firstRead = false; // 最初の settings 読み取り直後に別コンテキストが同期を OFF にしたと見立てる
+        store[KEY_SETTINGS] = { ...store[KEY_SETTINGS], syncEnabled: false };
+      }
+      return res;
+    },
+    set: area.set,
+    remove: area.remove,
+  } } };
+  await saveSettings({ side: "left" }); // 見た目だけ変更
+  ok(store[KEY_SETTINGS].syncEnabled === false, "並行 opt-out（syncEnabled:false）が巻き戻されない", JSON.stringify(store[KEY_SETTINGS]));
+  ok(store[KEY_SETTINGS].side === "left", "自分の変更（side:left）は反映される", JSON.stringify(store[KEY_SETTINGS]));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);
