@@ -19,6 +19,7 @@ import {
   SYNCABLE_SETTINGS,
   COLORS,
   DEFAULT_COLOR,
+  FONTS,
   getSettings,
   LOCAL_TOMBS_KEY,
 } from "./storage.js";
@@ -323,6 +324,15 @@ function isValidSettingValue(k, v) {
     case "translucentOpacity":
     case "creatorRatio":
       return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
+    case "lineNumbers":
+      return typeof v === "boolean";
+    case "fontSize":
+      // 離散候補に厳密一致させず、健全な範囲（px）なら採用（将来候補を増やしても壊れない）。
+      return typeof v === "number" && Number.isFinite(v) && v >= 8 && v <= 96;
+    case "font":
+      return typeof v === "string" && FONTS.some((f) => f.id === v);
+    case "defaultColor":
+      return typeof v === "string" && COLORS.some((c) => c.id === v);
     default:
       return false;
   }

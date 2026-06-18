@@ -30,12 +30,56 @@ export const DEFAULT_COLOR = "yellow";
 // 付箋本文の最大文字数（複数行プレーンテキスト）。content.js は import 不可のため同値を再定義している。
 export const MAX_CHARS = 2000;
 
+// ── 書体（同梱フォント）──────────────────────────────────────────────
+// 付箋本文のフォント。id を設定値として保存する（並び順非依存・未知 id は system にフォールバック）。
+// file が無い "system" は端末標準のスタック。それ以外は src/fonts/<file> を読み込む。
+// content.js は import 不可のため同じ id 集合を手動複製している（両者で id を一致させること）。
+export const SYSTEM_FONT_STACK =
+  '"Hiragino Maru Gothic ProN","Hiragino Maru Gothic Pro","Yu Gothic UI","BIZ UDPGothic","Segoe UI",system-ui,sans-serif';
+
+export const FONTS = [
+  { id: "system",       label: "標準（端末のフォント）",          file: "" },
+  { id: "noto",         label: "Noto Sans JP（ゴシック）",        file: "NotoSansJP-Regular.woff2" },
+  { id: "plex",         label: "IBM Plex Sans JP（ゴシック）",    file: "IBMPlexSansJP-Regular.woff2" },
+  { id: "zenkaku",      label: "Zen Kaku Gothic New（ゴシック）", file: "ZenKakuGothicNew-Regular.woff2" },
+  { id: "lineseed",     label: "LINE Seed JP（ゴシック）",        file: "LINESeedJP-Regular.woff2" },
+  { id: "mplus2",       label: "M PLUS 2（ゴシック）",            file: "MPLUS2.woff2" },
+  { id: "murecho",      label: "Murecho（ゴシック）",             file: "Murecho.woff2" },
+  { id: "udev",         label: "UDEV Gothic（等幅）",             file: "UDEVGothicJPDOC-Regular.woff2" },
+  { id: "plemol",       label: "PlemolJP（等幅）",                file: "PlemolJP-Regular.woff2" },
+  { id: "moralerspace", label: "Moralerspace Neon（等幅）",       file: "MoralerspaceNeonJPDOC-Regular.woff2" },
+  { id: "yomogi",       label: "Yomogi（手書き）",                file: "Yomogi-Regular.woff2" },
+  { id: "klee",         label: "Klee One（ペン字・手書き）",      file: "KleeOne-Regular.woff2" },
+  { id: "hachimaru",    label: "はちまるポップ（まる文字・手書き）", file: "HachiMaruPop-Regular.woff2" },
+];
+export const DEFAULT_FONT = "system";
+
+// フォントサイズ候補（メモ帳ライクな離散値・px）。既定は従来の見た目に合わせて 15。
+export const FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20, 24, 28, 36, 48];
+export const DEFAULT_FONT_SIZE = 15;
+
+export function fontById(id) {
+  return FONTS.find((f) => f.id === id) || FONTS[0];
+}
+// 設定の font id を CSS の font-family 文字列へ。bundled は "PetaFont_<id>" + system フォールバック。
+export function fontFamilyCss(id) {
+  const f = fontById(id);
+  if (!f.file) return SYSTEM_FONT_STACK;
+  return `"PetaFont_${f.id}", ${SYSTEM_FONT_STACK}`;
+}
+
 export const DEFAULT_SETTINGS = {
   side: "right",              // right | left | top | bottom
   collapsedTranslucent: true, // 格納中の付箋を半透明にし、マウスオーバーで不透明へ
   translucentOpacity: 0.45,   // 半透明時の不透明度
   showOnPage: true,           // ページ上に付箋レールを表示するか
   creatorRatio: 0.78,         // ＋作成タブの主軸位置（0〜1）
+
+  // ── 付箋の見た目（本文の書体・サイズ・行番号）と新規作成の既定色 ───────────
+  font: "system",             // 本文フォント（FONTS の id・未知は system）
+  fontSize: 15,               // 本文フォントサイズ（px・FONT_SIZES 相当の離散値）
+  lineNumbers: false,         // 編集時に行番号（行ガター）を表示するか
+  defaultColor: "yellow",     // 「最後に選んだ色」＝次に新規作成する付箋の初期色（COLORS の id）
 
   // ── 複数PC同期（案B・既定OFF）──────────────────────────────────
   // これらの同期制御は「端末ごと」の設定で、sync しない（src/shared/sync.js の
@@ -48,8 +92,9 @@ export const DEFAULT_SETTINGS = {
   syncDomains: [],            // syncScope==="selected" のとき同期するドメイン配列
 };
 
-// 同期対象にできる「見た目設定」のフィールド（上の同期制御フラグ自体は端末ごと＝同期しない）
-export const SYNCABLE_SETTINGS = ["side", "collapsedTranslucent", "translucentOpacity", "showOnPage", "creatorRatio"];
+// 同期対象にできる「見た目設定」のフィールド（上の同期制御フラグ自体は端末ごと＝同期しない）。
+// font/fontSize/lineNumbers/defaultColor も見た目設定として同期可能（sync.js の isValidSettingValue で検証）。
+export const SYNCABLE_SETTINGS = ["side", "collapsedTranslucent", "translucentOpacity", "showOnPage", "creatorRatio", "font", "fontSize", "lineNumbers", "defaultColor"];
 
 export function colorOf(id) {
   return COLORS.find((c) => c.id === id) || COLORS[0];
