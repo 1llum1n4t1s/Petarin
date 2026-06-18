@@ -426,8 +426,9 @@ function beginEdit(el, domain, note) {
     editingKey = null;
     let next = original;
     if (commit) {
-      // 改行は潰さず複数行のまま保存（content.js の本文と往復しても壊さない）。CRLF は LF へ正規化。
-      next = (el.textContent || "").replace(/\r\n?/g, "\n").slice(0, MAX_CHARS);
+      // 改行は潰さず複数行のまま保存（content.js の本文と往復しても壊さない）。plaintext-only の
+      // 改行は <br>/ブロック境界になりうるため textContent だと欠落する → innerText で取得。CRLF は LF へ正規化。
+      next = (el.innerText || "").replace(/\r\n?/g, "\n").slice(0, MAX_CHARS);
       if (next !== original) {
         expectEcho();
         await updateNote(domain, note.id, { text: next });
