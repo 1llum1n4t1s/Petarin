@@ -47,6 +47,13 @@
       <p>あいうえお かきくけこ さしすせそ たちつてと なにぬねの。ロングテキストのダミー。Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore.</p>
       <p>あいうえお かきくけこ さしすせそ たちつてと なにぬねの。ロングテキストのダミー。Lorem ipsum dolor sit amet.</p>
     </div>
-    <script src="/src/content/content.js"></script>
+    <!-- content.js は毎回キャッシュバスター付きで読む（編集の反映漏れを防ぐ・dev 専用）。 -->
+    <script>
+      (() => {
+        const s = document.createElement("script");
+        s.src = "/src/content/content.js?t=" + Date.now();
+        document.body.appendChild(s);
+      })();
+    </script>
   </body>
 </html>

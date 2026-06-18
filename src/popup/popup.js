@@ -7,6 +7,8 @@ import {
   COLORS,
   colorOf,
   SIDES,
+  relTime,
+  hashHue,
 } from "../shared/storage.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -255,25 +257,6 @@ function buildCard(note, domain) {
   return card;
 }
 
-// ── ユーティリティ ───────────────────────────────────────────────────
-function hashHue(str) {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
-  return h;
-}
-
-function relTime(ts) {
-  if (!ts) return "";
-  const diff = Date.now() - ts;
-  const m = Math.floor(diff / 60000);
-  if (m < 1) return "たった今";
-  if (m < 60) return `${m}分前`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}時間前`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}日前`;
-  const date = new Date(ts);
-  return `${date.getMonth() + 1}/${date.getDate()}`;
-}
+// relTime / hashHue は shared/storage.js に集約（popup は年なし＝relTime(ts) の既定）。
 
 init();
