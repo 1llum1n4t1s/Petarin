@@ -737,11 +737,17 @@
     const note = notes.find((n) => n.id === id);
     const wrap = noteEl(id);
     if (!note || !wrap) return;
-    if (editingId === id) editingId = null;
     const ta = wrap.querySelector(".ta");
-    if (ta && root.activeElement === ta) ta.blur(); // 保存＋取りこぼし取り込みは blur ハンドラが担う
-    upsertNotePersist(note);
-    applyState(wrap, note); // blur の発火タイミングに依存せず、即座にプレビューへ切り替える
+    if (ta && root.activeElement === ta) {
+      // フォーカス中なら blur() が同期的に blur を発火し、保存・editingId クリア・プレビュー復帰を
+      // blur ハンドラが全部やる（ここで再度 upsert/applyState すると二重書き込み＋二重描画になる）。
+      ta.blur();
+    } else {
+      // フォーカスが無い（既に blur 済み等）ときだけ手動で保存してプレビューへ切り替える。
+      if (editingId === id) editingId = null;
+      upsertNotePersist(note);
+      applyState(wrap, note);
+    }
   }
 
   function buildCreator() {
