@@ -42,6 +42,7 @@
         "https://*/*"
       ],
       "js": [
+        "src/shared/markdown.js",
         "src/content/content.js"
       ],
       "run_at": "document_idle",
@@ -51,7 +52,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "src/content/rail.css"
+        "src/content/rail.css",
+        "src/fonts/*.woff2"
       ],
       "matches": [
         "http://*/*",
