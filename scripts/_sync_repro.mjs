@@ -736,9 +736,124 @@ async function scenarioS20() {
   ok(!sync[noteKey], "回復後に削除が確定し item が remove される", JSON.stringify(Object.keys(sync)));
 }
 
+const KEY_SYNC_SETTINGS = "petarin:sync:settings";
+
+// ════════════════════════════════════════════════════════════════
+// S21（Codex #11）: reconcile 処理中に content.js が割り込み保存しても、冒頭スナップショットから
+//   計算した陳腐 merge で上書きして編集をロールバックしない（freshLocal が初期 localNotes と食い違えば見送り）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS21() {
+  console.log("S21（Codex#11）処理中の割り込み保存を陳腐 merge で巻き戻さない:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 21_000_000;
+  seedDevice(A, { notes: { "ex.com": [note("X", "元", t0)] } });
+  await reconcileAs(A, mod, { now: t0 }); // cloud/shadow に X@t0
+
+  // 「割り込み編集」の最終状態を localStore に置く（X@t1 edited）
+  A.localStore[KEY_NOTES] = { "ex.com": [note("X", "編集", t0 + 1000)] };
+  // reconcile の最初の notes 読みだけ「編集前(X@t0)」を返し、以降は現在値(X@t1)を返す＝割り込みを再現
+  const realGet = A.chrome.storage.local.get.bind(A.chrome.storage.local);
+  let notesGetCount = 0;
+  A.chrome.storage.local.get = async (keys) => {
+    const wantNotes = keys === KEY_NOTES || (Array.isArray(keys) && keys.includes(KEY_NOTES));
+    if (wantNotes && ++notesGetCount === 1) return { [KEY_NOTES]: { "ex.com": [note("X", "元", t0)] } };
+    return realGet(keys);
+  };
+  await reconcileAs(A, mod, { now: t0 + 2000 });
+  A.chrome.storage.local.get = realGet;
+
+  const x = (localNotes(A)["ex.com"] || []).find((n) => n.id === "X");
+  ok(x && x.text === "編集", "割り込み編集が巻き戻されず保持される", x ? `text=${x.text}` : "X 消失");
+}
+
+// ════════════════════════════════════════════════════════════════
+// S22（Codex #13）: meta.tomb が配列でも墓石が永続化される（配列は {} へ置換）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS22() {
+  console.log("S22（Codex#13）配列 tomb でも墓石が永続化される:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 22_000_000;
+  seedDevice(A, { notes: { "ex.com": [note("X", "残す", t0), note("Y", "消す", t0)] } });
+  await reconcileAs(A, mod, { now: t0 });
+  sync[KEY_META] = { v: 1, tomb: [] }; // 破損：配列 tomb を注入
+
+  A.localStore[KEY_NOTES]["ex.com"] = [note("X", "残す", t0)]; // Y 削除
+  await reconcileAs(A, mod, { now: t0 + DAY });
+
+  const cm = sync[KEY_META] || {};
+  const tombKeyY = `ex.com${SEP}Y`;
+  ok(!Array.isArray(cm.tomb) && !!(cm.tomb && cm.tomb[tombKeyY]),
+    "配列 tomb を {} に直し Y の墓石が永続化される", JSON.stringify({ isArr: Array.isArray(cm.tomb), hasY: !!(cm.tomb && cm.tomb[tombKeyY]) }));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S23（Codex #14）: 破損した settings payload（非オブジェクト .s）でも reconcile が reject せず note 同期は続く。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS23() {
+  console.log("S23（Codex#14）破損 settings payload で全同期が wedge しない:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 23_000_000;
+  seedDevice(A, { notes: { "ex.com": [note("X", "本文", t0)] }, settings: { syncSettings: true } });
+  sync[KEY_SYNC_SETTINGS] = { s: "bad", t: 1000 }; // 破損：.s が文字列
+
+  let threw = false;
+  try { await reconcileAs(A, mod, { now: t0 }); } catch { threw = true; }
+  ok(!threw, "破損 settings で reconcile が reject しない", threw ? "rejected" : "");
+  ok(Object.keys(sync).some((k) => k.startsWith("petarin:sync:n:")), "note 同期は続く（settings 破損に巻き込まれない）", JSON.stringify(Object.keys(sync)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S24（Codex #10）: 設定同期を後で OFF にしても残置の settings item が item 数に算入される。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS24() {
+  console.log("S24（Codex#10）残置 settings item を item 数に算入する:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 24_000_000;
+  sync[KEY_SYNC_SETTINGS] = { s: { side: "left" }, t: 1000 }; // 以前 ON だった残置 settings item
+  const notes = {};
+  for (let i = 0; i < 511; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
+  seedDevice(A, { notes, settings: { syncSettings: false } }); // 今は設定同期 OFF
+  const r = await reconcileAs(A, mod, { now: t0 });
+
+  const synced = r.domains.filter((d) => d.synced).length;
+  // meta(1) + 残置 settings(1) = 2 を予約 → 同期できるドメインは最大 510
+  ok(synced <= 510, "残置 settings を数え、同期ドメインは 510 以内", `synced=${synced}`);
+  ok(r.domains.some((d) => d.reason === "item_limit"), "超過分は item_limit で skip", `item_limit=${r.domains.filter((d) => d.reason === "item_limit").length}`);
+}
+
+// ════════════════════════════════════════════════════════════════
+// S25（Codex #12）: 容量退避(domain_too_large)で残る既存 cloud item のバイトを会計に算入する。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS25() {
+  console.log("S25（Codex#12）退避で残る既存 cloud item を会計に算入する:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 25_000_000;
+  seedDevice(A, { notes: { "big.com": [note("b1", "小さい付箋", t0)] } });
+  await reconcileAs(A, mod, { now: t0 }); // cloud に big.com の小さい item
+  const bigKey = Object.keys(sync).find((k) => k.startsWith("petarin:sync:n:"));
+  const retainedBytes = new TextEncoder().encode(JSON.stringify({ [bigKey]: sync[bigKey] })).length;
+
+  // big.com を perItemBudget 超まで肥大化 → domain_too_large で退避（旧 item は cloud に残る）
+  A.localStore[KEY_NOTES]["big.com"] = [note("b1", "z".repeat(400), t0 + DAY)];
+  const r = await reconcileAs(A, mod, { now: t0 + DAY, perItemBudget: 50 });
+  const big = r.domains.find((d) => d.domain === "big.com");
+  ok(big && big.synced === false && big.reason === "domain_too_large", "肥大ドメインは domain_too_large で退避", JSON.stringify(big));
+  ok(r.usedBytes >= retainedBytes, "退避で残る既存 item のバイトが usedBytes に算入される", `usedBytes=${r.usedBytes} retained=${retainedBytes}`);
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);

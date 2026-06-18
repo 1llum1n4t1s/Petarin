@@ -304,7 +304,9 @@ async function readSync() {
   const rawMeta = all[SYNC_KEYS.meta];
   const meta =
     rawMeta && typeof rawMeta === "object" && !Array.isArray(rawMeta) ? rawMeta : { v: 1, tomb: {} };
-  if (!meta.tomb || typeof meta.tomb !== "object") meta.tomb = {};
+  // 配列も typeof==="object" を通すが、tomb[key]=now は配列の非インデックスプロパティとなり
+  // JSON.stringify で落ちる＝墓石が永続化されない。配列も不正として {} へ置換する（Codex 指摘）。
+  if (!meta.tomb || typeof meta.tomb !== "object" || Array.isArray(meta.tomb)) meta.tomb = {};
   const byDomain = {};
   const rawByDomain = {};
   const corrupt = new Set();
@@ -321,8 +323,14 @@ async function readSync() {
       corrupt.add(v.d);
     }
   }
+  // 同期由来の settings.s は信頼境界の外。非オブジェクト（破損）だと pickSettings の `k in s` が
+  // TypeError を投げ、設定同期 ON ユーザーの全 note 同期を wedge させる → null 扱いで握る（Codex 指摘）。
+  const settingsS =
+    settingsItem && settingsItem.s && typeof settingsItem.s === "object" && !Array.isArray(settingsItem.s)
+      ? settingsItem.s
+      : null;
   return {
-    settings: settingsItem ? settingsItem.s : null,
+    settings: settingsS,
     settingsT: settingsItem ? settingsItem.t || 0 : 0,
     byDomain,
     rawByDomain,
@@ -472,7 +480,16 @@ async function _reconcile(opts) {
   const metaBytes = metaFits
     ? bytesOf({ [SYNC_KEYS.meta]: metaItem })
     : bytesOf({ [SYNC_KEYS.meta]: JSON.parse(sync.metaBefore) });
-  let used = metaBytes + (setOps[SYNC_KEYS.settings] ? bytesOf(setOps[SYNC_KEYS.settings]) : 0);
+  // settings item の会計は「cloud に残るか」で決める。今回書くなら setOps、書かないが既存ならその item。
+  // 設定同期を後で OFF にしても以前の settings item は cloud に残り item/バイトを占有する（cfg.syncSettings
+  // ではなく実在で数える。Codex 指摘）。
+  let settingsBytes = 0, settingsItems = 0;
+  if (setOps[SYNC_KEYS.settings]) {
+    settingsBytes = bytesOf({ [SYNC_KEYS.settings]: setOps[SYNC_KEYS.settings] }); settingsItems = 1;
+  } else if (sync.settings !== null) {
+    settingsBytes = bytesOf({ [SYNC_KEYS.settings]: { s: sync.settings, t: sync.settingsT } }); settingsItems = 1;
+  }
+  let used = metaBytes + settingsBytes;
   // 今回スコープ外で手を付けない既存 cloud item も storage.sync の総容量(100KB)を占有する。これを
   // used に算入しないと、selected スコープで他端末/他サイトの同期データを見落として実 quota を超える
   // 書き込みを試み write_failed を繰り返す（本来は低優先ドメインを決定的に skip すべき。Codex 指摘）。
@@ -482,9 +499,9 @@ async function _reconcile(opts) {
   }
   // storage.sync は item 数上限(MAX_ITEMS=512)もある。バイトだけ見ると極小ドメインが多数だと全部
   // バイト予算を通過して setOps に積まれ、バッチが item 超過で write_failed になる。残る item 数も
-  // 数えて、超える低優先ドメインは決定的に skip する（Codex 指摘）。meta=1・settings=1・スコープ外
-  // 既存 item を初期計上し、in-scope で同期するドメインごとに +1。
-  let itemCount = 1 /* meta */ + (cfg.syncSettings ? 1 : 0);
+  // 数えて、超える低優先ドメインは決定的に skip する（Codex 指摘）。meta=1・settings・スコープ外
+  // 既存 item を初期計上し、in-scope で同期する／退避で残るドメインごとに +1。
+  let itemCount = 1 /* meta */ + settingsItems;
   for (const d of Object.keys(sync.rawByDomain)) if (!domainSet.has(d)) itemCount += 1;
   const ordered = domains
     .map((d) => ({ d, latest: Math.max(0, ...((mergedByDomain[d] || []).map(tsOf))) }))
@@ -537,10 +554,10 @@ async function _reconcile(opts) {
       if (sync.byDomain[domain] && !report.metaDeferred) {
         removeKeys.push(key);
       } else if (sync.byDomain[domain]) {
-        // metaDeferred で温存する孤児 cloud item の実バイトを used に算入する（cloud に残るものを
-        // 会計へ反映し、後続ドメインの quota 判定を実体と揃える＝孤児未計上による実 quota 超過 reject を
-        // 防ぐ。監査 R2c-1）。
+        // metaDeferred で温存する孤児 cloud item は item/バイトとも会計に残す（cloud に残るものを
+        // 反映し、後続ドメインの quota/item 判定を実体と揃える＝未計上による write_failed を防ぐ。監査 R2c-1/Codex#12）。
         used += bytesOf({ [key]: sync.rawByDomain[domain] });
+        itemCount += 1;
       }
       delete nextShadowNotes[domain]; // metaDeferred 時は下の R2b 凍結が削除前 base を復元する
       // metaDeferred で削除を保留したドメインは「容量超過の未同期」ではなく「削除の保留」として区別する
@@ -556,19 +573,27 @@ async function _reconcile(opts) {
     // 符号化（スキーマ圧縮＋必要なら gzip。小さい方を採用）。容量判定は符号化後のサイズで行う。
     const item = await encodeDomainItem(domain, merged, key);
     const size = bytesOf({ [key]: item });
+    // skip するドメインでも、既存 cloud item があれば remove せず残る＝item/バイトを占有し続ける。
+    // 後続ドメインの判定が実体とズレて write_failed に倒れないよう、残存分を会計に積む（Codex#12）。
+    const retainExisting = () => {
+      if (sync.rawByDomain[domain]) { used += bytesOf({ [key]: sync.rawByDomain[domain] }); itemCount += 1; }
+    };
     if (size > perItemBudget) {
       // 1 ドメインが 8KB 予算を超過（圧縮後でも）→ このドメインは sync しない（未同期バッジ）
       report.domains.push({ domain, count: merged.length, synced: false, reason: "domain_too_large" });
+      retainExisting();
       continue; // shadow は pre-seed の remote を保持（base を失わない）
     }
     if (itemCount + 1 > SYNC_LIMITS.MAX_ITEMS) {
       // item 数上限(512)超過 → このドメインは sync しない（決定的 skip で write_failed を避ける）
       report.domains.push({ domain, count: merged.length, synced: false, reason: "item_limit" });
+      retainExisting();
       continue; // shadow は pre-seed の remote を保持（base を失わない）
     }
     if (used + size > totalBudget) {
       // 合計 100KB 予算を超過 → 古いドメインから溢れる（未同期バッジ）
       report.domains.push({ domain, count: merged.length, synced: false, reason: "quota_exceeded" });
+      retainExisting();
       continue; // shadow は pre-seed の remote を保持（base を失わない）
     }
     used += size;
@@ -597,25 +622,39 @@ async function _reconcile(opts) {
   // reconcile 処理中に content.js が「別ドメイン」を書いても巻き込まないため
   // （同一ドメインの sub-ms 同時書き込みは per-note キー化＝別途保留のため残る）。
   const freshLocal = await getLocalNotes();
+  // merge は関数冒頭の localNotes スナップショットから計算している。書き戻し直前の freshLocal がそれと
+  // （スコープ内ドメインで）食い違う＝処理中に content.js 等が割り込んで保存した＝merge が陳腐化している。
+  // その陳腐な merge で上書きすると割り込んだ編集/ドラッグ/色変更をロールバックする（Codex#11）。
+  // 書かずに再 reconcile へ委ね、最新値で取り直して当て直す。
+  let mergeStale = false;
+  for (const domain of domains) {
+    if (JSON.stringify(freshLocal[domain] || []) !== JSON.stringify(localNotes[domain] || [])) {
+      mergeStale = true;
+      break;
+    }
+  }
   const nextLocal = { ...freshLocal };
   let localChanged = false;
-  for (const domain of domains) {
-    const merged = mergedByDomain[domain];
-    if (JSON.stringify(freshLocal[domain] || []) !== JSON.stringify(merged)) {
-      localChanged = true;
-      if (merged.length) nextLocal[domain] = merged;
-      else delete nextLocal[domain];
+  if (!mergeStale) {
+    for (const domain of domains) {
+      const merged = mergedByDomain[domain];
+      if (JSON.stringify(freshLocal[domain] || []) !== JSON.stringify(merged)) {
+        localChanged = true;
+        if (merged.length) nextLocal[domain] = merged;
+        else delete nextLocal[domain];
+      }
     }
   }
 
   // ── 実書き込み ──
   // (1) local 反映（pull 方向）。remote の変更を local へ取り込むのはデータ保護上いつでも安全。
   const localWrites = [];
-  if (localChanged) {
+  if (mergeStale) {
+    _dirty = true; // 割り込み書き込みあり → 陳腐な merge を当てず、最新値で再マージ
+  } else if (localChanged) {
     // 楽観的並行制御（#1）: petarin:notes は単一キーなので RMW が衝突しうる。書き込み直前に
     // もう一度読み、freshLocal から変化していたら（別コンテキスト＝content.js 等が割り込んで
-    // 書いた）自分の書き込みは見送り、再 reconcile に委ねる。これで「処理中に書かれた付箋を
-    // 丸ごと上書きで失う」窓を、verify→set 間の極小区間まで縮める。
+    // 書いた）自分の書き込みは見送り、再 reconcile に委ねる。これで verify→set 間の極小区間も守る。
     const verify = await getLocalNotes();
     if (JSON.stringify(verify) !== JSON.stringify(freshLocal)) {
       _dirty = true; // 終了後にもう一巡（最新値で取り直して当て直す）
