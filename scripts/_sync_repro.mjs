@@ -32,6 +32,12 @@ function makeArea(store, ctl, kind) {
     async get(keys) { return pickFrom(store, keys); },
     async set(obj) {
       if (kind === "sync" && (ctl.failSyncSet || ctl.failSetOnly)) throw new Error("QUOTA_BYTES quota exceeded (mock)");
+      // chrome.storage.sync は set 時点の「結果 item 数」で MAX_ITEMS を判定する（remove は別 op で先に
+      // 枠を空けないと、削除前の item を掴んだままの set が一時的に上限超過して reject する）。Codex#2 検証用。
+      if (kind === "sync" && ctl.maxItems != null) {
+        const resultKeys = new Set([...Object.keys(store), ...Object.keys(obj)]);
+        if (resultKeys.size > ctl.maxItems) throw new Error("MAX_ITEMS quota exceeded (mock)");
+      }
       Object.assign(store, structuredClone(obj));
     },
     async remove(keys) {
@@ -851,9 +857,143 @@ async function scenarioS25() {
   ok(r.usedBytes >= retainedBytes, "退避で残る既存 item のバイトが usedBytes に算入される", `usedBytes=${r.usedBytes} retained=${retainedBytes}`);
 }
 
+// ════════════════════════════════════════════════════════════════
+// S26（Codex #1）: 破損した残置 settings item（.s 非オブジェクト）も item 数に算入する。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS26() {
+  console.log("S26（Codex#1）破損した残置 settings item も item 数に算入する:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 26_000_000;
+  sync[KEY_SYNC_SETTINGS] = { s: "破損", t: 1000 }; // .s が非オブジェクト＝readSync で null へ sanitize
+  const notes = {};
+  for (let i = 0; i < 511; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
+  seedDevice(A, { notes, settings: { syncSettings: false } });
+  const r = await reconcileAs(A, mod, { now: t0 });
+  const synced = r.domains.filter((d) => d.synced).length;
+  // meta(1) + 破損 settings(1) = 2 を予約 → 同期できるドメインは最大 510
+  ok(synced <= 510, "破損 settings を数え、同期ドメインは 510 以内", `synced=${synced}`);
+  ok(r.domains.some((d) => d.reason === "item_limit"), "超過分は item_limit で skip", `item_limit=${r.domains.filter((d) => d.reason === "item_limit").length}`);
+  ok(!r.error, "write_failed にならない（reject しない）", JSON.stringify(r.error));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S27（Codex #4）: 取り込めない note item(orphan・d 不正)も item 数とバイトに算入し、勝手に消さない。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS27() {
+  console.log("S27（Codex#4）取り込めない note item(orphan)も item 数に算入し温存する:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 27_000_000;
+  // fnv1a は 8 桁 hex を返すので "zzzzzzzz" は実ドメインと絶対衝突しない。d が数値＝isValidDomain 失敗で orphan。
+  sync["petarin:sync:n:zzzzzzzz"] = { d: 123, n: [] };
+  const notes = {};
+  for (let i = 0; i < 511; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
+  seedDevice(A, { notes });
+  const r = await reconcileAs(A, mod, { now: t0 });
+  const synced = r.domains.filter((d) => d.synced).length;
+  // meta(1) + orphan(1) = 2 を予約 → 同期できるドメインは最大 510
+  ok(synced <= 510, "orphan item を数え、同期ドメインは 510 以内", `synced=${synced}`);
+  ok(r.domains.some((d) => d.reason === "item_limit"), "超過分は item_limit で skip", `item_limit=${r.domains.filter((d) => d.reason === "item_limit").length}`);
+  ok(!!sync["petarin:sync:n:zzzzzzzz"], "orphan item は理解できない値なので保守的に温存（消さない）", String(!!sync["petarin:sync:n:zzzzzzzz"]));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S28（Codex #2）: item 数上限ちょうどで「1 ドメイン削除＋1 追加」しても、remove で先に枠が空くので
+//   一時超過の write_failed にならず、追加が同期され削除 item が remove される。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS28() {
+  console.log("S28（Codex#2）上限ちょうどの削除+追加が write_failed にならない（remove 先行で枠を空ける）:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 28_000_000;
+  const notes = {};
+  for (let i = 0; i < 511; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
+  seedDevice(A, { notes });
+  await reconcileAs(A, mod, { now: t0 }); // 初回は墓石が空＝meta item は書かれず、cloud は note 511 item のみ
+  const cloudItems = Object.keys(sync).length;
+  ok(cloudItems === 511, "初回同期は墓石無しで meta 未書き込み＝cloud は note 511 item", `items=${cloudItems}`);
+
+  // d0 を空にして削除（removeKey）＋新規ドメインを追加。実 chrome 同様 set 時に MAX_ITEMS を判定させる。
+  const next = structuredClone(notes);
+  delete next["d0.example.com"];
+  next["new.example.com"] = [note("nn", "新規", t0 + DAY)];
+  A.localStore[KEY_NOTES] = next;
+  A.ctl.maxItems = 512;
+  const r = await reconcileAs(A, mod, { now: t0 + DAY });
+  A.ctl.maxItems = null;
+
+  ok(!r.error, "上限ちょうどの削除+追加で write_failed にならない", JSON.stringify(r.error));
+  const nd = r.domains.find((d) => d.domain === "new.example.com");
+  ok(nd && nd.synced, "新規ドメインが同期される", JSON.stringify(nd));
+  ok(!sync[mod.domainKey("d0.example.com")], "削除したドメインの cloud item が remove される", String(!!sync[mod.domainKey("d0.example.com")]));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S29（Codex #3）: 削除を同期した後の「元に戻す」は、updatedAt を更新しないと墓石(削除時刻)に LWW 負け
+//   して再消滅する。now に更新して復元すれば墓石に勝って復活し墓石も撤去される（manage の undo 修正の根拠）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS29() {
+  console.log("S29（Codex#3）undo は updatedAt を now に更新すれば墓石に勝って復活する:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 29_000_000;
+  seedDevice(A, { notes: { "ex.com": [note("X", "本文", t0)] } });
+  await reconcileAs(A, mod, { now: t0 });
+  const key = Object.keys(sync).find((k) => k.startsWith("petarin:sync:n:"));
+  // 削除して reconcile（墓石 deletedAt = t0+DAY、shadow と cloud から X が消える）
+  A.localStore[KEY_NOTES] = {};
+  await reconcileAs(A, mod, { now: t0 + DAY });
+  ok(!sync[key], "削除が同期され cloud から X が消える", String(!!sync[key]));
+
+  // (a) 古い updatedAt のまま復元 → 墓石(t0+DAY) > updatedAt(t0) で次 reconcile に再削除される（ハザード）
+  A.localStore[KEY_NOTES] = { "ex.com": [note("X", "本文", t0)] };
+  await reconcileAs(A, mod, { now: t0 + 2 * DAY });
+  ok(!(localNotes(A)["ex.com"] || []).some((n) => n.id === "X"), "古い updatedAt の復元は墓石に負けて再削除", JSON.stringify(localNotes(A)["ex.com"] || []));
+
+  // (b) updatedAt を now に更新して復元（undo 修正と同じ）→ 墓石に勝って復活し、墓石も撤去される
+  A.localStore[KEY_NOTES] = { "ex.com": [note("X", "本文", t0 + 3 * DAY)] };
+  const rb = await reconcileAs(A, mod, { now: t0 + 3 * DAY });
+  ok((localNotes(A)["ex.com"] || []).some((n) => n.id === "X"), "updatedAt を now に更新した復元は墓石に勝って復活", JSON.stringify(localNotes(A)["ex.com"] || []));
+  ok(!!sync[key], "復活が cloud にも同期される", String(!!sync[key]));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S30（敵対監査P1）: meta/settings/note のどれでもない未知 sync キー（旧スキーマ・将来の墓石
+//   シャーディング・改竄）も cloud に残り占有するので会計に算入し、上限近傍で write_failed させず
+//   決定的に skip する。未知キー自体は温存（消さない）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS30() {
+  console.log("S30（敵対監査P1）未知 sync キーも会計に算入し write_failed させず温存する:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 30_000_000;
+  // SYNC_KEYS.meta(=petarin:sync:meta) と前方一致するが === でない＝note でも settings でもない未知キー。
+  for (let i = 0; i < 5; i++) sync[`petarin:sync:meta:shard${i}`] = { junk: "z".repeat(50) };
+  const notes = {};
+  for (let i = 0; i < 511; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
+  seedDevice(A, { notes });
+  A.ctl.maxItems = 512;
+  const r = await reconcileAs(A, mod, { now: t0 });
+  A.ctl.maxItems = null;
+  ok(!r.error, "未知キーを会計に算入し write_failed にならない", JSON.stringify(r.error));
+  const synced = r.domains.filter((d) => d.synced).length;
+  // meta(1 予約) + 未知5 = 6 を予約 → 同期は最大 506
+  ok(synced <= 506, "未知キー5件を数え、同期ドメインは 506 以内", `synced=${synced}`);
+  ok(r.domains.some((d) => d.reason === "item_limit"), "超過分は item_limit で決定的に skip", `item_limit=${r.domains.filter((d) => d.reason === "item_limit").length}`);
+  const shardsLeft = Object.keys(sync).filter((k) => k.startsWith("petarin:sync:meta:shard")).length;
+  ok(shardsLeft === 5, "未知キーは温存される（消さない）", `shards=${shardsLeft}`);
+  ok(Object.keys(sync).length <= 512, "実 cloud item 数が上限 512 を超えない", `items=${Object.keys(sync).length}`);
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);

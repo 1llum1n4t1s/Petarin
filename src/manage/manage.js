@@ -502,8 +502,14 @@ async function undoDelete() {
   const snap = lastDeleted;
   lastDeleted = null;
   hideToast();
+  // 「元に戻す」は今の操作。削除を同期した直後だと、墓石の削除時刻（reconcile 時の now）の方が
+  // 復元する付箋の古い updatedAt より新しく、次の reconcile で LWW 負けして再び消える（Codex#3）。
+  // 復活を勝たせるため updatedAt を now に更新してから戻す（mergeDomainNotes が dead < updatedAt を見て
+  // 復活＋墓石撤去する）。
+  const now = Date.now();
+  const fresh = snap.map(({ domain, note }) => ({ domain, note: { ...note, updatedAt: now } }));
   expectEcho();                 // 復元は restoreNotes の 1 回書き込み
-  await restoreNotes(snap);
+  await restoreNotes(fresh);
   await reload();
 }
 

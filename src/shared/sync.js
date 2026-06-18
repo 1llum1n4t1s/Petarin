@@ -310,18 +310,34 @@ async function readSync() {
   const byDomain = {};
   const rawByDomain = {};
   const corrupt = new Set();
+  // cloud に残るが取り込めない item（不正 note・未知キー）も slot/バイトを占有する。会計から漏らすと
+  // 上限近傍で「実 quota は超過なのに gate を通過」→ sync.set が write_failed に倒れ、本来落とすべき低
+  // 優先ドメインを決定的に item_limit で skip できない（Codex#4 + 敵対監査P1）。残置を集計し reconcile の
+  // 会計初期値へ算入する（値は理解できないので温存）。
+  let orphanBytes = 0;
+  let orphanCount = 0;
   for (const [k, v] of Object.entries(all)) {
-    if (!k.startsWith(SYNC_KEYS.notePrefix)) continue;
-    // 不正・危険なドメイン名の item は取り込まない（A1-001）。
-    if (!v || typeof v !== "object" || !isValidDomain(v.d)) continue;
-    rawByDomain[v.d] = v;
-    try {
-      byDomain[v.d] = await decodeDomainItem(v);
-    } catch {
-      // 復号失敗（gzip 破損等）→ 空扱いにすると「リモートで全削除」と誤認して
-      // ローカルを消しかねない。corrupt として隔離し、このドメインは今回いじらない。
-      corrupt.add(v.d);
+    // meta / settings は別途読んで会計するのでここでは飛ばす。
+    if (k === SYNC_KEYS.meta || k === SYNC_KEYS.settings) continue;
+    // 健全な note item だけ取り込む（不正・危険なドメイン名は弾く。A1-001）。
+    if (k.startsWith(SYNC_KEYS.notePrefix) && v && typeof v === "object" && isValidDomain(v.d)) {
+      rawByDomain[v.d] = v;
+      try {
+        byDomain[v.d] = await decodeDomainItem(v);
+      } catch {
+        // 復号失敗（gzip 破損等）→ 空扱いにすると「リモートで全削除」と誤認して
+        // ローカルを消しかねない。corrupt として隔離し、このドメインは今回いじらない。
+        corrupt.add(v.d);
+      }
+      continue;
     }
+    // ここに来るのは「notePrefix だが d 不正/型不正の note item」または「meta/settings/note の
+    // どれでもない未知キー（旧スキーマ・将来の墓石シャーディング・改竄）」。どちらも cloud に残り
+    // slot/バイトを占有するので残置として算入する。未知キーは notePrefix でない＝domainKey と衝突
+    // しないので上書き事故は無い（notePrefix の不正 note が in-scope の domainKey と FNV 衝突する場合は、
+    // そのキーの正当な所有者＝当該ドメインが実データで上書きするのが正しい＝失う実データは無い）。
+    orphanBytes += bytesOf({ [k]: v });
+    orphanCount += 1;
   }
   // 同期由来の settings.s は信頼境界の外。非オブジェクト（破損）だと pickSettings の `k in s` が
   // TypeError を投げ、設定同期 ON ユーザーの全 note 同期を wedge させる → null 扱いで握る（Codex 指摘）。
@@ -332,6 +348,11 @@ async function readSync() {
   return {
     settings: settingsS,
     settingsT: settingsItem ? settingsItem.t || 0 : 0,
+    // 生の settings item（破損で settingsS=null に sanitize しても cloud には残り占有するので、会計は
+    // sanitize 後ではなく実在で数える。Codex#1）。
+    rawSettings: settingsItem,
+    orphanBytes,
+    orphanCount,
     byDomain,
     rawByDomain,
     corrupt,
@@ -486,10 +507,13 @@ async function _reconcile(opts) {
   let settingsBytes = 0, settingsItems = 0;
   if (setOps[SYNC_KEYS.settings]) {
     settingsBytes = bytesOf({ [SYNC_KEYS.settings]: setOps[SYNC_KEYS.settings] }); settingsItems = 1;
-  } else if (sync.settings !== null) {
-    settingsBytes = bytesOf({ [SYNC_KEYS.settings]: { s: sync.settings, t: sync.settingsT } }); settingsItems = 1;
+  } else if (sync.rawSettings) {
+    // 今回書かないが既存の settings item は cloud に残る。破損で sanitize された（sync.settings===null）
+    // ものも item/バイトを占有するので、sanitize 後の値ではなく生 item の実サイズで数える（Codex#1）。
+    settingsBytes = bytesOf({ [SYNC_KEYS.settings]: sync.rawSettings }); settingsItems = 1;
   }
-  let used = metaBytes + settingsBytes;
+  // 取り込めなかった note item（orphan）も cloud に残り総容量と item 数を占有する（Codex#4）。
+  let used = metaBytes + settingsBytes + sync.orphanBytes;
   // 今回スコープ外で手を付けない既存 cloud item も storage.sync の総容量(100KB)を占有する。これを
   // used に算入しないと、selected スコープで他端末/他サイトの同期データを見落として実 quota を超える
   // 書き込みを試み write_failed を繰り返す（本来は低優先ドメインを決定的に skip すべき。Codex 指摘）。
@@ -501,7 +525,7 @@ async function _reconcile(opts) {
   // バイト予算を通過して setOps に積まれ、バッチが item 超過で write_failed になる。残る item 数も
   // 数えて、超える低優先ドメインは決定的に skip する（Codex 指摘）。meta=1・settings・スコープ外
   // 既存 item を初期計上し、in-scope で同期する／退避で残るドメインごとに +1。
-  let itemCount = 1 /* meta */ + settingsItems;
+  let itemCount = 1 /* meta */ + settingsItems + sync.orphanCount;
   for (const d of Object.keys(sync.rawByDomain)) if (!domainSet.has(d)) itemCount += 1;
   const ordered = domains
     .map((d) => ({ d, latest: Math.max(0, ...((mergedByDomain[d] || []).map(tsOf))) }))
@@ -675,13 +699,29 @@ async function _reconcile(opts) {
   // (2) sync への push（容量超過・レート制限・競合で reject しうる）。
   //   6a: 失敗を握りつぶさず report.error に載せ、reject させない。さらに「synced:true としたドメイン」を
   //   未同期へ落とす。自己エコー記録は push 成功時だけ行う（失敗時に記録すると次の onChanged を取りこぼす）。
-  //   順序: set（墓石 meta を含む）を await してから remove する。逆順（並行）だと set 失敗時に「cloud item は
-  //   消えたが墓石は未保存」の窓ができ、その間に rejoin した端末が削除済み付箋を復活させる（Codex 指摘）。
+  //   順序（削除がある回）: ① 墓石 meta を先に set → ② remove で枠を空ける → ③ 残りの item を set。
+  //   ・① を remove より前に置くことで「cloud item は消えたが墓石は未保存」の窓を作らない。①(set)が失敗
+  //     すれば catch に落ちて ② に到達しない＝item は remove されず、次回再 reconcile で再検出・再 push される
+  //     （Codex#7 / S20 の順序保証を維持）。removeKeys がある回は、落とすノートの墓石が (i) 今回新規＝
+  //     setOps[meta] に載り ① で remove より先に書かれる か、(ii) 既に cloud meta に永続化済み＝今回 meta を
+  //     書かない（setOps[meta] 不在で ① をスキップし remove 直行）のいずれか。後者でも墓石は既に cloud に在る
+  //     ので復活窓は生じない（だから ① は `if (setOps[meta])` で条件付き＝既存墓石のみの回に meta を無駄に
+  //     再 set してレート消費しない）。新規墓石の回は ① の meta が既存キー更新なら item 数を増やさない。
+  //   ・② を ③ より前に置くことで、item/byte 上限ちょうどでの「1 ドメイン削除＋1 追加」が、削除前の枠を
+  //     掴んだまま set されて一時的に上限超過し reject される事故を防ぐ（remove で先に枠が空く。Codex#2）。
+  //   削除が無い回は従来どおり一括 set（順序を割る必要なし）。
   const hasSet = Object.keys(setOps).length > 0;
   let pushOk = true;
   try {
-    if (hasSet) await chrome.storage.sync.set(setOps);
-    if (removeKeys.length) await chrome.storage.sync.remove(removeKeys);
+    if (removeKeys.length) {
+      if (setOps[SYNC_KEYS.meta]) await chrome.storage.sync.set({ [SYNC_KEYS.meta]: setOps[SYNC_KEYS.meta] });
+      await chrome.storage.sync.remove(removeKeys);
+      const rest = {};
+      for (const k of Object.keys(setOps)) if (k !== SYNC_KEYS.meta) rest[k] = setOps[k];
+      if (Object.keys(rest).length) await chrome.storage.sync.set(rest);
+    } else if (hasSet) {
+      await chrome.storage.sync.set(setOps);
+    }
     if (hasSet || removeKeys.length) {
       // 自エコー判定用に「キー→push した値(JSON)」を記録する。remove は null。
       const vals = new Map();
