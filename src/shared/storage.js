@@ -76,6 +76,36 @@ function _commit(all) {
   return chrome.storage.local.set({ [STORAGE_KEYS.notes]: all });
 }
 
+// 削除時刻のローカルログ（同期しない）。reconcile が tombstone を「reconcile 時刻 now」ではなく
+// 「実際に削除した時刻」で刻むために使う。これが無いと、オフライン削除→再接続前に他端末が同じ付箋を
+// 編集、という競合で再接続時の now-tombstone が編集より新しくなり編集を握り潰す（delete-wins 誤解決。Codex#5）。
+//   形: { [domain]: { [id]: deletedAt } }。local 専用。content.js も同キー・同構造へ書く（import 不可なので literal 複製）。
+export const LOCAL_TOMBS_KEY = "petarin:sync:localTombs";
+export const LOCAL_TOMB_TTL = 180 * 24 * 60 * 60 * 1000; // sync.js の TOMB_TTL と揃える
+
+// TTL 超過の削除記録を刈る（破壊的）。空ドメインはキーごと掃除。
+export function gcLocalTombs(log, now) {
+  for (const d of Object.keys(log)) {
+    const dom = log[d];
+    for (const id of Object.keys(dom)) if (now - (dom[id] || 0) > LOCAL_TOMB_TTL) delete dom[id];
+    if (!Object.keys(dom).length) delete log[d];
+  }
+  return log;
+}
+
+// notes と localTombs を 1 回の set で同時に書く（removed: [{domain,id}]＝この書き込みで実際に消えた付箋）。
+// 同一 onChanged に notes が含まれるので background の reconcile が 1 回起き、その時点で localTombs は
+// 最新＝reconcile が実削除時刻を読める。removed が空なら notes だけ書く（従来の _commit と同じ）。
+async function _commitWithTombs(all, removed) {
+  if (!removed || !removed.length) return _commit(all);
+  const now = Date.now();
+  const raw = await chrome.storage.local.get(LOCAL_TOMBS_KEY);
+  const log = raw[LOCAL_TOMBS_KEY] || {};
+  for (const { domain, id } of removed) (log[domain] || (log[domain] = {}))[id] = now;
+  gcLocalTombs(log, now);
+  return chrome.storage.local.set({ [STORAGE_KEYS.notes]: all, [LOCAL_TOMBS_KEY]: log });
+}
+
 export function saveSettings(partial) {
   return withLock(async () => {
     const current = await getSettings();
@@ -99,19 +129,23 @@ export async function getNotes(domain) {
 export function saveNotes(domain, notes) {
   return withLock(async () => {
     const all = await _getAllRaw();
+    const keep = new Set((notes || []).map((n) => n.id));
+    // 配列置換で「以前あって今回無い」付箋は削除＝実削除時刻を記録する（clearDomain も saveNotes 経由）。
+    const removed = (all[domain] || []).filter((n) => !keep.has(n.id)).map((n) => ({ domain, id: n.id }));
     if (notes && notes.length) all[domain] = notes;
     else delete all[domain]; // 空になったドメインはキーごと掃除
-    await _commit(all);
+    await _commitWithTombs(all, removed);
   });
 }
 
 export function deleteNote(domain, id) {
   return withLock(async () => {
     const all = await _getAllRaw();
+    const had = (all[domain] || []).some((n) => n.id === id);
     const left = (all[domain] || []).filter((n) => n.id !== id);
     if (left.length) all[domain] = left;
     else delete all[domain];
-    await _commit(all);
+    await _commitWithTombs(all, had ? [{ domain, id }] : []);
   });
 }
 
@@ -134,12 +168,15 @@ export function deleteNotes(pairs) {
     const all = await _getAllRaw();
     const byDomain = {};
     for (const { domain, id } of pairs) (byDomain[domain] ||= new Set()).add(id);
+    const removed = [];
     for (const domain of Object.keys(byDomain)) {
-      const left = (all[domain] || []).filter((n) => !byDomain[domain].has(n.id));
+      const present = all[domain] || [];
+      for (const n of present) if (byDomain[domain].has(n.id)) removed.push({ domain, id: n.id });
+      const left = present.filter((n) => !byDomain[domain].has(n.id));
       if (left.length) all[domain] = left;
       else delete all[domain]; // 空になったドメインはキーごと掃除
     }
-    await _commit(all);
+    await _commitWithTombs(all, removed);
   });
 }
 

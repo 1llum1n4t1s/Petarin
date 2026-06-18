@@ -20,6 +20,7 @@ import {
   COLORS,
   DEFAULT_COLOR,
   getSettings,
+  LOCAL_TOMBS_KEY,
 } from "./storage.js";
 
 // ── 端末判定 & sync の上限（2026 時点 Chrome / Firefox 共通: 100KB / 8KB-item / 512items）──
@@ -187,8 +188,11 @@ export async function decodeDomainItem(item) {
 //  remote : sync から読んだ Note[]
 //  tomb   : { [tombKey]: deletedAt } 墓石（this 呼び出しで破壊的に更新される）
 //  now    : 現在時刻（テスト用に注入可能）
+//  domTombs: { [id]: deletedAt } このドメインのローカル削除時刻ログ（任意）。削除を観測した際の墓石を
+//           「reconcile 時刻 now」ではなく「実際に削除した時刻」で刻むために使う。オフライン削除→
+//           再接続前の他端末編集、の競合で編集を握り潰す delete-wins を防ぐ（Codex#5）。
 // 返り値: マージ後の Note[]（id 単位 LWW + 削除反映 + 新規は和集合）
-export function mergeDomainNotes(base, local, remote, domain, tomb, now) {
+export function mergeDomainNotes(base, local, remote, domain, tomb, now, domTombs) {
   const baseM = indexById(base);
   const localM = indexById(local);
   const remoteM = indexById(remote);
@@ -204,8 +208,13 @@ export function mergeDomainNotes(base, local, remote, domain, tomb, now) {
     // base にあって片側で消えた＝その側がこの付箋を削除した（新規未同期は base に無い）
     const deletedLocally = !!b && !l;
     const deletedRemotely = !!b && !r;
-    // 削除を観測したら、まだ墓石が無ければ「今」を deletedAt として記録する。
-    if ((deletedLocally || deletedRemotely) && !tomb[tk]) tomb[tk] = now;
+    // 削除を観測したら、まだ墓石が無ければ deletedAt を記録する。ローカル削除（deletedLocally）は
+    // 実削除時刻 domTombs[id] を使い、無ければ（他端末由来 deletedRemotely 等）now にフォールバックする。
+    // 他端末の削除は相手が実削除時刻で meta.tomb に積んで push 済みなので、ここに来る時は通常 tomb[tk]
+    // が既に在り再 stamp されない（!tomb[tk] ガード）＝実削除時刻が端末間で保たれる（Codex#5）。
+    if ((deletedLocally || deletedRemotely) && !tomb[tk]) {
+      tomb[tk] = (domTombs && domTombs[id]) || now;
+    }
 
     // 生存候補（両側に残っている版）を集め、updatedAt 新しい方を採る。
     const candidates = [l, r].filter(Boolean);
@@ -269,8 +278,9 @@ export function pickSettings(baseS, baseT, localS, remoteS, remoteT, now) {
 //  TTL 内は削除時刻を保持するので、削除より後のオフライン編集は mergeDomainNotes で復活でき
 //  （dead < tsOf(win)）、TTL 内の再取り込み（再スコープ/独立コピー）も墓石が backstop して
 //  ゾンビ復活を防ぐ。容量で墓石が膨らむ分は reconcile 側で古い順に間引いて perItemBudget に収める。
-export function gcTombstones(tomb, now) {
+export function gcTombstones(tomb, now, exempt) {
   for (const k of Object.keys(tomb)) {
+    if (exempt && exempt.has(k)) continue; // 今回初確立の墓石は即 GC しない（監査 I4）
     if (now - (tomb[k] || 0) > TOMB_TTL) delete tomb[k];
   }
   return tomb;
@@ -286,6 +296,13 @@ const hasSync = () =>
 async function getLocalNotes() {
   const raw = await chrome.storage.local.get(STORAGE_KEYS.notes);
   return raw[STORAGE_KEYS.notes] || {};
+}
+// 削除時刻ログ（{ [domain]: { [id]: deletedAt } }・local 専用）。storage.js / content.js の削除経路が書く。
+// reconcile は read-only で消費する（書き戻さない＝書き手とのレース無し。GC は書き手側で実施）。
+async function getLocalTombs() {
+  const raw = await chrome.storage.local.get(LOCAL_TOMBS_KEY);
+  const v = raw[LOCAL_TOMBS_KEY];
+  return v && typeof v === "object" && !Array.isArray(v) ? v : {};
 }
 async function getShadow() {
   const raw = await chrome.storage.local.get(LOCAL_SHADOW);
@@ -434,10 +451,11 @@ async function _reconcile(opts) {
     syncSettings: !!settings.syncSettings,
   };
 
-  const [localNotes, shadow, sync] = await Promise.all([
+  const [localNotes, shadow, sync, localTombs] = await Promise.all([
     getLocalNotes(),
     getShadow(),
     readSync(),
+    getLocalTombs(),
   ]);
   const tomb = sync.meta.tomb || {};
   // corrupt（復号失敗）ドメインは scope から外し、local/sync とも一切いじらない（データ保護）。
@@ -456,14 +474,15 @@ async function _reconcile(opts) {
     const base = (shadow.notes && shadow.notes[domain]) || [];
     const local = localNotes[domain] || [];
     const remote = sync.byDomain[domain] || [];
-    mergedByDomain[domain] = mergeDomainNotes(base, local, remote, domain, tomb, now);
+    mergedByDomain[domain] = mergeDomainNotes(base, local, remote, domain, tomb, now, localTombs[domain]);
   }
-  gcTombstones(tomb, now);
-  // 新規墓石のドメイン（tombKey = domain + SEP + id）。今回足した墓石は now 打刻で GC されないので
-  // gcTombstones 後に差分を取って良い。
-  const newTombDomains = new Set(
-    Object.keys(tomb).filter((k) => !tombKeysBefore.has(k)).map((k) => k.split(SEP)[0])
-  );
+  // 今回新規に立った墓石。実削除時刻(localTombs 由来)が TTL より古くても「初確立」なので、同回の
+  // gcTombstones で即消されないよう除外する。即消すと墓石が cloud meta に永続化されず、shadow 無し端末の
+  // rejoin でゾンビ復活しうる（>180日オフライン後に削除を初観測する稀ケース。監査 I4）。
+  const freshTombKeys = new Set(Object.keys(tomb).filter((k) => !tombKeysBefore.has(k)));
+  gcTombstones(tomb, now, freshTombKeys);
+  // 新規墓石のドメイン（tombKey = domain + SEP + id）。freshTombKeys は GC 除外したので全て残っている。
+  const newTombDomains = new Set([...freshTombKeys].map((k) => k.split(SEP)[0]));
 
   // ── sync への書き込み（容量チェック付き）──
   const setOps = {};

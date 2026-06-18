@@ -59,6 +59,7 @@ function makeDevice(syncStore, deviceId) {
 const KEY_NOTES = "petarin:notes";
 const KEY_SETTINGS = "petarin:settings";
 const KEY_DEVICE = "petarin:sync:device";
+const KEY_LOCAL_TOMBS = "petarin:sync:localTombs";
 
 function seedDevice(dev, { notes = {}, settings = {} } = {}) {
   dev.localStore[KEY_DEVICE] = dev.deviceId;
@@ -991,9 +992,94 @@ async function scenarioS30() {
   ok(Object.keys(sync).length <= 512, "実 cloud item 数が上限 512 を超えない", `items=${Object.keys(sync).length}`);
 }
 
+// ════════════════════════════════════════════════════════════════
+// S31（Codex#5）: オフライン削除→再接続前に他端末が同じ付箋を編集、の競合で、削除者が
+//   実削除時刻(localTombs)で墓石を刻むので「削除より後の編集」が復活する（delete-wins しない）。
+//   対照: localTombs 無し（now 刻印フォールバック）だと再接続時刻>編集時刻で編集が消える＝旧バグを再現。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS31() {
+  console.log("S31（Codex#5）オフライン削除→再接続前の他端末編集が delete-wins で握り潰されない:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const B = makeDevice(sync, "dev-B");
+  const modA = await loadSync();
+  const modB = await loadSync();
+  const t0 = 31_000_000;
+
+  // t0: 双方 N@t0 を合意（A が seed→push、B は空から pull）
+  seedDevice(A, { notes: { "ex.com": [note("N", "元の本文", t0)] } });
+  await reconcileAs(A, modA, { now: t0 });
+  seedDevice(B, { notes: {} });
+  await reconcileAs(B, modB, { now: t0 });
+  ok((localNotes(B)["ex.com"] || []).some((n) => n.id === "N"), "前提: B が N を pull 済み", JSON.stringify(localNotes(B)["ex.com"] || []));
+
+  // t_del = t0+DAY: A がオフラインで N を削除（reconcile せず、localTombs に実削除時刻だけ残す）
+  const tDel = t0 + 1 * DAY;
+  A.localStore[KEY_NOTES] = {};
+  A.localStore[KEY_LOCAL_TOMBS] = { "ex.com": { N: tDel } };
+
+  // t_edit = t0+2*DAY: B が N を編集して reconcile（削除より後＝因果的に編集が後）。墓石は立たない。
+  const tEdit = t0 + 2 * DAY;
+  B.localStore[KEY_NOTES] = { "ex.com": [note("N", "Bが削除後に編集", tEdit)] };
+  await reconcileAs(B, modB, { now: tEdit });
+
+  // t_reconnect = t0+3*DAY: A が再接続して reconcile（実削除時刻 tDel<tEdit で墓石を刻む）
+  const tReconnect = t0 + 3 * DAY;
+  await reconcileAs(A, modA, { now: tReconnect });
+
+  const aN = (localNotes(A)["ex.com"] || []).find((n) => n.id === "N");
+  ok(!!aN && aN.text === "Bが削除後に編集",
+    "実削除時刻(tDel<tEdit)で墓石を刻むので B の後発編集が復活する",
+    aN ? `text=${JSON.stringify(aN.text)}` : "N が消えた（now 刻印なら delete-wins で握り潰し）");
+  const cloudKey = Object.keys(sync).find((k) => k.startsWith("petarin:sync:n:"));
+  ok(!!cloudKey && !!sync[cloudKey], "cloud にも編集版 N が残る（削除は伝播しない）", JSON.stringify(Object.keys(sync)));
+
+  // 対照: localTombs を残さない（=now 刻印フォールバック）同じ手順は delete-wins で編集が消える（旧バグ）
+  const sync2 = {};
+  const A2 = makeDevice(sync2, "dev-A2");
+  const B2 = makeDevice(sync2, "dev-B2");
+  const modA2 = await loadSync();
+  const modB2 = await loadSync();
+  seedDevice(A2, { notes: { "ex.com": [note("N", "元", t0)] } });
+  await reconcileAs(A2, modA2, { now: t0 });
+  seedDevice(B2, { notes: {} });
+  await reconcileAs(B2, modB2, { now: t0 });
+  A2.localStore[KEY_NOTES] = {}; // localTombs を残さない（旧挙動）
+  B2.localStore[KEY_NOTES] = { "ex.com": [note("N", "B編集", tEdit)] };
+  await reconcileAs(B2, modB2, { now: tEdit });
+  await reconcileAs(A2, modA2, { now: tReconnect });
+  const a2N = (localNotes(A2)["ex.com"] || []).find((n) => n.id === "N");
+  ok(!a2N, "対照: localTombs 無し（now 刻印）だと再接続時刻>編集で delete-wins（編集消失）を再現", a2N ? `残った=${a2N.text}` : "消えた=delete-wins");
+}
+
+// ════════════════════════════════════════════════════════════════
+// S32（監査I4）: >180日オフライン後に削除を初観測する稀ケースでも、墓石が同回 gcTombstones で即 GC されず
+//   cloud meta に永続化される（実削除時刻が TTL 超でも初確立分は GC 除外＝shadow 無し端末の rejoin に備える）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS32() {
+  console.log("S32（監査I4）>180日前の削除を初観測しても墓石が即GCされず cloud に永続化する:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 32_000_000;
+  seedDevice(A, { notes: { "ex.com": [note("N", "本文", t0)] } });
+  await reconcileAs(A, mod, { now: t0 }); // cloud に N、A shadow に N
+  // A がオフラインで削除（実削除時刻 t0+DAY）、その後 181 日 reconcile せず再接続（localTombs の deletedAt は TTL 超）
+  const tDel = t0 + 1 * DAY;
+  A.localStore[KEY_NOTES] = {};
+  A.localStore[KEY_LOCAL_TOMBS] = { "ex.com": { N: tDel } };
+  const tReconnect = tDel + 181 * DAY;
+  await reconcileAs(A, mod, { now: tReconnect });
+  const meta = sync["petarin:sync:meta"];
+  // tombKey は domain+SEP+id（SEP は制御文字）。再構築せず「値 tDel が墓石に在る」かで検証する。
+  const tombVals = meta && meta.tomb ? Object.values(meta.tomb) : [];
+  ok(tombVals.includes(tDel), "墓石が実削除時刻で cloud meta に永続化される（同回で即GCされない）", JSON.stringify(meta && meta.tomb));
+  ok(!(localNotes(A)["ex.com"] || []).some((n) => n.id === "N"), "N は削除されたまま（並行編集なし＝delete-wins）", JSON.stringify(localNotes(A)["ex.com"] || []));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);

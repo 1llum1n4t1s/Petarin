@@ -18,6 +18,10 @@
   // ── 定数（shared/storage.js と対応） ────────────────────────────
   const KEY_NOTES = "petarin:notes";
   const KEY_SETTINGS = "petarin:settings";
+  // 削除時刻ログ（同期しない・local 専用）。storage.js LOCAL_TOMBS_KEY と同キー・同構造
+  // { [domain]: { [id]: deletedAt } }。reconcile が tombstone を実削除時刻で刻むのに使う（Codex#5）。
+  const KEY_LOCAL_TOMBS = "petarin:sync:localTombs";
+  const LOCAL_TOMB_TTL = 180 * 24 * 60 * 60 * 1000;
 
   const COLORS = [
     { id: "yellow", paper: "#FFE57A", deep: "#F2C84B", ink: "#5C4A1E" },
@@ -169,13 +173,27 @@
   function removeNotesPersist(ids) {
     const drop = new Set(ids);
     return withWrite(async () => {
-      const raw = await chrome.storage.local.get(KEY_NOTES);
+      const raw = await chrome.storage.local.get([KEY_NOTES, KEY_LOCAL_TOMBS]);
       const all = raw[KEY_NOTES] || {};
-      const list = (all[domain] || []).filter((n) => n && !drop.has(n.id));
+      const before = all[domain] || [];
+      const removed = before.filter((n) => n && drop.has(n.id)).map((n) => n.id);
+      const list = before.filter((n) => n && !drop.has(n.id));
       if (list.length) all[domain] = list;
       else delete all[domain]; // 空になったドメインはキーごと掃除
+      // 実削除時刻を localTombs へ記録（notes と同一 set で書く＝reconcile が最新を読める。Codex#5）。
+      const now = Date.now();
+      const log = raw[KEY_LOCAL_TOMBS] || {};
+      if (removed.length) {
+        const dom = log[domain] || (log[domain] = {});
+        for (const id of removed) dom[id] = now;
+      }
+      for (const d of Object.keys(log)) { // TTL GC（同期しない local ログ）
+        const dm = log[d];
+        for (const id of Object.keys(dm)) if (now - (dm[id] || 0) > LOCAL_TOMB_TTL) delete dm[id];
+        if (!Object.keys(dm).length) delete log[d];
+      }
       notesWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
-      await chrome.storage.local.set({ [KEY_NOTES]: all });
+      await chrome.storage.local.set({ [KEY_NOTES]: all, [KEY_LOCAL_TOMBS]: log });
     });
   }
   async function persistCreatorRatio() {
