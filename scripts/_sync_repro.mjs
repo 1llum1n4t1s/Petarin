@@ -1645,9 +1645,28 @@ async function scenarioS55() {
   ok(store[KEY_SETTINGS].side === "left", "自分の変更（side:left）は反映される", JSON.stringify(store[KEY_SETTINGS]));
 }
 
+// ════════════════════════════════════════════════════════════════
+// S56（Codex）: 予約名 id（toString/__proto__ 等）の付箋を、素の {} な domTombs の継承プロパティ誤検出で
+//   「ローカル削除」と誤認して握り潰さない（domTombs[id] は own プロパティのみ honor）。own 記録がある id の
+//   loggedDelete は従来どおり機能する。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS56() {
+  console.log("S56（Codex）予約名 id の付箋を domTombs の継承プロパティ誤検出で削除しない:");
+  const mod = await loadSync();
+  const now = 56_000_000;
+  const domTombs = { someOtherId: now - 1000 }; // このドメインに別 id の local tomb がある（domTombs は非 null）
+  const out = mod.mergeDomainNotes([], [], [note("toString", "x", now)], "ex.com", {}, now, domTombs);
+  ok(out.some((n) => n.id === "toString"), "id=toString の remote 付箋が継承プロパティ誤検出で削除されず生存", JSON.stringify(out.map((n) => n.id)));
+  const out2 = mod.mergeDomainNotes([], [], [note("__proto__", "y", now)], "ex.com", {}, now, domTombs);
+  ok(out2.some((n) => n.id === "__proto__"), "id=__proto__ の remote 付箋も生存", JSON.stringify(out2.map((n) => n.id)));
+  // 対照: own の localTombs 記録がある id は従来どおりローカル削除として扱う（stale な remote を復活させない）。
+  const out3 = mod.mergeDomainNotes([], [], [note("realid", "z", now - 2000)], "ex.com", {}, now, { realid: now - 1000 });
+  ok(!out3.some((n) => n.id === "realid"), "own の localTombs 記録がある id は削除として扱う（loggedDelete 健全）", JSON.stringify(out3.map((n) => n.id)));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);

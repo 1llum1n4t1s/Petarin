@@ -8,7 +8,7 @@ Firefox AMO listing (English)
 Petarin
 
 ■ Summary (max 250 chars)
-Sticky notes for web pages, organized per domain. Notes cling to the screen edge and tuck away until needed. Click to open and jot a memo with colors and emoji icons. Search and manage all your sticky notes from the popup. Data stays local by default, with optional multi-PC sync.
+Sticky notes for web pages, organized per domain. They cling to the screen edge and tuck away until needed. Open to jot a memo with colors and emoji icons. Manage all from the popup. Local by default, with optional multi-PC sync.
 
 ■ Description (max 16,000 chars)
 Petarin lets you stick notes to web pages, scoped to each site's domain. Notes cling to the edge of the screen and stay neatly tucked away so they never get in the way — open them only when you need them.

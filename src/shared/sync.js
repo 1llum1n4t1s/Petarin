@@ -252,13 +252,19 @@ export function mergeDomainNotes(base, local, remote, domain, tomb, now, domTomb
     // deletedLocally が偽）。localTombs に実削除時刻が在り、かつローカルに不在なら「ローカルで削除済み」
     // と扱い、リモートの stale コピーを pull で復活させない（base 喪失をまたいで削除を保持。Codex#2）。
     // 削除後に他端末で編集されていれば下の dead < tsOf(win) で正しく復活する（LWW は壊さない）。
-    const loggedDelete = !l && !!(domTombs && domTombs[id]);
-    // 削除を観測したら、まだ墓石が無ければ deletedAt を記録する。ローカル削除は実削除時刻 domTombs[id] を
-    // 使い、無ければ（他端末由来 deletedRemotely 等）now にフォールバックする。他端末の削除は相手が実削除
-    // 時刻で meta.tomb に積んで push 済みなので、ここに来る時は通常 tomb[tk] が既に在り再 stamp されない
+    // localTombs は素の {} なので、id が継承プロパティ名（toString/__proto__/constructor 等）だと
+    // domTombs[id] が Object.prototype のメンバ（関数等）を返し、own の削除記録が無いのに loggedDelete が真に
+    // なる→有効な remote の編集/追加を「ローカル削除」と誤認して墓石を立て握り潰す。own プロパティだけ honor する
+    // （hasOwnProperty で継承を弾く。Codex）。
+    const ownTomb =
+      domTombs && Object.prototype.hasOwnProperty.call(domTombs, id) ? domTombs[id] : undefined;
+    const loggedDelete = !l && ownTomb !== undefined;
+    // 削除を観測したら、まだ墓石が無ければ deletedAt を記録する。ローカル削除は実削除時刻 ownTomb を使い、
+    // 無ければ（他端末由来 deletedRemotely 等）now にフォールバックする。他端末の削除は相手が実削除時刻で
+    // meta.tomb に積んで push 済みなので、ここに来る時は通常 tomb[tk] が既に在り再 stamp されない
     // （!tomb[tk] ガード）＝実削除時刻が端末間で保たれる（Codex#5）。
     if ((deletedLocally || deletedRemotely || loggedDelete) && !tomb[tk]) {
-      tomb[tk] = (domTombs && domTombs[id]) || now;
+      tomb[tk] = ownTomb || now;
     }
 
     // 生存候補（両側に残っている版）を集め、updatedAt 新しい方を採る。

@@ -9,7 +9,7 @@ Chrome Web Store listing (English)
 Petarin
 
 ■ Summary (max 132 chars)
-Per-domain sticky notes for web pages. They cling to the screen edge and tuck away until needed. Manage all from the popup. Local by default (optional multi-PC sync).
+Per-domain sticky notes for web pages. Cling to the edge, tuck away until needed. Local by default, with optional multi-PC sync.
 
 ■ Description (max 16,000 chars)
 Petarin lets you stick notes to web pages, scoped to each site's domain. Notes cling to the edge of the screen and stay neatly tucked away so they never get in the way — open them only when you need them.
