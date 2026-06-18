@@ -46,13 +46,13 @@ export const TOTAL_BUDGET = Math.floor(SYNC_LIMITS.QUOTA_BYTES * 0.92);
 // ── sync 側のキー名前空間 ──
 export const SYNC_KEYS = {
   settings: "petarin:sync:settings", // { s:{...見た目設定}, t:更新時刻 }
-  meta: "petarin:sync:meta",         // { v, tomb:{ "domainid": deletedAt } }
+  meta: "petarin:sync:meta",         // { v, tomb:{ "domain<SEP>id": deletedAt } }
   notePrefix: "petarin:sync:n:",     // + domainHash → { d, n:[タプル...] } か { d, z:"base64gz" }
 };
 // shadow（前回合意状態）は local 限定（sync しない）
 const LOCAL_SHADOW = "petarin:sync:shadow";  // { notes:{[domain]:Note[]}, settings, settingsT }
 
-const SEP = "";
+const SEP = String.fromCharCode(0x1f); // U+001F (Unit Separator)。実体 literal だとエンコーディング事故で静かに化けるため fromCharCode で組む
 // 墓石TTL: 削除を記録しておく期間。削除検出の本体は shadow(base) チャネル（mergeDomainNotes の
 // deletedLocally/Remotely）で、墓石は「shadow を失った再取り込み／独立コピー端末」のための backstop。
 // この窓内は削除時刻を保持して LWW を正しく保ち、窓を超えた分だけ復活/編集握り潰しを許容する。
@@ -86,7 +86,9 @@ const indexById = (arr) => {
 // 別オリジンへ飛ばすフィッシングに化けうるので、取り込み時に弾く。punycode 済み英数 .- と IPv6 の
 // [::1]（: [ ]）は許可。
 export const isValidDomain = (d) =>
-  typeof d === "string" && d.length > 0 && d.length < 256 && !/[\s/@?#\\]/.test(d) &&
+  // 制御文字 C0(U+0000〜U+001F)/DEL(U+007F) を拒否。`https://${domain}/` が不正 URL になるうえ、
+  // SEP=U+001F は tombKey の区切り文字なので、埋め込まれると split(SEP) で別ドメインの削除簿記に化ける（Codex 指摘）。
+  typeof d === "string" && d.length > 0 && d.length < 256 && !/[\s/@?#\\\u0000-\u001f\u007f]/.test(d) &&
   // プロトタイプ汚染キーを弾く。素の {} マップへ代入すると __proto__ は own プロパティを作らず
   // setter を起動し、Object.keys に乗らない＝rawByDomain の会計から漏れて write_failed の元になる
   // （d が真の hostname ならこれらの語にはならない。Codex 指摘）。
@@ -129,16 +131,20 @@ const hasCompression = () => typeof CompressionStream !== "undefined";
 async function gzipString(str) {
   const cs = new CompressionStream("gzip");
   const w = cs.writable.getWriter();
-  w.write(new TextEncoder().encode(str));
-  w.close();
+  // writer 側の promise を握って unhandledRejection を出さない。エラーは readable 側（下の await）が
+  // 拾って throw する＝呼び出し側で握れる（書き手放置だと別経路の unhandledRejection になる。監査）。
+  w.write(new TextEncoder().encode(str)).catch(() => {});
+  w.close().catch(() => {});
   const buf = await new Response(cs.readable).arrayBuffer();
   return new Uint8Array(buf);
 }
 async function gunzipToString(bytes) {
   const ds = new DecompressionStream("gzip");
   const w = ds.writable.getWriter();
-  w.write(bytes);
-  w.close();
+  // 不正 gzip（valid base64 だが非 gzip 等）で writer 側が reject しても unhandledRejection を出さない。
+  // 復号エラーは readable 側の await が throw し readSync が corrupt 隔離する（データ保護は readable 側で担保）。
+  w.write(bytes).catch(() => {});
+  w.close().catch(() => {});
   const buf = await new Response(ds.readable).arrayBuffer();
   return new TextDecoder().decode(buf);
 }
@@ -179,7 +185,10 @@ export async function decodeDomainItem(item) {
     // タプル列を展開（保険として、万一フル Note が入っていてもそのまま通す）
     return item.n.map((e) => (Array.isArray(e) ? expandNote(e) : e));
   }
-  return [];
+  // z も n[] も無い＝ペイロード破損（例 { d, n:"bad" }）。空配列を返すと「リモートで全削除」と誤認して
+  // ローカルを消し墓石まで書く。throw して readSync に corrupt 隔離させる（触らない＝データ保護。Codex 指摘）。
+  // 正規 item は encodeDomainItem が必ず n:[配列] か z:string を入れるので、ここに来るのは破損のみ。
+  throw new Error("malformed domain payload");
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -212,11 +221,16 @@ export function mergeDomainNotes(base, local, remote, domain, tomb, now, domTomb
     // base にあって片側で消えた＝その側がこの付箋を削除した（新規未同期は base に無い）
     const deletedLocally = !!b && !l;
     const deletedRemotely = !!b && !r;
-    // 削除を観測したら、まだ墓石が無ければ deletedAt を記録する。ローカル削除（deletedLocally）は
-    // 実削除時刻 domTombs[id] を使い、無ければ（他端末由来 deletedRemotely 等）now にフォールバックする。
-    // 他端末の削除は相手が実削除時刻で meta.tomb に積んで push 済みなので、ここに来る時は通常 tomb[tk]
-    // が既に在り再 stamp されない（!tomb[tk] ガード）＝実削除時刻が端末間で保たれる（Codex#5）。
-    if ((deletedLocally || deletedRemotely) && !tomb[tk]) {
+    // 同期 OFF→ON で shadow(base) を失った後のローカル削除は base 経由で検出できない（base 空＝
+    // deletedLocally が偽）。localTombs に実削除時刻が在り、かつローカルに不在なら「ローカルで削除済み」
+    // と扱い、リモートの stale コピーを pull で復活させない（base 喪失をまたいで削除を保持。Codex#2）。
+    // 削除後に他端末で編集されていれば下の dead < tsOf(win) で正しく復活する（LWW は壊さない）。
+    const loggedDelete = !l && !!(domTombs && domTombs[id]);
+    // 削除を観測したら、まだ墓石が無ければ deletedAt を記録する。ローカル削除は実削除時刻 domTombs[id] を
+    // 使い、無ければ（他端末由来 deletedRemotely 等）now にフォールバックする。他端末の削除は相手が実削除
+    // 時刻で meta.tomb に積んで push 済みなので、ここに来る時は通常 tomb[tk] が既に在り再 stamp されない
+    // （!tomb[tk] ガード）＝実削除時刻が端末間で保たれる（Codex#5）。
+    if ((deletedLocally || deletedRemotely || loggedDelete) && !tomb[tk]) {
       tomb[tk] = (domTombs && domTombs[id]) || now;
     }
 
@@ -628,6 +642,19 @@ async function _reconcile(opts) {
         synced: !report.metaDeferred,
         ...(report.metaDeferred ? { reason: "delete_deferred" } : {}),
       });
+      continue;
+    }
+    // 部分削除の墓石を今回 meta に書けない（metaDeferred かつ今回この domain で墓石が立った）場合、
+    // 短縮 item を publish すると shadow 無し/stale 端末が「削除済みノートが cloud から消えたのに墓石無し」を
+    // 見て自分の stale コピーを再 publish しうる（全消しは上の R2c で温存。その部分削除版。Codex 指摘）。
+    // 既存 cloud item を温存して削除伝播を保留する（shadow も下の R2b が newTombDomains を凍結＝次回 base
+    // チャネルで再検出、meta が縮んだ回に短縮 item＋墓石を書く）。既存 cloud item が無ければ温存対象も
+    // 復活元も無いので通常書き込みに進む。
+    if (report.metaDeferred && newTombDomains.has(domain) && sync.byDomain[domain]) {
+      used += bytesOf({ [key]: sync.rawByDomain[domain] });
+      itemCount += 1;
+      delete nextShadowNotes[domain]; // R2b 凍結が削除前 base を復元する
+      report.domains.push({ domain, count: merged.length, synced: false, reason: "delete_deferred" });
       continue;
     }
     // 符号化（スキーマ圧縮＋必要なら gzip。小さい方を採用）。容量判定は符号化後のサイズで行う。

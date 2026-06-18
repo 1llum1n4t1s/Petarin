@@ -7,6 +7,10 @@
 //   - 端末ごとに sync.js を別 import（?dev= でモジュール状態 _lastPush/_running を分離）
 //   - sync(クラウド)ストアは全端末で共有、local ストアは端末ごと
 
+// 契約キーは storage.js を単一の源として参照する（literal 直書きだとキー変更時に追従漏れする。CodeRabbit 指摘）。
+// storage.js はモジュール本体で chrome を触らないので、chrome モック前に静的 import しても安全。
+import { LOCAL_TOMBS_KEY } from "../src/shared/storage.js";
+
 let PASS = 0, FAIL = 0;
 function ok(cond, name, detail) {
   if (cond) { PASS++; console.log(`  ✅ ${name}`); }
@@ -59,7 +63,7 @@ function makeDevice(syncStore, deviceId) {
 const KEY_NOTES = "petarin:notes";
 const KEY_SETTINGS = "petarin:settings";
 const KEY_DEVICE = "petarin:sync:device";
-const KEY_LOCAL_TOMBS = "petarin:sync:localTombs";
+const KEY_LOCAL_TOMBS = LOCAL_TOMBS_KEY; // storage.js の契約定数を参照（単一の源）
 
 function seedDevice(dev, { notes = {}, settings = {} } = {}) {
   dev.localStore[KEY_DEVICE] = dev.deviceId;
@@ -1175,9 +1179,98 @@ async function scenarioS36() {
   ok(r.usedBytes === rawMetaBytes, "tomb 配列の生サイズが usedBytes に算入される（sanitize 後の小サイズに化けない）", `usedBytes=${r.usedBytes} raw=${rawMetaBytes}`);
 }
 
+// ════════════════════════════════════════════════════════════════
+// S37（Codex）: 同期 OFF（shadow 破棄）中に削除→再 ON で、localTombs を消費して stale な remote を
+//   pull で復活させない（base 喪失をまたいで削除を保持）。対照: localTombs 無しだと復活する。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS37() {
+  console.log("S37（Codex#2）同期 OFF 中の削除が再 ON 後も保持される（stale remote を復活させない）:");
+  const t0 = 37_000_000;
+  // 本命: localTombs 在り → 削除保持
+  const sync = {}; const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  seedDevice(A, { notes: { "ex.com": [note("N", "本文", t0)] } });
+  await reconcileAs(A, mod, { now: t0 });                 // cloud に N、A shadow に N
+  A.localStore["petarin:sync:shadow"] = { notes: {}, settings: null, settingsT: 0 }; // OFF＝shadow 破棄(purge 相当)
+  A.localStore[KEY_NOTES] = {};                            // OFF 中に N を削除
+  A.localStore[KEY_LOCAL_TOMBS] = { "ex.com": { N: t0 + DAY } }; // 実削除時刻を記録
+  await reconcileAs(A, mod, { now: t0 + 2 * DAY });        // 再 ON で reconcile
+  ok(!(localNotes(A)["ex.com"] || []).some((n) => n.id === "N"), "OFF 中の削除が保持され N が復活しない", JSON.stringify(localNotes(A)["ex.com"] || []));
+  // 対照: localTombs 無しだと base 喪失で「新規 remote 追加」と誤認し復活する（旧挙動）
+  const sync2 = {}; const B = makeDevice(sync2, "dev-B");
+  const modB = await loadSync();
+  seedDevice(B, { notes: { "ex.com": [note("N", "本文", t0)] } });
+  await reconcileAs(B, modB, { now: t0 });
+  B.localStore["petarin:sync:shadow"] = { notes: {}, settings: null, settingsT: 0 };
+  B.localStore[KEY_NOTES] = {}; // localTombs を残さない
+  await reconcileAs(B, modB, { now: t0 + 2 * DAY });
+  ok((localNotes(B)["ex.com"] || []).some((n) => n.id === "N"), "対照: localTombs 無しだと stale remote が pull で復活（旧挙動を再現）", JSON.stringify(localNotes(B)["ex.com"] || []));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S38（Codex）: metaDeferred 中の「部分削除」は短縮 item を publish せず旧 cloud item を温存する
+//   （墓石無しの短縮を見た shadow 無し端末が削除済みノートを再 publish するのを防ぐ。R2c の部分削除版）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS38() {
+  console.log("S38（Codex#1）metaDeferred 中の部分削除は短縮 item を publish せず旧 cloud item を温存:");
+  const sync = {}; const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const base = 38_000_000;
+  const tomb = {};
+  for (let i = 0; i < 400; i++) tomb[`d${i}.example.com${SEP}n_${i}`] = base - i * 1000; // 8KB 超で metaDeferred
+  sync[KEY_META] = { v: 1, tomb };
+  seedDevice(A, { notes: { "ex.com": [note("K", "残す", base), note("V", "消す", base)] } });
+  const r0 = await reconcileAs(A, mod, { now: base });
+  ok(r0.metaDeferred === true, "metaDeferred 状態（墓石 8KB 超）", JSON.stringify(r0.metaDeferred));
+  const exKey = mod.domainKey("ex.com");
+  A.localStore[KEY_NOTES]["ex.com"] = [note("K", "残す", base)]; // V を削除（部分削除）
+  const r1 = await reconcileAs(A, mod, { now: base + DAY });
+  const ex = r1.domains.find((d) => d.domain === "ex.com");
+  ok(ex && ex.synced === false && ex.reason === "delete_deferred", "部分削除は delete_deferred で保留", JSON.stringify(ex));
+  const decoded = await mod.decodeDomainItem(sync[exKey]);
+  const ids = decoded.map((n) => n.id).sort();
+  ok(ids.length === 2 && ids[0] === "K" && ids[1] === "V", "cloud item は短縮されず [K,V] を温存", JSON.stringify(ids));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S39（Codex）: 破損ペイロード {d:"ex.com", n:"bad"}（throw しないが不正）は corrupt 隔離し、空扱いで
+//   local を削除しない（旧実装は [] 復号→remote 全削除と誤認して local を消し墓石まで書いた）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS39() {
+  console.log("S39（Codex#4）破損ペイロード {d,n:'bad'} は corrupt 隔離し local を消さない:");
+  const sync = {}; const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 39_000_000;
+  seedDevice(A, { notes: { "ex.com": [note("N", "本文", t0)] } });
+  await reconcileAs(A, mod, { now: t0 });
+  const exKey = mod.domainKey("ex.com");
+  sync[exKey] = { d: "ex.com", n: "bad" }; // n が配列でない・z 無し＝破損
+  const r = await reconcileAs(A, mod, { now: t0 + DAY });
+  ok((localNotes(A)["ex.com"] || []).some((n) => n.id === "N"), "破損 remote で local の N を消さない（corrupt 隔離）", JSON.stringify(localNotes(A)["ex.com"] || []));
+  ok(r.domains.some((d) => d.domain === "ex.com" && d.reason === "decode_error"), "ex.com は decode_error として隔離報告", JSON.stringify(r.domains));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S40（Codex）: 制御文字（SEP=U+001F 等）を含むドメインの sync item は isValidDomain で弾き orphan 扱い
+//   （`https://${domain}/` のオリジン脱出、SEP による tombKey 簿記の取り違えを防ぐ）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS40() {
+  console.log("S40（Codex#3）制御文字を含むドメインの sync item は取り込まない（orphan）:");
+  const sync = {}; const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 40_000_000;
+  const badDomain = "ev" + String.fromCharCode(0x1f) + "il.com"; // SEP を含む
+  const badKey = mod.domainKey(badDomain); // 正規ハッシュ上に置く＝#A は通過し #B(isValidDomain)だけが防壁
+  sync[badKey] = { d: badDomain, n: [] };
+  seedDevice(A, { notes: { "ok.com": [note("k", "x", t0)] } });
+  const r = await reconcileAs(A, mod, { now: t0 });
+  ok(!r.domains.some((d) => d.domain === badDomain), "制御文字ドメインは同期ドメインとして扱わない（orphan）", JSON.stringify(r.domains.map((d) => d.domain)));
+  ok(!!sync[badKey], "制御文字 item は温存（消さない）", String(!!sync[badKey]));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);
