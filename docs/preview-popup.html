@@ -10,7 +10,9 @@
       href="https://fonts.googleapis.com/css2?family=Yusei+Magic&family=Zen+Maru+Gothic:wght@400;500;700;900&display=swap"
       rel="stylesheet"
     />
+    <link rel="stylesheet" href="../src/fonts/fonts.css" />
     <link rel="stylesheet" href="../src/popup/popup.css" />
+    <script src="../src/shared/markdown.js"></script>
     <script>
       // ── chrome API モック ─────────────────────────────────────────
       const now = Date.now();
@@ -23,10 +25,14 @@
                 collapsedTranslucent: true,
                 translucentOpacity: 0.45,
                 showOnPage: true,
+                font: "klee",
+                fontSize: 16,
+                lineNumbers: false,
+                defaultColor: "coral",
               },
               "petarin:notes": {
                 "www.reddit.com": [
-                  { id: "a1", text: "Fable 5 の事件、あとで詳しく調べる", color: "yellow", posRatio: 0.3, createdAt: now - 3600e3, updatedAt: now - 120e3 },
+                  { id: "a1", text: "## Fable 5 の事件\n\n- **あとで** 詳しく調べる\n- `r/news` も見る", color: "yellow", posRatio: 0.3, createdAt: now - 3600e3, updatedAt: now - 120e3 },
                   { id: "a2", text: "r/Xenoblade のスレ\n返信する", color: "mint", posRatio: 0.5, createdAt: now - 7200e3, updatedAt: now - 6000e3 },
                 ],
                 "github.com": [
@@ -101,6 +107,19 @@
         <label class="switch-row">
           <span class="switch-label">ページ上に付箋を表示<small>オフにすると、このポップアップだけで管理</small></span>
           <span class="switch"><input type="checkbox" id="showOnPageToggle" /><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="select-row">
+          <span class="select-label">文字の書体<small>付箋本文のフォント（手書き風も選べます）</small></span>
+          <select id="fontSelect"></select>
+        </label>
+        <div class="font-sample" id="fontSample" aria-hidden="true">ぺたりんメモ 永 Aa 0123 ねこ🐾</div>
+        <label class="select-row">
+          <span class="select-label">文字の大きさ<small>付箋本文のフォントサイズ</small></span>
+          <select id="fontSizeSelect"></select>
+        </label>
+        <label class="switch-row">
+          <span class="switch-label">行番号を表示する<small>編集中に行番号（行ガター）を表示</small></span>
+          <span class="switch"><input type="checkbox" id="lineNumbersToggle" /><span class="track"><span class="thumb"></span></span></span>
         </label>
       </section>
       <!-- 付箋デスク（フルページ管理タブ）への入口 -->
