@@ -156,9 +156,6 @@
     // 発火して再挿入してしまう（Codex 指摘）。メモリ上の真実 notes に存在しない id は保存しない。
     if (!notes.some((n) => n && n.id === note.id)) return Promise.resolve();
     return withWrite(async () => {
-      const raw = await chrome.storage.local.get(KEY_NOTES);
-      const all = raw[KEY_NOTES] || {};
-      const list = (all[domain] || []).slice();
       const saved = {
         id: note.id,
         text: noteText(note),
@@ -168,12 +165,23 @@
         createdAt: note.createdAt,
         updatedAt: note.updatedAt,
       };
-      const i = list.findIndex((n) => n && n.id === note.id);
-      if (i >= 0) list[i] = saved;
-      else list.push(saved);
-      all[domain] = list;
-      notesWriteAt = Date.now(); // set の前に打刻：onChanged が set 完了と同期発火しても自エコーを確実に無視
-      await chrome.storage.local.set({ [KEY_NOTES]: all });
+      // verify-before-set + 再試行。毎回「最新を読む→自分のこの 1 枚だけ適用→set」で、他ドメイン／同ドメインの
+      // 他付箋（background reconcile が pull した変更）を丸ごと書き戻しで巻き戻さない。set 後にもう一度読み、
+      // get〜set の隙に reconcile が割り込んで自分の付箋を消していたら一度だけ最新へ当て直す（reconcile 側も
+      // verify-before-set で content に道を譲るので競合は収束する。chrome.storage に CAS が無いため窓は最小化に
+      // 留め、消えた場合だけ再適用する＝他PCの正当な更新（id 残存・内容違い）とは戦わない。Codex 指摘）。
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const all = (await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {};
+        const list = (all[domain] || []).slice();
+        const i = list.findIndex((n) => n && n.id === note.id);
+        if (i >= 0) list[i] = saved;
+        else list.push(saved);
+        all[domain] = list;
+        notesWriteAt = Date.now(); // set の前に打刻：onChanged が set 完了と同期発火しても自エコーを確実に無視
+        await chrome.storage.local.set({ [KEY_NOTES]: all });
+        const after = ((await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {})[domain] || [];
+        if (after.some((n) => n && n.id === note.id)) break; // 自分の付箋が残っていれば完了（内容差は他PC更新として尊重）
+      }
     });
   }
 

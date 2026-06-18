@@ -89,10 +89,12 @@ export const isValidDomain = (d) =>
   // 制御文字 C0(U+0000〜U+001F)/DEL(U+007F) を拒否。`https://${domain}/` が不正 URL になるうえ、
   // SEP=U+001F は tombKey の区切り文字なので、埋め込まれると split(SEP) で別ドメインの削除簿記に化ける（Codex 指摘）。
   typeof d === "string" && d.length > 0 && d.length < 256 && !/[\s/@?#\\\u0000-\u001f\u007f]/.test(d) &&
-  // プロトタイプ汚染キーを弾く。素の {} マップへ代入すると __proto__ は own プロパティを作らず
-  // setter を起動し、Object.keys に乗らない＝rawByDomain の会計から漏れて write_failed の元になる
-  // （d が真の hostname ならこれらの語にはならない。Codex 指摘）。
-  d !== "__proto__" && d !== "constructor" && d !== "prototype";
+  // 継承プロパティ名（__proto__/constructor/toString/valueOf/hasOwnProperty 等）を全て弾く。素の {} を
+  // ドメインマップに使うため、これらは own エントリが無くても `shadow.notes[d]` が Object.prototype の
+  // メンバ（関数等）に解決し、mergeDomainNotes が配列でなく関数を受け取って throw → 同期が wedge する
+  // （`d in {}` は Object.prototype 由来の継承名を true にするので一括で拒否できる。__proto__/constructor も
+  //  これで捕捉。prototype だけは Object.prototype に無いので個別に弾く。真の hostname はこれらにならない。Codex）。
+  d !== "prototype" && !(d in {});
 
 // ════════════════════════════════════════════════════════════════
 //  符号化層（sync 容量対策: ①スキーマ圧縮 ②gzip。ローカルは無加工のまま）
@@ -113,17 +115,40 @@ export function compactNote(n) {
   const colorId = COLORS.some((c) => c.id === n.color) ? n.color : DEFAULT_COLOR;
   return [n.id, n.text || "", colorId, n.icon || "", n.posRatio, n.createdAt || 0, (n.updatedAt || 0) - (n.createdAt || 0)];
 }
-export function expandNote(t) {
-  const created = t[5] || 0;
+// 復号した Note を保存形へ正規化する。crafted/破損 sync item の n[] に非文字列 text やフル Note が
+// 混ざると、そのまま byDomain→local へ書かれ、popup/manage の描画 `note.text?.trim()` が TypeError で
+// UI を壊す（Codex 指摘）。型を強制し、id が文字列でなければ null（捨てる）。LWW のため updatedAt は now に
+// しない（実値を維持。非数なら createdAt フォールバック）。import 側の normalizeImportedNote と対の防御。
+export function sanitizeNote(n) {
+  if (!n || typeof n.id !== "string") return null;
+  const num = (v, fb) => (typeof v === "number" && Number.isFinite(v) ? v : fb);
+  let posRatio = num(n.posRatio, 0.5);
+  if (posRatio < 0) posRatio = 0;
+  else if (posRatio > 1) posRatio = 1;
+  const createdAt = num(n.createdAt, 0);
   return {
+    id: n.id,
+    text: typeof n.text === "string" ? n.text : "",
+    color: (COLORS.find((c) => c.id === n.color) || COLORS[0]).id,
+    icon: typeof n.icon === "string" ? n.icon : "",
+    posRatio,
+    createdAt,
+    updatedAt: num(n.updatedAt, createdAt),
+  };
+}
+export function expandNote(t) {
+  if (!Array.isArray(t)) return null;
+  const created = typeof t[5] === "number" && Number.isFinite(t[5]) ? t[5] : 0;
+  const delta = typeof t[6] === "number" && Number.isFinite(t[6]) ? t[6] : 0;
+  return sanitizeNote({
     id: t[0],
-    text: t[1] || "",
-    color: (COLORS.find((c) => c.id === t[2]) || COLORS[0]).id,
-    icon: t[3] || "",
+    text: t[1],
+    color: t[2],
+    icon: t[3],
     posRatio: t[4],
     createdAt: created,
-    updatedAt: created + (t[6] || 0),
-  };
+    updatedAt: created + delta,
+  });
 }
 
 const hasCompression = () => typeof CompressionStream !== "undefined";
@@ -179,11 +204,13 @@ export async function encodeDomainItem(domain, notes, key) {
 export async function decodeDomainItem(item) {
   if (typeof item.z === "string") {
     const json = await gunzipToString(b64ToBytes(item.z));
-    return JSON.parse(json).map(expandNote);
+    const arr = JSON.parse(json);
+    if (!Array.isArray(arr)) throw new Error("malformed domain payload"); // z 復号が配列でない＝破損
+    return arr.map(expandNote).filter(Boolean);
   }
   if (Array.isArray(item.n)) {
-    // タプル列を展開（保険として、万一フル Note が入っていてもそのまま通す）
-    return item.n.map((e) => (Array.isArray(e) ? expandNote(e) : e));
+    // タプル列を展開。フル Note が混ざっても sanitizeNote で型を強制（非文字列 text 等で描画を壊さない・Codex）。
+    return item.n.map((e) => (Array.isArray(e) ? expandNote(e) : sanitizeNote(e))).filter(Boolean);
   }
   // z も n[] も無い＝ペイロード破損（例 { d, n:"bad" }）。空配列を返すと「リモートで全削除」と誤認して
   // ローカルを消し墓石まで書く。throw して readSync に corrupt 隔離させる（触らない＝データ保護。Codex 指摘）。
@@ -274,6 +301,14 @@ export function pickSettings(baseS, baseT, localS, remoteS, remoteT, now) {
 
   const localChanged = !eq(local, base);              // この端末で見た目設定が変わった
   const remoteChanged = remote ? !eq(remote, base) : false;
+
+  // 初回設定同期（shadow に設定が無く base が空）で既存 remote がある場合は remote を採用（pull）する。
+  // base が無いと local の既定値も base({}) との差＝「変化」に見え、下の localChanged 分岐が他端末で同期済みの
+  // 見た目設定を新端末の既定値で上書きして消してしまう（2 台目で「見た目設定」を ON にした瞬間に消える。Codex）。
+  // remote が無い真の初回（1 台目）は下の localChanged で push される。opt-in なので「同期済みを採用」を既定にする。
+  if (!baseS && remote) {
+    return { settings: remote, settingsT: remoteT || now, changedLocal: true, changedRemote: false };
+  }
 
   if (remoteChanged && !localChanged) {
     // 片側（リモート）だけが base から変化 → リモートを採用（local へ反映）
@@ -496,11 +531,14 @@ async function _reconcile(opts) {
   ]);
   const tomb = sync.meta.tomb || {};
   // corrupt（復号失敗）ドメインは scope から外し、local/sync とも一切いじらない（データ保護）。
+  // 不正ドメイン名（継承プロパティ名・制御文字等）も除外する。syncScope="selected" の syncDomains は
+  // ローカル設定＝readSync を通らないので、ここで isValidDomain しないと `toString` 等が素の {} マップ上で
+  // Object.prototype のメンバに解決し mergeDomainNotes が throw → wedge する（Codex）。
   const domains = scopeDomains(
     cfg,
     Object.keys(localNotes),
     Object.keys(sync.byDomain)
-  ).filter((d) => !sync.corrupt.has(d));
+  ).filter((d) => isValidDomain(d) && !sync.corrupt.has(d));
 
   // ── 付箋: ドメインごとに三方向マージ ──
   // この reconcile で新規に立った墓石のドメインを後で特定するため、マージ前のキー集合を控える
@@ -629,28 +667,30 @@ async function _reconcile(opts) {
     }
     usedKeys.set(key, domain);
     if (!merged.length) {
-      // 空になった → sync から削除。ただし metaDeferred（この回 meta を書けない）の時は cloud item を
-      // 消さない。消すと "all" スコープでこのドメインが local も remote も持たなくなり scope から脱落、
-      // meta 回復後も mergeDomainNotes が再呼出されず削除墓石を永続化できない＝独立コピー rejoin で恒久
-      // ゾンビ化する（監査 R2c）。cloud item を残せばドメインが remote/scope に留まり、shadow も R2b 凍結で
-      // 削除前 base を保つので、meta が縮んだ回に削除を再検出して墓石を書ける。削除伝播は meta 回復まで
-      // 保留される（extreme churn 限定。追加・編集は通常どおり同期）。
-      if (sync.byDomain[domain] && !report.metaDeferred) {
+      // 空になった → sync から削除。削除を保留するのは「metaDeferred かつ今回この回に新しく立った墓石
+      // （newTombDomains）」のときだけ。消すと "all" スコープでこのドメインが local も remote も持たなくなり
+      // scope から脱落、meta 回復後も mergeDomainNotes が再呼出されず削除墓石を永続化できない＝独立コピー
+      // rejoin で恒久ゾンビ化する（監査 R2c）。逆に墓石が既に cloud meta に永続化済み（newTombDomains 非該当＝
+      // durable backstop 在り）なら、metaDeferred でも item を消してよい。残すと bytes/slot を無駄に占有し、
+      // 削除しても quota が空かない（Codex 指摘）。保留する場合のみ cloud item を残し shadow も R2b 凍結で
+      // 削除前 base を保つので、meta が縮んだ回に削除を再検出して墓石を書ける。
+      const deferDelete = report.metaDeferred && newTombDomains.has(domain);
+      if (sync.byDomain[domain] && !deferDelete) {
         removeKeys.push(key);
       } else if (sync.byDomain[domain]) {
-        // metaDeferred で温存する孤児 cloud item は item/バイトとも会計に残す（cloud に残るものを
-        // 反映し、後続ドメインの quota/item 判定を実体と揃える＝未計上による write_failed を防ぐ。監査 R2c-1/Codex#12）。
+        // 保留で温存する孤児 cloud item は item/バイトとも会計に残す（cloud に残るものを反映し、後続ドメインの
+        // quota/item 判定を実体と揃える＝未計上による write_failed を防ぐ。監査 R2c-1/Codex#12）。
         used += bytesOf({ [key]: sync.rawByDomain[domain] });
         itemCount += 1;
       }
-      delete nextShadowNotes[domain]; // metaDeferred 時は下の R2b 凍結が削除前 base を復元する
-      // metaDeferred で削除を保留したドメインは「容量超過の未同期」ではなく「削除の保留」として区別する
-      // （manage 側で『容量上限で未同期・付箋が端末に残る』と誤表示しないため。監査 R2c-2）。
+      delete nextShadowNotes[domain]; // 保留時は下の R2b 凍結が削除前 base を復元する
+      // 削除を保留したドメインは「容量超過の未同期」ではなく「削除の保留」として区別する（manage 側で『容量
+      // 上限で未同期・付箋が端末に残る』と誤表示しないため。監査 R2c-2）。永続済み墓石の削除は synced=true。
       report.domains.push({
         domain,
         count: 0,
-        synced: !report.metaDeferred,
-        ...(report.metaDeferred ? { reason: "delete_deferred" } : {}),
+        synced: !deferDelete,
+        ...(deferDelete ? { reason: "delete_deferred" } : {}),
       });
       continue;
     }

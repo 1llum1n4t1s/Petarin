@@ -1359,9 +1359,96 @@ async function scenarioS43() {
   ok(normalizeImportedNoteRef({ text: "x" }, now) === null, "id 非文字列は null（取り込まない）", "");
 }
 
+// ════════════════════════════════════════════════════════════════
+// S44（Codex）: 復号した sync note（フル Note 混入・タプルとも）を sanitizeNote で正規化する。非文字列
+//   text 等が byDomain→local へ流れると描画 note.text?.trim() が throw する。id 非文字列は捨てる。
+//   load-bearing: 旧 passthrough(`: e`)だと text が {} のまま＝typeof==="object" で assertion FAIL。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS44() {
+  console.log("S44（Codex）復号した note の非文字列 text 等を正規化（描画 crash を防ぐ）:");
+  const mod = await loadSync();
+  const item1 = { d: "ex.com", n: [{ id: "x", text: {}, posRatio: "nope", createdAt: null }] };
+  const dec1 = await mod.decodeDomainItem(item1);
+  ok(dec1.length === 1 && typeof dec1[0].text === "string" && dec1[0].text === "", "フル Note の非文字列 text を '' へ正規化", JSON.stringify(dec1[0]));
+  ok(typeof dec1[0].posRatio === "number" && dec1[0].posRatio >= 0 && dec1[0].posRatio <= 1, "非数 posRatio を 0〜1 の数へ", String(dec1[0].posRatio));
+  ok(typeof dec1[0].text.trim === "function", "正規化後は text.trim() が呼べる（描画が throw しない）", typeof dec1[0].text.trim);
+  const item2 = { d: "ex.com", n: [["y", {}, "yellow", "", 0.5, 1000, 0]] };
+  const dec2 = await mod.decodeDomainItem(item2);
+  ok(dec2[0].text === "", "タプルの非文字列 text も '' へ正規化", JSON.stringify(dec2[0]));
+  const item3 = { d: "ex.com", n: [{ text: "noid" }, ["z", "ok", "yellow", "", 0.5, 1, 0]] };
+  const dec3 = await mod.decodeDomainItem(item3);
+  ok(dec3.length === 1 && dec3[0].id === "z", "id 非文字列の要素は捨てる", JSON.stringify(dec3.map((n) => n.id)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S45（Codex）: 継承プロパティ名（toString/valueOf/constructor/__proto__ 等）のドメインを isValidDomain で
+//   拒否し、selected スコープの syncDomains に混ざっても reconcile を wedge させない（素の {} マップ上で
+//   shadow.notes[d] が Object.prototype のメンバに解決→mergeDomainNotes が配列でなく関数を受け throw）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS45() {
+  console.log("S45（Codex）継承プロパティ名ドメイン（toString 等）を拒否し wedge させない:");
+  const mod = await loadSync();
+  for (const bad of ["toString", "valueOf", "hasOwnProperty", "constructor", "__proto__", "isPrototypeOf"]) {
+    ok(!mod.isValidDomain(bad), `isValidDomain("${bad}") は false`, "");
+  }
+  ok(mod.isValidDomain("example.com"), "通常ドメインは通す", "");
+  const sync = {}; const A = makeDevice(sync, "dev-A");
+  seedDevice(A, { notes: { "ok.com": [note("k", "x", 45_000_000)] }, settings: { syncScope: "selected", syncDomains: ["toString", "ok.com"] } });
+  const r = await reconcileAs(A, mod, { now: 45_000_000 });
+  ok(!r.error, "toString を含む selected スコープで reconcile が壊れない", JSON.stringify(r.error));
+  ok(!r.domains.some((d) => d.domain === "toString"), "toString は同期ドメインに含まれない", JSON.stringify(r.domains.map((d) => d.domain)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S46（Codex）: 2 台目が初回（shadow 無し）に設定同期を ON にしたとき、既存 remote 設定を pull する
+//   （base 無しだと local 既定値も「変化」に見え、cloud を新端末の既定値で上書きして同期済み見た目を消す）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS46() {
+  console.log("S46（Codex）2台目の初回設定同期は既存 remote を pull（既定値で上書きしない）:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const B = makeDevice(sync, "dev-B");
+  const modA = await loadSync();
+  const modB = await loadSync();
+  const t0 = 46_000_000;
+  seedDevice(A, { notes: {}, settings: { syncSettings: true, side: "left", creatorRatio: 0.3 } });
+  await reconcileAs(A, modA, { now: t0 });
+  const sKey = modA.SYNC_KEYS.settings;
+  ok(sync[sKey] && sync[sKey].s && sync[sKey].s.side === "left", "A の見た目設定(side=left)が cloud に push される", JSON.stringify(sync[sKey] && sync[sKey].s));
+  seedDevice(B, { notes: {}, settings: { syncSettings: true, side: "right" } });
+  await reconcileAs(B, modB, { now: t0 + 1000 });
+  ok(B.localStore[KEY_SETTINGS].side === "left", "B は A の同期済み設定(side=left)を pull する", `side=${B.localStore[KEY_SETTINGS].side}`);
+  ok(sync[sKey].s.side === "left", "cloud の設定が B の既定値(side=right)で上書きされない", JSON.stringify(sync[sKey].s));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S47（Codex）: metaDeferred でも、墓石が既に cloud meta に永続済み（newTombDomains 非該当＝durable
+//   backstop 在り）のドメインは cloud item を削除する（残すと bytes/slot を無駄に占有し quota を空けられない）。
+//   load-bearing: 旧 `!report.metaDeferred` ゲートだと metaDeferred 時に常に温存＝item が残り FAIL。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS47() {
+  console.log("S47（Codex）永続済み墓石なら metaDeferred でも cloud item を削除（quota を空ける）:");
+  const sync = {}; const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const base = 47_000_000;
+  const exKey = mod.domainKey("ex.com");
+  const tk = "ex.com" + SEP + "V";
+  const tomb = { [tk]: base - 1000 }; // ex.com/V の墓石は「既に cloud meta に永続済み」
+  for (let i = 0; i < 400; i++) tomb[`d${i}.example.com${SEP}n_${i}`] = base - i * 1000; // 8KB 超で metaDeferred
+  sync[KEY_META] = { v: 1, tomb };
+  sync[exKey] = { d: "ex.com", n: [mod.compactNote(note("V", "消", base - 2000))] }; // 以前 deferred された stale item
+  seedDevice(A, { notes: {} });
+  A.localStore["petarin:sync:shadow"] = { notes: { "ex.com": [note("V", "消", base - 2000)] }, settings: null, settingsT: 0 };
+  const r = await reconcileAs(A, mod, { now: base });
+  ok(r.metaDeferred === true, "metaDeferred 状態（墓石 8KB 超）", JSON.stringify(r.metaDeferred));
+  const ex = r.domains.find((d) => d.domain === "ex.com");
+  ok(ex && ex.synced === true && ex.reason !== "delete_deferred", "永続済み墓石の削除は保留せず synced", JSON.stringify(ex));
+  ok(!sync[exKey], "cloud item が削除される（quota が空く）", String(!!sync[exKey]));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);
