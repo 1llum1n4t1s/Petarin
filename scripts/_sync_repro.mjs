@@ -1268,9 +1268,100 @@ async function scenarioS40() {
   ok(!!sync[badKey], "制御文字 item は温存（消さない）", String(!!sync[badKey]));
 }
 
+// ════════════════════════════════════════════════════════════════
+// S41（Codex）: falsy(false/0/"") に破損した settings item も「キーが在る」事実で会計に算入する
+//   （`|| null` で存在を握り潰すと bytes も slot も漏れ、上限近傍で write_failed に倒れる）。
+//   load-bearing: settings item 無し(対照)との usedBytes 差が、その item の生バイトと一致すること。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS41() {
+  console.log("S41（Codex）falsy に破損した settings item も実在で会計に算入（会計漏れしない）:");
+  const mod = await loadSync();
+  const t0 = 41_000_000;
+  const SKEY = mod.SYNC_KEYS.settings;
+  // 対照: settings item 無し（syncSettings:false なので自分でも書かない）
+  const sync0 = {}; const C = makeDevice(sync0, "dev-C");
+  seedDevice(C, { notes: { "ok.com": [note("k", "x", t0)] } });
+  const r0 = await reconcileAs(C, mod, { now: t0 });
+  // falsy 破損 settings item 在り。syncSettings:false なので今回 settings を書かない＝既存 item として会計される。
+  const sync1 = {}; const A = makeDevice(sync1, "dev-A");
+  sync1[SKEY] = false;
+  seedDevice(A, { notes: { "ok.com": [note("k", "x", t0)] } });
+  const r1 = await reconcileAs(A, mod, { now: t0 });
+  const sBytes = mod.bytesOf({ [SKEY]: false });
+  ok(!r1.error, "falsy settings item で reconcile が壊れない", JSON.stringify(r1.error));
+  // 旧 `|| null` だと rawSettings=null・`else if (sync.rawSettings)` を falsy で素通り＝会計漏れ（diff=0）。
+  ok(r1.usedBytes - r0.usedBytes === sBytes, "falsy settings item の bytes が usedBytes に算入される", `diff=${r1.usedBytes - r0.usedBytes} expect=${sBytes}`);
+}
+
+// ════════════════════════════════════════════════════════════════
+// S42（Codex）: 満杯ストア(512 item・meta 未存在)で削除すると、初の墓石 meta を書くのに枠が要る。
+//   remove で先に枠を空けてから meta を書けば write_failed にならず削除が伝播する（meta-first だと
+//   513 item 目で MAX_ITEMS に当たり落ちて削除が永久に詰む）。
+//   load-bearing: maxItems=512 を実 set 時に判定させる（meta-first 実装なら r.error が出て d0 が残る）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS42() {
+  console.log("S42（Codex）満杯ストア+meta未存在の削除は remove で枠を空けてから初 meta を書く:");
+  const sync = {}; const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 42_000_000;
+  const notes = {};
+  // gate は meta 用に 1 slot 予約するので、512 ドメインだと同期は 511 まで。満杯(512 item)かつ meta 無しを
+  // 作るため、note 511 を同期した上で未知 item を 1 個直接置いて 512 item に整える（meta はまだ無い）。
+  for (let i = 0; i < 511; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
+  seedDevice(A, { notes });
+  await reconcileAs(A, mod, { now: t0 }); // cloud=511 note item、墓石空＝meta 未書き込み
+  sync["petarin:sync:legacy-blob"] = { junk: "z" }; // 未知 item で 512 に満たす
+  ok(Object.keys(sync).length === 512 && !sync[KEY_META], "cloud を 512 item・meta 無しに整える", `items=${Object.keys(sync).length} meta=${!!sync[KEY_META]}`);
+  // d0 を削除（初の墓石＝meta 新規 item が必要）。満杯なので meta-first だと 513 item 目で MAX_ITEMS。
+  const next = structuredClone(notes);
+  delete next["d0.example.com"];
+  A.localStore[KEY_NOTES] = next;
+  A.ctl.maxItems = 512;
+  const r = await reconcileAs(A, mod, { now: t0 + DAY });
+  A.ctl.maxItems = null;
+  ok(!r.error, "満杯+meta未存在の削除で write_failed にならない（remove 先行）", JSON.stringify(r.error));
+  ok(!sync[mod.domainKey("d0.example.com")], "削除したドメインの cloud item が remove される", String(!!sync[mod.domainKey("d0.example.com")]));
+  ok(!!sync[KEY_META], "初の墓石 meta item が cloud に書かれる", String(!!sync[KEY_META]));
+  ok(Object.keys(sync).length <= 512, "実 cloud item 数が上限 512 を超えない", `items=${Object.keys(sync).length}`);
+}
+
+// ════════════════════════════════════════════════════════════════
+// S43（Codex）: 外部バックアップの note を import するとき、text が非文字列（例 {}）でも文字列へ正規化して
+//   保存する（描画の note.text?.trim() が TypeError でデスク/popup を壊さない）。manage の normalizeImportedNote 相当。
+//   ここでは正規化ロジックを直接検証する（DOM 非依存）。
+// ════════════════════════════════════════════════════════════════
+function normalizeImportedNoteRef(note, now) {
+  // manage.js の normalizeImportedNote と同等（テスト用の独立実装＝契約の固定化）。
+  if (!note || typeof note.id !== "string") return null;
+  const num = (v, fb) => (typeof v === "number" && Number.isFinite(v) ? v : fb);
+  let posRatio = num(note.posRatio, 0.5);
+  if (posRatio < 0) posRatio = 0; else if (posRatio > 1) posRatio = 1;
+  return {
+    id: note.id,
+    text: typeof note.text === "string" ? note.text.slice(0, 2000) : "",
+    color: typeof note.color === "string" ? note.color : "yellow",
+    icon: typeof note.icon === "string" ? note.icon : "",
+    posRatio,
+    createdAt: num(note.createdAt, now),
+    updatedAt: now,
+  };
+}
+async function scenarioS43() {
+  console.log("S43（Codex）import の note は text 非文字列でも文字列へ正規化（描画 crash を防ぐ）:");
+  const now = 43_000_000;
+  const bad = normalizeImportedNoteRef({ id: "x", text: {}, posRatio: "nope", createdAt: null, color: 5, icon: 9 }, now);
+  ok(typeof bad.text === "string" && bad.text === "", "非文字列 text は空文字へ正規化", JSON.stringify(bad.text));
+  ok(typeof (bad.text?.trim) === "function", "正規化後は text.trim() が呼べる（描画が throw しない）", typeof bad.text?.trim);
+  ok(typeof bad.posRatio === "number" && bad.posRatio >= 0 && bad.posRatio <= 1, "非数 posRatio は 0〜1 の数へ", String(bad.posRatio));
+  ok(bad.createdAt === now, "非数 createdAt は now へ", String(bad.createdAt));
+  ok(typeof bad.color === "string" && typeof bad.icon === "string", "非文字列 color/icon は文字列へ", `${bad.color}/${bad.icon}`);
+  ok(bad.updatedAt === now, "updatedAt は now（復元＝今の操作）", String(bad.updatedAt));
+  ok(normalizeImportedNoteRef({ text: "x" }, now) === null, "id 非文字列は null（取り込まない）", "");
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);

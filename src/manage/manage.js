@@ -571,6 +571,26 @@ async function exportNotes() {
   showToast(`${count} 枚を書き出したよ`);
 }
 
+// 外部バックアップ（利用者が編集可能）の note を保存形へ正規化する。text が非文字列（例 {}）だと
+// 描画経路の note.text?.trim() が TypeError を投げ、デスク/popup が壊れる（Codex 指摘）。描画・配置・
+// 相対時刻が触る型（text/posRatio/createdAt/color/icon）を防御的に揃え、未知の余剰フィールドは捨てる。
+function normalizeImportedNote(note, now) {
+  if (!note || typeof note.id !== "string") return null;
+  const num = (v, fallback) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+  let posRatio = num(note.posRatio, 0.5);
+  if (posRatio < 0) posRatio = 0;
+  else if (posRatio > 1) posRatio = 1;
+  return {
+    id: note.id,
+    text: typeof note.text === "string" ? note.text.slice(0, MAX_CHARS) : "",
+    color: typeof note.color === "string" ? note.color : DEFAULT_COLOR,
+    icon: typeof note.icon === "string" ? note.icon : "",
+    posRatio,
+    createdAt: num(note.createdAt, now),
+    updatedAt: now, // 復元＝今の操作。同期削除の墓石(削除時刻)に LWW で勝たせる
+  };
+}
+
 async function importNotes(e) {
   const file = e.target.files && e.target.files[0];
   e.target.value = ""; // 同じファイルを連続で選べるようにリセット
@@ -599,7 +619,8 @@ async function importNotes(e) {
     if (!Array.isArray(notes[domain])) continue;
     if (!isValidDomain(domain)) { skipped++; continue; }
     for (const note of notes[domain]) {
-      if (note && typeof note.id === "string") pairs.push({ domain, note: { ...note, updatedAt: now } });
+      const clean = normalizeImportedNote(note, now);
+      if (clean) pairs.push({ domain, note: clean });
     }
   }
   if (!pairs.length) { showToast(skipped ? "取り込めるドメインが無かった（不正なドメイン名はスキップ）" : "取り込める付箋が無かったよ"); return; }

@@ -332,7 +332,11 @@ async function getShadow() {
 //  corrupt     : 復号に失敗したドメイン集合（reconcile はこれらを「今回触らない」で隔離）
 async function readSync() {
   const all = await chrome.storage.sync.get(null);
-  const settingsItem = all[SYNC_KEYS.settings] || null;
+  // settings item は「キーが在るか」で会計する（truthy かではない）。破損で false/0/"" 等の falsy 値に
+  // なっても cloud に物理的に残り slot/バイトを占有するため、`|| null` で存在を握り潰すと会計から漏れ、
+  // 上限近傍で「実 quota 超過なのに gate 通過→write_failed」になる（決定的 item_limit に倒せない。Codex）。
+  const settingsExists = SYNC_KEYS.settings in all;
+  const settingsItem = settingsExists ? all[SYNC_KEYS.settings] : null;
   // meta は信頼境界の外（別端末・手動改竄・基盤破損・将来の別実装）で非オブジェクトになりうる。
   // primitive へのプロパティ代入は strict mode で throw し reconcile 全体が reject＝全同期停止する
   // ため、型ガードして不正値は新規初期化で握る（byDomain item と同じ防御を meta にも揃える）。
@@ -390,14 +394,19 @@ async function readSync() {
     settings: settingsS,
     settingsT: settingsItem ? settingsItem.t || 0 : 0,
     // 生の settings item（破損で settingsS=null に sanitize しても cloud には残り占有するので、会計は
-    // sanitize 後ではなく実在で数える。Codex#1）。
+    // sanitize 後ではなく実在で数える。Codex#1）。falsy 値（false/0/""）も占有するので存在フラグで会計する。
     rawSettings: settingsItem,
+    settingsExists,
     orphanBytes,
     orphanCount,
     // 生の meta item の実バイト（sanitize 前にスナップショット済み）。破損（非オブジェクト/配列/部分破損）
     // で meta を sanitize しても生が cloud に残り占有するので、今回書き換えない限りこの実サイズで会計する
     // （Codex#5）。未存在は 0。
     rawMetaBytes,
+    // meta item が cloud に既存か／現在の cloud item 総数。push 順序の判断に使う（初の墓石 item を満杯
+    // ストアへ追加するとき、remove で先に枠を空けないと MAX_ITEMS で set が落ち削除が永久に伝播しない。Codex）。
+    metaExists: SYNC_KEYS.meta in all,
+    itemCountNow: Object.keys(all).length,
     byDomain,
     rawByDomain,
     corrupt,
@@ -557,9 +566,10 @@ async function _reconcile(opts) {
   let settingsBytes = 0, settingsItems = 0;
   if (setOps[SYNC_KEYS.settings]) {
     settingsBytes = bytesOf({ [SYNC_KEYS.settings]: setOps[SYNC_KEYS.settings] }); settingsItems = 1;
-  } else if (sync.rawSettings) {
+  } else if (sync.settingsExists) {
     // 今回書かないが既存の settings item は cloud に残る。破損で sanitize された（sync.settings===null）
-    // ものも item/バイトを占有するので、sanitize 後の値ではなく生 item の実サイズで数える（Codex#1）。
+    // ものも、falsy 値（false/0/""）に破損したものも item/バイトを占有するので、sanitize 後の値や truthy
+    // 判定ではなく「キーが在るか」で数え、生 item の実サイズで会計する（Codex#1）。
     settingsBytes = bytesOf({ [SYNC_KEYS.settings]: sync.rawSettings }); settingsItems = 1;
   }
   // 取り込めなかった note item（orphan）も cloud に残り総容量と item 数を占有する（Codex#4）。
@@ -762,23 +772,47 @@ async function _reconcile(opts) {
   // (2) sync への push（容量超過・レート制限・競合で reject しうる）。
   //   6a: 失敗を握りつぶさず report.error に載せ、reject させない。さらに「synced:true としたドメイン」を
   //   未同期へ落とす。自己エコー記録は push 成功時だけ行う（失敗時に記録すると次の onChanged を取りこぼす）。
-  //   順序（削除がある回）: ① 墓石 meta を先に set → ② remove で枠を空ける → ③ 残りの item を set。
-  //   ・① を remove より前に置くことで「cloud item は消えたが墓石は未保存」の窓を作らない。①(set)が失敗
-  //     すれば catch に落ちて ② に到達しない＝item は remove されず、次回再 reconcile で再検出・再 push される
-  //     （Codex#7 / S20 の順序保証を維持）。removeKeys がある回は、落とすノートの墓石が (i) 今回新規＝
-  //     setOps[meta] に載り ① で remove より先に書かれる か、(ii) 既に cloud meta に永続化済み＝今回 meta を
-  //     書かない（setOps[meta] 不在で ① をスキップし remove 直行）のいずれか。後者でも墓石は既に cloud に在る
-  //     ので復活窓は生じない（だから ① は `if (setOps[meta])` で条件付き＝既存墓石のみの回に meta を無駄に
-  //     再 set してレート消費しない）。新規墓石の回は ① の meta が既存キー更新なら item 数を増やさない。
-  //   ・② を ③ より前に置くことで、item/byte 上限ちょうどでの「1 ドメイン削除＋1 追加」が、削除前の枠を
-  //     掴んだまま set されて一時的に上限超過し reject される事故を防ぐ（remove で先に枠が空く。Codex#2）。
+  //   順序（削除がある回）: 墓石 meta set ／ remove ／ 残り item set の 3 相。meta の前後関係は meta item が
+  //   cloud に既存かで分岐する:
+  //   ・通常（既存 meta 更新 or 新規 meta だが枠に余裕あり）→ ① meta set → ② remove。① を先に置くと
+  //     「cloud item は消えたが墓石は未保存」の窓を作らない。①(set) が失敗すれば catch に落ち ② に到達しない
+  //     ＝item は remove されず次回再 reconcile で再検出・再 push される（Codex#7 / S20）。新規 meta でも枠が
+  //     在れば 513 item 目を足せるのでこの順序を保てる＝S20 を維持。
+  //   ・満杯ストア(512 item)＋初の墓石 item のときだけ ② remove で枠を空けてから ① meta set。meta-first だと
+  //     新規 item 追加が MAX_ITEMS に当たって落ち remove に到達できず削除が永久に伝播しない（恒久 write_failed）。
+  //     remove 後の meta-set 失敗窓は「満杯＋同期史上初の削除＋shadow 無し端末 rejoin」限定で、次回 base チャネル
+  //     再検出により自己回復する＝恒久詰みより軽い（Codex・S42）。
+  //   ・既存墓石のみで今回 meta を書かない回（metaOp 不在）→ remove 直行（墓石は既永続化＝復活窓なし）。
+  //     これで既存墓石のみの回に meta を無駄に再 set してレート消費しない。
+  //   ・remove を残り item set より前に置くことで、item/byte 上限ちょうどでの「1 ドメイン削除＋1 追加」が、
+  //     削除前の枠を掴んだまま set されて一時的に上限超過し reject される事故を防ぐ（Codex#2）。
   //   削除が無い回は従来どおり一括 set（順序を割る必要なし）。
   const hasSet = Object.keys(setOps).length > 0;
   let pushOk = true;
   try {
     if (removeKeys.length) {
-      if (setOps[SYNC_KEYS.meta]) await chrome.storage.sync.set({ [SYNC_KEYS.meta]: setOps[SYNC_KEYS.meta] });
-      await chrome.storage.sync.remove(removeKeys);
+      const metaOp = setOps[SYNC_KEYS.meta];
+      // 新規 meta item（cloud に未存在）を「満杯ストア」へ足すときだけ、remove より先に枠を空けないと
+      // meta-set が MAX_ITEMS に当たって落ち、remove に到達できず削除が永久に伝播しない（恒久 write_failed）。
+      // 満杯でないなら meta-first を保ち、S20（meta-set 失敗時は item を remove しない）を維持する。
+      const mustFreeSlotFirst =
+        metaOp && !sync.metaExists && sync.itemCountNow + 1 > SYNC_LIMITS.MAX_ITEMS;
+      if (metaOp && !mustFreeSlotFirst) {
+        // ① 墓石 meta を先に永続化してから ② remove。①(set) が失敗すれば catch に落ち remove に到達しない
+        // ＝「item 消去済みだが墓石未保存」の復活窓を作らない（Codex#7 / S20）。新規 meta でも枠が在るので
+        // 513 item 目を足せて落ちない＝この経路が S20 を保つ。
+        await chrome.storage.sync.set({ [SYNC_KEYS.meta]: metaOp });
+        await chrome.storage.sync.remove(removeKeys);
+      } else if (metaOp) {
+        // 満杯ストア＋初の墓石。meta-first は不可能（513 item 目で MAX_ITEMS）なので remove で枠を空けてから
+        // meta を書く。remove 後の meta-set 失敗窓は「満杯＋同期史上初の削除＋shadow 無し端末 rejoin」限定で、
+        // 次回 reconcile が base チャネルで再検出して自己回復する＝恒久 write_failed より軽い（Codex・S42）。
+        await chrome.storage.sync.remove(removeKeys);
+        await chrome.storage.sync.set({ [SYNC_KEYS.meta]: metaOp });
+      } else {
+        // 既存墓石のみの回（今回 meta を書かない）→ remove 直行（墓石は既永続化済み＝復活窓なし）。
+        await chrome.storage.sync.remove(removeKeys);
+      }
       const rest = {};
       for (const k of Object.keys(setOps)) if (k !== SYNC_KEYS.meta) rest[k] = setOps[k];
       if (Object.keys(rest).length) await chrome.storage.sync.set(rest);
