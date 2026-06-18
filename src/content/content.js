@@ -773,11 +773,15 @@
     };
     chrome.storage.onChanged.addListener(onStorageChanged);
 
-    // ページ離脱（bfcache 退避含む）で常駐 Observer／リスナを解放する。
-    window.addEventListener("pagehide", () => {
+    // ページ離脱で常駐 Observer／リスナを解放する。ただし bfcache 退避（event.persisted）は
+    // ページが凍結されるだけで Back/Forward で復帰するため解放しない。解放すると復帰後に popup 編集・
+    // 同期 pull・設定変更がレールへ反映されなくなる（凍結中はイベントが届かず、復帰後に既存リスナが
+    // そのまま機能する）。真の unload（!persisted）でのみ解放する（once は付けない）。
+    window.addEventListener("pagehide", (e) => {
+      if (e.persisted) return; // bfcache 退避は復帰に備えて維持
       try { if (mo) mo.disconnect(); } catch {}
       try { chrome.storage.onChanged.removeListener(onStorageChanged); } catch {}
-    }, { once: true });
+    });
   }
 
   init().catch((e) => console.warn("[petarin] 初期化に失敗:", e));

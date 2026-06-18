@@ -215,8 +215,12 @@ export function mergeDomainNotes(base, local, remote, domain, tomb, now) {
 
     // 墓石が生存版より新しい（= 削除が最後の操作）なら、その付箋は死んだまま。
     // 逆に削除後に他端末で編集された（win.updatedAt > 墓石）なら復活させ、墓石を消す。
+    // さらに、墓石がある時に「生存版が base から未編集（tsOf 一致）」なら、updatedAt が（クロックスキューで）
+    // 削除時刻より未来でも削除を優先する。これをしないと、時計が進んだ端末で作られた未編集ノートを他端末
+    // から削除できない（未来日時のまま復活し続ける）。復活は base から実際に編集された版に限る（Codex/5c 指摘）。
     const dead = tomb[tk] || 0;
-    if (dead >= tsOf(win)) continue;
+    const survivorUnchanged = dead > 0 && !!b && tsOf(win) === tsOf(b);
+    if (dead >= tsOf(win) || survivorUnchanged) continue;
     if (tomb[tk]) delete tomb[tk]; // 復活したので墓石を撤去
 
     out.push(win);
@@ -459,6 +463,13 @@ async function _reconcile(opts) {
     ? bytesOf({ [SYNC_KEYS.meta]: metaItem })
     : bytesOf({ [SYNC_KEYS.meta]: JSON.parse(sync.metaBefore) });
   let used = metaBytes + (setOps[SYNC_KEYS.settings] ? bytesOf(setOps[SYNC_KEYS.settings]) : 0);
+  // 今回スコープ外で手を付けない既存 cloud item も storage.sync の総容量(100KB)を占有する。これを
+  // used に算入しないと、selected スコープで他端末/他サイトの同期データを見落として実 quota を超える
+  // 書き込みを試み write_failed を繰り返す（本来は低優先ドメインを決定的に skip すべき。Codex 指摘）。
+  const domainSet = new Set(domains);
+  for (const d of Object.keys(sync.rawByDomain)) {
+    if (!domainSet.has(d)) used += bytesOf({ [domainKey(d)]: sync.rawByDomain[d] });
+  }
   const ordered = domains
     .map((d) => ({ d, latest: Math.max(0, ...((mergedByDomain[d] || []).map(tsOf))) }))
     .sort((a, b) => b.latest - a.latest);
@@ -484,12 +495,18 @@ async function _reconcile(opts) {
   }
   // FNV-1a 衝突で複数ドメインが同一 sync キーに化けるのを検知する（#7）。
   const usedKeys = new Map();
+  // 既存 cloud item が占有している sync キーの所有ドメイン。別ドメインの slot を上書きしないため
+  // （衝突相手が今回スコープ外でも保護する。Codex 指摘）。
+  const remoteKeyOwner = new Map();
+  for (const d of Object.keys(sync.rawByDomain)) remoteKeyOwner.set(domainKey(d), d);
 
   for (const { d: domain } of ordered) {
     const merged = mergedByDomain[domain];
     const key = domainKey(domain);
-    if (usedKeys.has(key) && usedKeys.get(key) !== domain) {
-      // ハッシュ衝突: 先着ドメインが既にこのキーを使用 → このドメインは同期しない（未同期報告）
+    const remoteOwner = remoteKeyOwner.get(key);
+    if ((usedKeys.has(key) && usedKeys.get(key) !== domain) || (remoteOwner && remoteOwner !== domain)) {
+      // ハッシュ衝突: 今回の先着ドメイン、または cloud で既にこのキーを所有する別ドメインがいる →
+      // このドメインは同期しない（既存 remote item を上書きで失わせない。未同期報告）。
       report.domains.push({ domain, count: merged.length, synced: false, reason: "hash_collision" });
       continue;
     }

@@ -584,9 +584,97 @@ async function scenarioS14() {
   ok(!cHasS, "回復後の rejoin で S が復活しない（サイト全消しでも backstop が戻る）", cHasS ? "S 復活（ゾンビ）" : "");
 }
 
+// ════════════════════════════════════════════════════════════════
+// S15（Codex #4）: 時計が進んだ端末で作られた「未編集の未来日時ノート」を他端末から削除でき、
+//   未来 updatedAt のまま復活し続けない（base から未編集なら削除を優先）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS15() {
+  console.log("S15（Codex#4）未来日時の未編集ノートを削除でき復活しない（clock-skew）:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const B = makeDevice(sync, "dev-B");
+  const modA = await loadSync();
+  const modB = await loadSync();
+
+  const t0 = 15_000_000;
+  const future = t0 + 100 * DAY; // 進んだ時計で作られた updatedAt
+  seedDevice(A, { notes: { "ex.com": [note("N", "未来", future)] } });
+  seedDevice(B, { notes: { "ex.com": [note("N", "未来", future)] } });
+  await reconcileAs(A, modA, { now: t0 });
+  await reconcileAs(B, modB, { now: t0 + 100 }); // 双方 N@future で合意
+
+  // A が（正しい時計 now < future で）N を削除
+  const t1 = t0 + 2000;
+  A.localStore[KEY_NOTES] = {};
+  await reconcileAs(A, modA, { now: t1 });
+  // B が pull → 削除が伝播し N は復活しない
+  await reconcileAs(B, modB, { now: t1 + 100 });
+
+  const aHas = (localNotes(A)["ex.com"] || []).some((n) => n.id === "N");
+  const bHas = (localNotes(B)["ex.com"] || []).some((n) => n.id === "N");
+  ok(!aHas && !bHas, "未来日時ノートの削除が両端末で確定する（復活しない）", JSON.stringify({ aHas, bHas }));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S16（Codex #1）: FNV キー衝突する別ドメインの既存 cloud item を上書きで失わせない。
+//   1i7pldlz.com と l5gfxc04.com は同じ petarin:sync:n:87354f19 に化ける。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS16() {
+  console.log("S16（Codex#1）FNV 衝突で既存 cloud item を上書きしない:");
+  const sync = {};
+  const KEY = "petarin:sync:n:87354f19";
+  const B = makeDevice(sync, "dev-B");
+  const A = makeDevice(sync, "dev-A");
+  const modB = await loadSync();
+  const modA = await loadSync();
+
+  const t0 = 16_000_000;
+  // B が l5gfxc04.com を先に push（cloud のキー所有者になる）
+  seedDevice(B, { notes: { "l5gfxc04.com": [note("B1", "Bの付箋", t0)] } });
+  await reconcileAs(B, modB, { now: t0 });
+  ok(sync[KEY] && sync[KEY].d === "l5gfxc04.com", "cloud キーは l5gfxc04.com が所有", JSON.stringify(sync[KEY] && sync[KEY].d));
+
+  // A が衝突する 1i7pldlz.com を持って reconcile（newer）→ B の slot を奪ってはいけない
+  seedDevice(A, { notes: { "1i7pldlz.com": [note("A1", "Aの付箋", t0 + DAY)] } });
+  const rA = await reconcileAs(A, modA, { now: t0 + DAY });
+
+  ok(sync[KEY] && sync[KEY].d === "l5gfxc04.com", "cloud item は上書きされず l5gfxc04.com のまま", JSON.stringify(sync[KEY] && sync[KEY].d));
+  const collided = rA.domains.find((d) => d.domain === "1i7pldlz.com");
+  ok(collided && collided.synced === false && collided.reason === "hash_collision", "衝突ドメインは hash_collision で未同期", JSON.stringify(collided));
+  ok((localNotes(A)["1i7pldlz.com"] || []).some((n) => n.id === "A1"), "A のローカル付箋は残る（消えない）", JSON.stringify(localNotes(A)["1i7pldlz.com"]));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S17（Codex #2）: selected スコープで、スコープ外の既存 cloud item も総容量に算入し、
+//   収まらない自ドメインを write_failed ではなく決定的に quota_exceeded で skip する。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS17() {
+  console.log("S17（Codex#2）スコープ外 cloud item を総容量に算入し決定的に skip:");
+  const sync = {};
+  const O = makeDevice(sync, "dev-O");
+  const A = makeDevice(sync, "dev-A");
+  const modO = await loadSync();
+  const modA = await loadSync();
+
+  const t0 = 17_000_000;
+  // 他端末 O が other.com を all スコープで push（A から見ればスコープ外）
+  seedDevice(O, { notes: { "other.com": ["x".repeat(1200)].map((tx) => note("O1", tx, t0)) }, settings: { syncScope: "all" } });
+  await reconcileAs(O, modO, { now: t0 });
+  const otherKey = Object.keys(sync).find((k) => k.startsWith("petarin:sync:n:"));
+  const otherBytes = new TextEncoder().encode(JSON.stringify({ [otherKey]: sync[otherKey] })).length;
+
+  // A は selected で mine.com だけ同期。総予算を「other.com + わずか」に絞る。
+  seedDevice(A, { notes: { "mine.com": [note("M1", "y".repeat(800), t0)] }, settings: { syncScope: "selected", syncDomains: ["mine.com"] } });
+  const rA = await reconcileAs(A, modA, { now: t0 + 100, totalBudget: otherBytes + 40 });
+
+  const mine = rA.domains.find((d) => d.domain === "mine.com");
+  ok(mine && mine.synced === false && mine.reason === "quota_exceeded", "スコープ外を算入し mine.com を quota_exceeded で決定的に skip", JSON.stringify(mine));
+  ok((localNotes(A)["mine.com"] || []).some((n) => n.id === "M1"), "mine.com のローカル付箋は残る", JSON.stringify(localNotes(A)["mine.com"]));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);
