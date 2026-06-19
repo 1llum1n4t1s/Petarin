@@ -302,8 +302,14 @@
 .preview th { font-weight: 700; background: color-mix(in srgb, var(--ink) 12%, transparent); }
 .preview tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparent); }
 
-/* 上端バー：左＝プレビュー/編集トグル、中ほど＝文字数、右＝閉じる(×)。*/
+/* 上端バー：左＝プレビュー/編集トグル、中ほど＝文字数、右＝閉じる(×)。
+   展開中はこのバー全体が「箱を掴んで動かす」ドラッグ取っ手（ボタンの上だけは pointer）。*/
 .topbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.note.expanded .topbar { cursor: move; }
+.note.expanded.dragging .topbar { cursor: grabbing; }
+/* 展開中の spine（差し色帯）も掴んで移動できることを示す */
+.note.expanded .spine { cursor: grab; }
+.note.expanded.dragging .spine { cursor: grabbing; }
 .mode-btn {
   width: 28px; height: 28px;
   margin: -2px 0 0 -4px;
