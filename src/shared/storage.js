@@ -54,9 +54,9 @@ export const FONTS = [
 ];
 export const DEFAULT_FONT = "system";
 
-// フォントサイズ候補（メモ帳ライクな離散値・px）。既定は従来の見た目に合わせて 15。
+// フォントサイズ候補（メモ帳ライクな離散値・px）。既定は 11（コンパクトな付箋本文）。
 export const FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20, 24, 28, 36, 48];
-export const DEFAULT_FONT_SIZE = 15;
+export const DEFAULT_FONT_SIZE = 11;
 
 export function fontById(id) {
   return FONTS.find((f) => f.id === id) || FONTS[0];
@@ -77,7 +77,7 @@ export const DEFAULT_SETTINGS = {
 
   // ── 付箋の見た目（本文の書体・サイズ・行番号）と新規作成の既定色 ───────────
   font: "system",             // 本文フォント（FONTS の id・未知は system）
-  fontSize: 15,               // 本文フォントサイズ（px・FONT_SIZES 相当の離散値）
+  fontSize: 11,               // 本文フォントサイズ（px・FONT_SIZES 相当の離散値）
   lineNumbers: false,         // 編集時に行番号（行ガター）を表示するか
   defaultColor: "yellow",     // 「最後に選んだ色」＝次に新規作成する付箋の初期色（COLORS の id）
 
