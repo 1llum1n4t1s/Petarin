@@ -30,6 +30,9 @@
     { re: /\*([^\n]+?)\*/, kind: "em" },
     { re: /~~([^\n]+?)~~/, kind: "del" },
     { re: /\[([^\]\n]*)\]\(([^)\s]+)\)/, kind: "link" },
+    // 素の URL（Markdown 記法でなくても）を自動リンク化。直前が英数字なら誤検出を避ける（lookbehind）。
+    // 末尾の句読点・閉じ括弧はリンクに含めない（最後の文字が句読点でない所までで止める）。
+    { re: /(?<![A-Za-z0-9])https?:\/\/[^\s<]*[^\s<.,;:!?)\]}'"]/, kind: "autolink" },
   ];
 
   function parseInline(str) {
@@ -61,6 +64,19 @@
           a.target = "_blank";
           a.rel = "noopener noreferrer nofollow";
           a.append(parseInline(m[1]));
+          frag.append(a);
+        }
+      } else if (t.kind === "autolink") {
+        // 素の URL。表示文字列は URL そのまま。安全な http(s) のみリンク化（safeUrl が弾けばリテラル）。
+        const url = safeUrl(m[0]);
+        if (!url) {
+          frag.append(document.createTextNode(m[0]));
+        } else {
+          const a = document.createElement("a");
+          a.href = url;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer nofollow";
+          a.textContent = m[0];
           frag.append(a);
         }
       } else if (t.kind === "strongem") {
