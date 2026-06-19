@@ -102,6 +102,8 @@
   };
   const fontFamilyCss = (id) =>
     FONT_FILES[id] ? `"PetaFont_${id}", ${SYSTEM_FONT_STACK}` : SYSTEM_FONT_STACK;
+  // フォントサイズの離散候補（shared/storage.js の FONT_SIZES と一致させること。content は import 不可で手動複製）。
+  const FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20, 24, 28, 36, 48];
   const loadedFonts = new Set(); // 読み込み済み（or 読み込み中）の font id（重複 fetch 防止）
 
   const DIM = {
@@ -160,6 +162,7 @@
   // 自分の書き込みによる onChanged を無視するための時刻（キー別に分離）
   let notesWriteAt = 0;
   let settingsWriteAt = 0;
+  let geomWriteAt = 0;
   // 入力中(textareaフォーカス)に来た外部変更を取りこぼした印。編集を抜けたら取り込む。
   let pendingSync = false;
 
@@ -320,25 +323,33 @@
   // 展開時ジオメトリを KEY_GEOM へ保存（local 専用・非同期）。在庫の付箋ぶんだけ残し孤児は掃く。
   // 他タブが別ドメインを書いていても最新の all を読んでから自ドメインだけ差し替え＝相手を巻き戻さない
   // （同ドメインを複数タブで同時編集した場合の geom は last-writer-wins＝見た目設定なので許容）。
-  function persistGeom() {
+  // changedIds: 今回触った id だけを upsert/delete する（commitGeom/dropGeom が渡す）。省略時は
+  // 全 id を突き合わせる（初期化時の在庫掃除など）。全 id を毎回書き戻すと、別タブが同ドメインの
+  // 「他の付箋」を動かしても、このタブが未取り込みの stale な geom で巻き戻してしまうため（Codex/CodeRabbit 指摘）。
+  function persistGeom(changedIds) {
     return withWrite(async () => {
       const all = (await chrome.storage.local.get(KEY_GEOM))[KEY_GEOM] || {};
       // 最新の自ドメイン map を土台に delta を当てる（upsertNotePersist 同様）。ドメイン丸ごと置換すると、
       // 別タブが書いた「他の付箋」の geom を巻き戻してしまう（KEY_NOTES と同じ並行制御方針に揃える）。
       const cur = all[domain] && typeof all[domain] === "object" ? { ...all[domain] } : {};
       const present = new Set(notes.map((n) => n.id));
-      for (const n of notes) if (geom[n.id]) cur[n.id] = geom[n.id]; // 自タブが持つ値だけ上書き
+      const ids = changedIds || Object.keys(geom);
+      for (const id of ids) {
+        if (present.has(id) && geom[id]) cur[id] = geom[id]; // 在庫にある自タブの値だけ upsert
+        else delete cur[id];                                  // 在庫に無い／自タブで破棄した id は除去
+      }
       for (const id of Object.keys(cur)) if (!present.has(id)) delete cur[id]; // 在庫に無い孤児だけ掃く
       if (Object.keys(cur).length) all[domain] = cur;
       else delete all[domain];
+      geomWriteAt = Date.now(); // set の前に打刻（自エコーで loadGeom し直さない）
       await chrome.storage.local.set({ [KEY_GEOM]: all });
     });
   }
-  // 指定 id のジオメトリを破棄して保存（付箋削除時）。
+  // 指定 id のジオメトリを破棄して保存（付箋削除時）。触った id だけ persist する。
   function dropGeom(ids) {
-    let changed = false;
-    for (const id of ids) if (geom[id]) { delete geom[id]; changed = true; }
-    if (changed) persistGeom();
+    const changed = ids.filter((id) => geom[id]);
+    for (const id of changed) delete geom[id];
+    if (changed.length) persistGeom(changed);
   }
 
   // ── 同梱フォントの遅延読み込み（FontFace API＝ArrayBuffer 直渡しでページ CSP を回避）──
@@ -363,8 +374,15 @@
   //  --peta-edit-font : 編集モード（textarea/行番号）のフォント＝UDEV ゴシック固定（等幅で Markdown が整う）。
   function applyFont() {
     if (!layer) return;
+    // font は FONT_FILES（＝FONTS の id 集合・system を除く）で検証し、未知/file 無しは "system" へ。
     const id = FONT_FILES[settings.font] ? settings.font : "system";
-    const size = Number.isFinite(settings.fontSize) ? clamp(settings.fontSize, 8, 96) : 11;
+    // fontSize は FONT_SIZES の離散値ならそのまま採用。popup は同期由来の格子外サイズも選択可にしているため
+    // 格子外でも有限値は FONT_SIZES の範囲へクランプして尊重し、非数値のみ既定（DEFAULTS.fontSize=11）へ。
+    const size = FONT_SIZES.includes(settings.fontSize)
+      ? settings.fontSize
+      : Number.isFinite(settings.fontSize)
+        ? clamp(settings.fontSize, FONT_SIZES[0], FONT_SIZES[FONT_SIZES.length - 1])
+        : DEFAULTS.fontSize;
     layer.style.setProperty("--peta-font", fontFamilyCss(id));
     layer.style.setProperty("--peta-size", size + "px");
     // 編集モードは UDEV ゴシック固定。選択書体に依らず常に読み込む。fallback は等幅系にする
@@ -537,7 +555,7 @@
     if (!wrap) return;
     const r = currentRect(wrap);
     geom[note.id] = { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
-    persistGeom();
+    persistGeom([note.id]);
   }
   // 展開アニメ：格納タブの位置から目標矩形へなめらかに伸ばす（FLIP）。
   //  重要: applyState で目標矩形を「確定状態」として先に適用する＝rAF が発火しない環境（タブ非表示で
@@ -1277,6 +1295,11 @@
       const now = Date.now();
       const notesExternal = changes[KEY_NOTES] && now - notesWriteAt >= 500;
       const settingsExternal = changes[KEY_SETTINGS] && now - settingsWriteAt >= 500;
+      // 別タブが書いた geom を取り込み、stale な in-memory geom で次回 persist 時に巻き戻さないようにする。
+      // 表示中の箱には再適用しない（ウィンドウ縮小の自動追従はしない方針＝次回展開/操作時に反映）。
+      if (changes[KEY_GEOM] && now - geomWriteAt >= 500 && !interacting) {
+        try { await loadGeom(); } catch {}
+      }
       if (!notesExternal && !settingsExternal) return;
       // textarea にフォーカスして入力中のときだけ全面再描画を見送る（入力・フォーカス・IME 保護）。
       // 開いていてもフォーカスが外れていれば通常どおり取り込む。入力中の外部変更は pendingSync で後追い。
