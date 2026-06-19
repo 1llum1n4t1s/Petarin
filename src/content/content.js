@@ -32,17 +32,18 @@
   const LOCAL_TOMB_TTL = 180 * 24 * 60 * 60 * 1000;
 
   const COLORS = [
-    { id: "yellow", paper: "#FFE57A", deep: "#F2C84B", ink: "#5C4A1E" },
-    { id: "coral",  paper: "#FFC2A1", deep: "#F59E72", ink: "#6E3A20" },
-    { id: "pink",   paper: "#FFB6C9", deep: "#F58FAC", ink: "#6E2A40" },
-    { id: "purple", paper: "#D2BDF0", deep: "#B392E0", ink: "#43306E" },
-    { id: "blue",   paper: "#A9D6F5", deep: "#79B9ED", ink: "#1F4A6E" },
-    { id: "mint",   paper: "#A6E6D5", deep: "#73D0BB", ink: "#1C5247" },
-    { id: "green",  paper: "#BEE89B", deep: "#95D16C", ink: "#33501F" },
+    // 各色は彩度 50% ダウンの淡色（明度維持）。storage.js の COLORS と値も含め一致させること。
+    { id: "yellow", paper: "#DED19B", deep: "#C8B375", ink: "#4D442D" },
+    { id: "coral",  paper: "#E8C9B9", deep: "#D4A993", ink: "#5B4134" },
+    { id: "pink",   paper: "#EDC8D2", deep: "#DCA8B7", ink: "#5D3B46" },
+    { id: "purple", paper: "#D4CAE3", deep: "#B6A5CD", ink: "#49405F" },
+    { id: "blue",   paper: "#BCD3E2", deep: "#96B6D0", ink: "#33485A" },
+    { id: "mint",   paper: "#B6D6CE", deep: "#8AB9AE", ink: "#29453F" },
+    { id: "green",  paper: "#C0D5AE", deep: "#9AB885", ink: "#35442B" },
     // 無彩色。storage.js の COLORS と「id 集合」を一致させること（content script は import 不可で手動複製）。
     // sync は色を id 文字列で持つので並び順は非依存・未知 id は黄にフォールバック。
-    { id: "white",  paper: "#FBFAF6", deep: "#D2CABA", ink: "#4A463C" },
-    { id: "black",  paper: "#2C2B2E", deep: "#6A6770", ink: "#F3F0E8" },
+    { id: "white",  paper: "#FAF9F7", deep: "#CCC8C0", ink: "#474540" },
+    { id: "black",  paper: "#2C2C2D", deep: "#6B696E", ink: "#F0EFEB" },
   ];
   const DEFAULT_COLOR = "yellow";
 
@@ -529,26 +530,9 @@
     if (f.n) { const bottom = r0.top + r0.height; top = clamp(top, 0, bottom - EXP_MIN_H); height = bottom - top; }
     return { left, top, width, height };
   }
-  // 保存済みジオメトリ（真値）。無ければ null。表示はクランプされうるが保存値はユーザーの意図（フル
-  // viewport 時の寸法・位置）を保つ。ウィンドウ縮小で表示がクランプされても、ここは縮めない。
-  function baseGeom(note) {
-    const g = geom[note.id];
-    return g && Number.isFinite(g.width) ? { left: g.left, top: g.top, width: g.width, height: g.height } : null;
-  }
-  // 移動の確定：位置だけ更新し、保存サイズは維持する。ウィンドウ縮小でクランプ表示された箱を移動しても、
-  // クランプ後の縮んだ width/height を保存値へ焼き込まない（移動はサイズを変えない＝要件3の「表示だけ追従」を守る）。
-  function commitMove(note) {
-    const wrap = noteEl(note.id);
-    if (!wrap) return;
-    const r = currentRect(wrap);
-    const prev = baseGeom(note);
-    const width = prev ? prev.width : Math.round(r.width);
-    const height = prev ? prev.height : Math.round(r.height);
-    geom[note.id] = { left: Math.round(r.left), top: Math.round(r.top), width, height };
-    persistGeom();
-  }
-  // リサイズの確定：実際にリサイズした矩形を保存（ユーザーが現在の窓で明示的に決めたサイズ）。
-  function commitResize(note) {
+  // 現在の表示矩形を「絶対座標」でそのまま保存（シンプル）。位置補正は展開時の getExpandedRect が担う
+  // （保存値が画面外なら一番近いウィンドウ枠の内側へ寄せ、窓より大きければ収まるよう縮める）。
+  function commitGeom(note) {
     const wrap = noteEl(note.id);
     if (!wrap) return;
     const r = currentRect(wrap);
@@ -649,17 +633,13 @@
   // 連続リサイズ中はバウンス遷移を切って静かに追従させる。
   function reposition() {
     if (!layer || !settings.showOnPage) return;
-    if (interacting) return; // ドラッグ/リサイズ中は本人が位置を管理（自動追従と競合させない）
+    if (interacting) return; // ドラッグ/リサイズ中は本人が位置を管理
     layer.classList.add("repositioning");
     for (const wrap of layer.querySelectorAll(".note:not(.creator)")) {
       const note = notes.find((n) => n.id === wrap.dataset.id);
       if (!note) continue;
-      if (expanded.has(note.id)) {
-        // 展開ボックスはウィンドウ枠に追従＝viewport 内へクランプ表示（保存 geom は変えない）。
-        applyFreeRect(wrap, getExpandedRect(note));
-      } else {
-        place(wrap, note.posRatio, collapsedDim());
-      }
+      if (expanded.has(note.id)) continue; // 展開ボックスは絶対座標のまま（追従しない）。画面外補正は展開時に行う。
+      place(wrap, note.posRatio, collapsedDim());
     }
     const creator = layer.querySelector(".creator");
     if (creator) place(creator, settings.creatorRatio, creatorDim());
@@ -693,7 +673,7 @@
       getRatio: () => note.posRatio,
       setRatio: (r) => { note.posRatio = r; },
       commit: () => { note.updatedAt = Date.now(); upsertNotePersist(note); },
-      commitGeom: () => commitMove(note), // 展開時の自由移動を確定（spine ドラッグ・サイズは維持）
+      commitGeom: () => commitGeom(note), // 展開時の自由移動を確定（spine ドラッグ）
       onTap: () => toggle(note.id),
     });
     wrap.append(spine);
@@ -1054,7 +1034,7 @@
         wrap.classList.remove("dragging");
         interacting = false;
         try { handle.releasePointerCapture(ev.pointerId); } catch {}
-        if (moved) commitMove(note);
+        if (moved) commitGeom(note);
       };
       handle.addEventListener("pointermove", move);
       handle.addEventListener("pointerup", up);
@@ -1092,8 +1072,8 @@
         wrap.classList.remove("dragging");
         interacting = false;
         try { handle.releasePointerCapture(ev.pointerId); } catch {}
-        // 実際にリサイズしたときだけ保存（ハンドルを 0px クリックしただけでクランプ表示値を焼き込まない）。
-        if (moved) commitResize(note);
+        // 実際にリサイズしたときだけ保存（ハンドルを 0px クリックしただけで保存しない）。
+        if (moved) commitGeom(note);
       };
       handle.addEventListener("pointermove", move);
       handle.addEventListener("pointerup", up);
