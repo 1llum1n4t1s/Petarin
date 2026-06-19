@@ -164,6 +164,8 @@
   let notesWriteAt = 0;
   let settingsWriteAt = 0;
   let geomWriteAt = 0;
+  // ドラッグ/リサイズ中に来た KEY_GEOM 外部変更を取りこぼした印。操作を抜けたら取り込む（pendingSync の geom 版）。
+  let geomPendingReload = false;
   // 入力中(textareaフォーカス)に来た外部変更を取りこぼした印。編集を抜けたら取り込む。
   let pendingSync = false;
 
@@ -371,6 +373,14 @@
     const changed = ids.filter((id) => geom[id]);
     for (const id of changed) delete geom[id];
     if (changed.length) persistGeom(changed);
+  }
+  // ドラッグ/リサイズ終了時、操作中に取りこぼした KEY_GEOM 外部変更を取り込む（pendingSync の geom 版・Codex#1340）。
+  // commitGeom の persistGeom より後に withWrite へ積む＝自分の確定書き込みが storage に着いてから読み直す
+  // ので、他付箋（別タブ更新分）の最新値だけを in-memory geom に反映でき、自分の確定分は巻き戻らない。
+  function flushPendingGeom() {
+    if (!geomPendingReload) return;
+    geomPendingReload = false;
+    withWrite(loadGeom).catch(() => {});
   }
 
   // ── 同梱フォントの遅延読み込み（FontFace API＝ArrayBuffer 直渡しでページ CSP を回避）──
@@ -1062,6 +1072,7 @@
       try { handle.releasePointerCapture(e.pointerId); } catch {}
       if (moved) { if (exp) o.commitGeom && o.commitGeom(); else o.commit(); }
       else o.onTap();
+      flushPendingGeom(); // 操作中に取りこぼした他付箋の geom 外部変更を、確定書き込みの後に取り込む
     };
     handle.addEventListener("pointerup", end);
     handle.addEventListener("pointercancel", end);
@@ -1092,6 +1103,7 @@
         interacting = false;
         try { handle.releasePointerCapture(ev.pointerId); } catch {}
         if (moved) commitGeom(note, true); // 上端バーの移動＝位置のみ更新（保存サイズは維持）
+        flushPendingGeom();
       };
       handle.addEventListener("pointermove", move);
       handle.addEventListener("pointerup", up);
@@ -1131,6 +1143,7 @@
         try { handle.releasePointerCapture(ev.pointerId); } catch {}
         // 実際にリサイズしたときだけ保存（ハンドルを 0px クリックしただけで保存しない）。
         if (moved) commitGeom(note);
+        flushPendingGeom();
       };
       handle.addEventListener("pointermove", move);
       handle.addEventListener("pointerup", up);
@@ -1337,8 +1350,11 @@
       // 別タブが書いた geom を取り込み、stale な in-memory geom で次回 persist 時に巻き戻さないようにする。
       // withWrite で直列化＝自タブの in-flight な persistGeom（commitGeom 由来）の後に読み直すことで、
       // 確定直後・set 着地前の窓で loadGeom が geom を巻き戻して書き込みを失う lost-update を防ぐ（敵対レビュー指摘）。
-      if (changes[KEY_GEOM] && now - geomWriteAt >= 500 && !interacting) {
-        try { await withWrite(loadGeom); } catch {}
+      // ドラッグ/リサイズ中は取り込まず印だけ立て、操作終了時の flushPendingGeom でまとめて取り込む
+      // （操作中に取りこぼすと他付箋の in-memory geom が stale のまま残る・Codex#1340）。
+      if (changes[KEY_GEOM] && now - geomWriteAt >= 500) {
+        if (interacting) geomPendingReload = true;
+        else { try { await withWrite(loadGeom); } catch {} }
       }
       if (!notesExternal && !settingsExternal) return;
       // textarea にフォーカスして入力中のときだけ全面再描画を見送る（入力・フォーカス・IME 保護）。
