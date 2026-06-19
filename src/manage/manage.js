@@ -543,6 +543,15 @@ function setEditMode(edit) {
   mode.replaceChildren(svgIcon(edit ? ICON_EYE : ICON_EDIT));
   mode.title = edit ? "プレビュー表示にする" : "編集する（Markdown）";
   if (edit) {
+    // 編集に入る前に最新の本文へ追従する。プレビュー中は editingKey で再描画を抑止しているため、他タブ/同期で
+    // 本文が更新されても textarea は開いた時点のまま。そのまま編集して保存すると新しい本文を古い内容で
+    // 上書きしてしまう（Codex#499）。allNotes は onChanged で常に最新化されているのでそこから取り直す。
+    const latest = mm && (allNotes[mm.domain] || []).find((n) => n.id === mm.note.id);
+    if (latest) {
+      mm.note = latest;
+      const ta0 = $("#mmTa");
+      if (ta0.value !== (latest.text || "")) ta0.value = latest.text || "";
+    }
     updateMMCharcount();
     updateMMGutter();
     const ta = $("#mmTa");
