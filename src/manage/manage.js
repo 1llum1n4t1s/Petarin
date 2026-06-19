@@ -72,7 +72,7 @@ function renderMarkdownInto(el, text) {
 
 // 付箋プレビューの表示フォントを現在設定に合わせる（CSS 変数）。
 function applyNoteFont() {
-  document.body.style.setProperty("--peta-note-font", fontFamilyCss((appSettings || {}).font));
+  document.body.style.setProperty("--peta-font", fontFamilyCss((appSettings || {}).font));
 }
 const SEP = "\u001f"; // \u001f = Unit Separator (domain<->id delimiter; never appears in either)
 
