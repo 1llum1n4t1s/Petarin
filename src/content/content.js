@@ -416,10 +416,11 @@
         : DEFAULTS.fontSize;
     layer.style.setProperty("--peta-font", fontFamilyCss(id));
     layer.style.setProperty("--peta-size", size + "px");
-    // 編集モードは UDEV ゴシック固定。選択書体に依らず常に読み込む。fallback は等幅系にする
-    // （fontFamilyCss は proportional な SYSTEM_FONT_STACK を返すので使わない＝UDEV 不在時も等幅を保つ）。
+    // 編集モードは UDEV ゴシック固定。CSS 変数（fallback 込み）はここで常に設定するが、実フォント（~1.8MB）は
+    // 編集に入るまで読み込まない（textarea の focus で ensureFont("udev")＝Codex#422）。付箋ゼロ／プレビューだけの
+    // タブで 1.8MB を毎回先読みするのを避ける。fallback は等幅系にする（fontFamilyCss は proportional な
+    // SYSTEM_FONT_STACK を返すので使わない＝UDEV 不在/未ロード時も等幅を保つ）。
     layer.style.setProperty("--peta-edit-font", '"PetaFont_udev", ui-monospace, "BIZ UDGothic", Consolas, monospace');
-    ensureFont("udev");
     if (id !== "system") ensureFont(id);
   }
 
@@ -1291,7 +1292,10 @@
 
     ta.addEventListener("input", (e) => { e.stopPropagation(); commit(); });
     ta.addEventListener("compositionend", commit); // IME 確定後の最終値も保存
-    ta.addEventListener("focus", () => { editingId = note.id; }); // フォーカス中の箱を編集対象に
+    ta.addEventListener("focus", () => {
+      editingId = note.id;  // フォーカス中の箱を編集対象に
+      ensureFont("udev");   // 編集フォント（~1.8MB）は編集に入って初めて遅延ロード（Codex#422・idempotent）
+    });
     // 行番号ガターを縦スクロールに追従させる。
     ta.addEventListener("scroll", () => { const g = wrap.querySelector(".gutter"); if (g) g.scrollTop = ta.scrollTop; });
     ta.addEventListener("blur", () => {
