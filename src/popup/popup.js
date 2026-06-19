@@ -9,7 +9,6 @@ import {
   FONT_SIZES,
   DEFAULT_FONT,
   DEFAULT_FONT_SIZE,
-  fontById,
   fontFamilyCss,
 } from "../shared/storage.js";
 
@@ -24,6 +23,10 @@ function normalizeOpacity(v) {
   if (!Number.isFinite(n)) return 0.45;
   return Math.min(0.9, Math.max(0.1, n));
 }
+// 書体・サイズも読み取り/保存の両方で仕様（FONTS/FONT_SIZES）へ正規化し、同期や旧設定由来の
+// 任意値をそのまま再保存しない。未知 font は system、候補外サイズは既定（11px）へ。
+const normalizeFont = (id) => (FONTS.some((f) => f.id === id) ? id : DEFAULT_FONT);
+const normalizeFontSize = (v) => (FONT_SIZES.includes(Number(v)) ? Number(v) : DEFAULT_FONT_SIZE);
 
 // ── 起動 ────────────────────────────────────────────────────────────
 async function init() {
@@ -94,16 +97,13 @@ function populateFontControls() {
       return o;
     })
   );
-  fontSel.value = fontById(settings.font).id; // 未知 id は system に正規化
-  if (fontSel.value !== settings.font) fontSel.value = DEFAULT_FONT;
+  fontSel.value = normalizeFont(settings.font); // 未知 id は system に正規化
   updateFontSample();
 
   const sizeSel = $("#fontSizeSelect");
-  const cur = Number.isFinite(settings.fontSize) ? settings.fontSize : DEFAULT_FONT_SIZE;
-  // 候補に無い値（同期由来など）も選べるよう、現在値を一覧に混ぜる。
-  const sizes = FONT_SIZES.includes(cur) ? FONT_SIZES : [...FONT_SIZES, cur].sort((a, b) => a - b);
+  const cur = normalizeFontSize(settings.fontSize); // 候補外（同期/旧設定由来）は既定へ寄せる
   sizeSel.replaceChildren(
-    ...sizes.map((px) => {
+    ...FONT_SIZES.map((px) => {
       const o = document.createElement("option");
       o.value = String(px);
       o.textContent = `${px} px`;
@@ -152,13 +152,12 @@ function bindEvents() {
   });
 
   $("#fontSelect").addEventListener("change", async (e) => {
-    settings = await saveSettings({ font: e.target.value });
+    settings = await saveSettings({ font: normalizeFont(e.target.value) });
     updateFontSample();
   });
 
   $("#fontSizeSelect").addEventListener("change", async (e) => {
-    const px = parseInt(e.target.value, 10);
-    settings = await saveSettings({ fontSize: Number.isFinite(px) ? px : DEFAULT_FONT_SIZE });
+    settings = await saveSettings({ fontSize: normalizeFontSize(e.target.value) });
   });
 
   $("#lineNumbersToggle").addEventListener("change", async (e) => {
