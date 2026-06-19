@@ -83,6 +83,7 @@ let activeDomain = null;        // null = すべて
 let sortKey = "new";
 const selection = new Set();    // "domain\u001fid"
 let editingKey = null;
+let savePending = 0;            // モーダルの本文保存が in-flight な件数（>0 の間はライブ反映を見送る）
 let appSettings = null;         // 設定キャッシュ（書体・サイズ・行番号）。エディタで使う。
 let mm = null;                  // 付箋エディタの状態 { domain, note, saveTimer }
 let lastDeleted = null;         // 元に戻す用スナップショット
@@ -128,7 +129,10 @@ async function init() {
     // プレビュー中（編集していない）にモーダルで開いている付箋が外部更新されたら、モーダルへライブ反映する。
     // 自分の保存エコー（textarea と本文一致）は無視。外部削除なら閉じる。これにより「✎ を押した時点で
     // allNotes から取り直す」方式（in-flight な flushSave と競合し直前入力を巻き戻す）が不要になる（Codex#499/#561）。
-    if (mm && !isEditing()) {
+    // 自タブの本文保存が in-flight（savePending>0）の間は、allNotes がまだ保存前でラグしうるのでライブ反映を
+    // 見送る＝古い値で textarea を上書きしない（Codex#137）。保存着地後は allNotes が最新になり、エコーは下の
+    // latest.text===ta.value で自然に無視される。
+    if (mm && !isEditing() && savePending === 0) {
       const latest = (allNotes[mm.domain] || []).find((n) => n.id === mm.note.id);
       const ta = $("#mmTa");
       if (!latest) { closeEditor(false); }
@@ -632,7 +636,10 @@ async function flushSave() {
   if (ta.value !== next) { ta.value = next; updateMMCharcount(); updateMMGutter(); }
   if (next !== (mm.note.text || "")) {
     mm.note.text = next;
-    await updateNote(mm.domain, mm.note.id, { text: next });
+    const domain = mm.domain, id = mm.note.id; // await 中に mm が差し替わっても対象を保持
+    savePending++; // 保存着地までライブ反映を止める（着地前の allNotes ラグで textarea を巻き戻さない）
+    try { await updateNote(domain, id, { text: next }); }
+    finally { savePending--; }
   }
 }
 
