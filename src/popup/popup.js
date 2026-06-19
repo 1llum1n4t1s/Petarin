@@ -17,6 +17,14 @@ const $ = (sel) => document.querySelector(sel);
 
 let settings = null;
 
+// 半透明の濃さ（スライダー range 0.1〜0.9）。同期由来の範囲外値も読み取り/保存の両方でクランプし、
+// 表示と保存値を仕様内に揃える。非数値は既定 0.45。
+function normalizeOpacity(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0.45;
+  return Math.min(0.9, Math.max(0.1, n));
+}
+
 // ── 起動 ────────────────────────────────────────────────────────────
 async function init() {
   settings = await getSettings();
@@ -67,7 +75,7 @@ function syncOpacityControl() {
   const slider = $("#opacitySlider");
   const row = $("#opacityRow");
   const on = !!settings.collapsedTranslucent;
-  const op = Number.isFinite(settings.translucentOpacity) ? settings.translucentOpacity : 0.45;
+  const op = normalizeOpacity(settings.translucentOpacity);
   slider.value = String(op);
   slider.disabled = !on;
   row.classList.toggle("is-off", !on);
@@ -124,11 +132,19 @@ function bindEvents() {
     syncOpacityControl();
   });
 
-  // 半透明の濃さ（格納中の透け具合）。入力でその場保存（実ページのレールへ反映される）。
-  $("#opacitySlider").addEventListener("input", async (e) => {
-    const v = parseFloat(e.target.value);
-    if (!Number.isFinite(v)) return;
-    settings = await saveSettings({ translucentOpacity: v });
+  // 半透明の濃さ（格納中の透け具合）。ドラッグ中の input は高頻度なので保存を間引き（実ページのレールへ
+  // 反映）、ドラッグ終了の change で確定保存する。毎 input で saveSettings（withLock 直列化）を呼ぶと
+  // 書き込みがキューに溜まり UI が詰まるため（Gemini 指摘）。
+  let opacitySaveTimer = null;
+  $("#opacitySlider").addEventListener("input", (e) => {
+    const v = normalizeOpacity(e.target.value);
+    settings.translucentOpacity = v; // 連続入力中も値を保持（再描画のたびに巻き戻さない）
+    clearTimeout(opacitySaveTimer);
+    opacitySaveTimer = setTimeout(() => saveSettings({ translucentOpacity: v }), 120);
+  });
+  $("#opacitySlider").addEventListener("change", async (e) => {
+    clearTimeout(opacitySaveTimer);
+    settings = await saveSettings({ translucentOpacity: normalizeOpacity(e.target.value) });
   });
 
   $("#showOnPageToggle").addEventListener("change", async (e) => {
