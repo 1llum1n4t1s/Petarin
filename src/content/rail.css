@@ -36,6 +36,10 @@
   box-shadow: 0 4px 12px rgba(35, 24, 6, 0.28);
   z-index: 6;
 }
+/* ドラッグ移動／リサイズ中は遷移を切り、指にぴったり追従させる（カクつき防止）*/
+.note.dragging { transition: none; }
+/* 展開アニメの基点づくり（FLIP）で一瞬だけ遷移を止める */
+.note.no-anim { transition: none; }
 /* リサイズ追従中は位置のバウンス遷移を切って静かに動かす */
 .layer.repositioning .note { transition: none; }
 
@@ -141,6 +145,38 @@
 /* 展開時の背（spine）はページ側の細い差し色帯にする（製本の背のようなフラットなアクセント）*/
 .note.expanded .spine { flex: 0 0 14px; background: var(--deep); }
 
+/* ── 展開ボックスのリサイズハンドル（8 方向）。展開時だけ表示・操作可能。──────────────
+   箱は overflow:hidden なので、ハンドルは縁の内側に薄く敷く（クリップされず掴める）。*/
+.rz { position: absolute; z-index: 7; display: none; touch-action: none; }
+.note.expanded .rz { display: block; }
+.rz-n { top: 0; left: 12px; right: 12px; height: 7px; cursor: ns-resize; }
+.rz-s { bottom: 0; left: 12px; right: 12px; height: 7px; cursor: ns-resize; }
+.rz-e { right: 0; top: 12px; bottom: 12px; width: 7px; cursor: ew-resize; }
+.rz-w { left: 0; top: 12px; bottom: 12px; width: 7px; cursor: ew-resize; }
+.rz-ne { top: 0; right: 0; width: 13px; height: 13px; cursor: nesw-resize; }
+.rz-sw { bottom: 0; left: 0; width: 13px; height: 13px; cursor: nesw-resize; }
+.rz-nw { top: 0; left: 0; width: 13px; height: 13px; cursor: nwse-resize; }
+.rz-se { bottom: 0; right: 0; width: 13px; height: 13px; cursor: nwse-resize; }
+/* 展開時、spine(14px の差し色帯＝箱を移動する取っ手)が乗る辺のリサイズハンドルを内側へ 14px ずらす。
+   ずらさないと spine 帯の外側半分がリサイズに取られ「背をつかんで移動」が辺際で効かない。spine の物理辺は
+   side で決まる: right→右辺(.rz-e/ne/se) / left→左辺(.rz-w/nw/sw) / top→上辺(.rz-n/nw/ne) / bottom→下辺(.rz-s/sw/se)。*/
+.layer[data-side="right"] .note.expanded .rz-e,
+.layer[data-side="right"] .note.expanded .rz-ne,
+.layer[data-side="right"] .note.expanded .rz-se { right: 14px; }
+.layer[data-side="left"] .note.expanded .rz-w,
+.layer[data-side="left"] .note.expanded .rz-nw,
+.layer[data-side="left"] .note.expanded .rz-sw { left: 14px; }
+.layer[data-side="top"] .note.expanded .rz-n,
+.layer[data-side="top"] .note.expanded .rz-nw,
+.layer[data-side="top"] .note.expanded .rz-ne { top: 14px; }
+.layer[data-side="bottom"] .note.expanded .rz-s,
+.layer[data-side="bottom"] .note.expanded .rz-sw,
+.layer[data-side="bottom"] .note.expanded .rz-se { bottom: 14px; }
+/* 操作ボタンはハンドル(z:7)より上に置き、縁に重なっても確実に押せるようにする */
+.note .mode-btn, .note .close-x, .note .icon-btn, .note .del, .note .swatch {
+  position: relative; z-index: 8;
+}
+
 /* 編集面（行番号ガター＋テキストエリア）とプレビュー面の出し分け。
    .note.editing → 編集面、.note.previewing → プレビュー面。*/
 .editor { display: none; flex: 1; min-height: 0; }
@@ -158,8 +194,9 @@
   border-right: 1px solid color-mix(in srgb, var(--ink) 22%, transparent);
   color: var(--ink);
   opacity: 0.42;
-  font-family: var(--peta-font, inherit);
-  font-size: var(--peta-size, 15px);
+  /* 編集面は UDEV ゴシック固定（行番号も textarea と同じ書体・行高で揃える）*/
+  font-family: var(--peta-edit-font, ui-monospace, "BIZ UDGothic", Consolas, monospace);
+  font-size: var(--peta-size, 11px);
   line-height: 1.6;
   white-space: pre;
   overflow: hidden;          /* 数字はクリップ。スクロールは JS で textarea に同期 */
@@ -182,8 +219,9 @@
   background: transparent;
   color: var(--ink);
   caret-color: var(--ink); /* 文字色基準のキャレット＝淡い紙(白)でも濃い紙(黒)でも視認できる */
-  font-family: var(--peta-font, inherit);
-  font-size: var(--peta-size, 15px);
+  /* 編集モードは選択書体に依らず UDEV ゴシック固定（等幅で Markdown コードが整う）*/
+  font-family: var(--peta-edit-font, ui-monospace, "BIZ UDGothic", Consolas, monospace);
+  font-size: var(--peta-size, 11px);
   font-weight: 500;
   line-height: 1.6;
   overflow-y: auto;         /* 複数行・あふれたらスクロール */
@@ -199,12 +237,13 @@
 /* ── プレビュー（Markdown 整形表示）。クリックで編集へ入れるよう手のひらカーソル。──────── */
 .preview {
   color: var(--ink);
+  /* 表示（プレビュー）モードはユーザーが選んだ書体を反映する（編集面の UDEV 固定とは別系統）*/
   font-family: var(--peta-font, inherit);
-  font-size: var(--peta-size, 15px);
+  font-size: var(--peta-size, 11px);
   line-height: 1.7;
   word-break: break-word;
   overflow-wrap: anywhere;
-  cursor: text;
+  cursor: default;
   padding: 2px 2px;
 }
 .preview .pv-empty { opacity: 0.4; font-style: italic; }
@@ -244,6 +283,24 @@
   overflow-x: auto;
 }
 .preview pre code { background: transparent; padding: 0; font-size: 0.86em; }
+/* GFM テーブル：細い罫線・ヘッダは薄い地色。狭い箱でもはみ出さないよう横スクロール可。*/
+.preview table {
+  border-collapse: collapse;
+  margin: 0 0 0.5em;
+  font-size: 0.95em;
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.preview th, .preview td {
+  border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  padding: 0.3em 0.55em;
+  text-align: left;
+  vertical-align: top;
+}
+.preview th { font-weight: 700; background: color-mix(in srgb, var(--ink) 12%, transparent); }
+.preview tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparent); }
 
 /* 上端バー：左＝プレビュー/編集トグル、中ほど＝文字数、右＝閉じる(×)。*/
 .topbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
