@@ -32,18 +32,18 @@
   const LOCAL_TOMB_TTL = 180 * 24 * 60 * 60 * 1000;
 
   const COLORS = [
-    // 各色は彩度 50% ダウンの淡色（明度維持）。storage.js の COLORS と値も含め一致させること。
-    { id: "yellow", paper: "#DED19B", deep: "#C8B375", ink: "#4D442D" },
-    { id: "coral",  paper: "#E8C9B9", deep: "#D4A993", ink: "#5B4134" },
-    { id: "pink",   paper: "#EDC8D2", deep: "#DCA8B7", ink: "#5D3B46" },
-    { id: "purple", paper: "#D4CAE3", deep: "#B6A5CD", ink: "#49405F" },
-    { id: "blue",   paper: "#BCD3E2", deep: "#96B6D0", ink: "#33485A" },
-    { id: "mint",   paper: "#B6D6CE", deep: "#8AB9AE", ink: "#29453F" },
-    { id: "green",  paper: "#C0D5AE", deep: "#9AB885", ink: "#35442B" },
+    // storage.js の COLORS と値も含め一致させること（content は import 不可で手動複製）。
+    { id: "yellow", paper: "#FFE57A", deep: "#F2C84B", ink: "#5C4A1E" },
+    { id: "coral",  paper: "#FFC2A1", deep: "#F59E72", ink: "#6E3A20" },
+    { id: "pink",   paper: "#FFB6C9", deep: "#F58FAC", ink: "#6E2A40" },
+    { id: "purple", paper: "#D2BDF0", deep: "#B392E0", ink: "#43306E" },
+    { id: "blue",   paper: "#A9D6F5", deep: "#79B9ED", ink: "#1F4A6E" },
+    { id: "mint",   paper: "#A6E6D5", deep: "#73D0BB", ink: "#1C5247" },
+    { id: "green",  paper: "#BEE89B", deep: "#95D16C", ink: "#33501F" },
     // 無彩色。storage.js の COLORS と「id 集合」を一致させること（content script は import 不可で手動複製）。
     // sync は色を id 文字列で持つので並び順は非依存・未知 id は黄にフォールバック。
-    { id: "white",  paper: "#FAF9F7", deep: "#CCC8C0", ink: "#474540" },
-    { id: "black",  paper: "#2C2C2D", deep: "#6B696E", ink: "#F0EFEB" },
+    { id: "white",  paper: "#FBFAF6", deep: "#D2CABA", ink: "#4A463C" },
+    { id: "black",  paper: "#2C2B2E", deep: "#6A6770", ink: "#F3F0E8" },
   ];
   const DEFAULT_COLOR = "yellow";
 
