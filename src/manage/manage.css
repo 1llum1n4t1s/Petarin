@@ -14,13 +14,13 @@
   --shadow-soft: 0 1px 2px rgba(74, 56, 30, 0.1), 0 10px 22px -12px rgba(74, 56, 30, 0.35);
   --shadow-lift: 0 3px 6px rgba(74, 56, 30, 0.2), 0 18px 32px -12px rgba(74, 56, 30, 0.5);
 
-  --note-yellow: #ded19b; --note-yellow-d: #c8b375; --note-yellow-i: #4d442d;
-  --note-coral: #e8c9b9;  --note-coral-d: #d4a993;  --note-coral-i: #5b4134;
-  --note-pink: #edc8d2;   --note-pink-d: #dca8b7;   --note-pink-i: #5d3b46;
-  --note-purple: #d4cae3; --note-purple-d: #b6a5cd; --note-purple-i: #49405f;
-  --note-blue: #bcd3e2;   --note-blue-d: #96b6d0;   --note-blue-i: #33485a;
-  --note-mint: #b6d6ce;   --note-mint-d: #8ab9ae;   --note-mint-i: #29453f;
-  --note-green: #c0d5ae;  --note-green-d: #9ab885;  --note-green-i: #35442b;
+  --note-yellow: #ffe57a; --note-yellow-d: #f2c84b; --note-yellow-i: #5c4a1e;
+  --note-coral: #ffc2a1;  --note-coral-d: #f59e72;  --note-coral-i: #6e3a20;
+  --note-pink: #ffb6c9;   --note-pink-d: #f58fac;   --note-pink-i: #6e2a40;
+  --note-purple: #d2bdf0; --note-purple-d: #b392e0; --note-purple-i: #43306e;
+  --note-blue: #a9d6f5;   --note-blue-d: #79b9ed;   --note-blue-i: #1f4a6e;
+  --note-mint: #a6e6d5;   --note-mint-d: #73d0bb;   --note-mint-i: #1c5247;
+  --note-green: #bee89b;  --note-green-d: #95d16c;  --note-green-i: #33501f;
 
   --bar-h: 76px;
 }
@@ -483,13 +483,13 @@ body {
   height: min(78vh, 640px);
   border-radius: 4px;
   overflow: hidden;
-  color: var(--nci, #4d442d);
-  background: var(--ncp, #ded19b);
+  color: var(--nci, #5c4a1e);
+  background: var(--ncp, #ffe57a);
   box-shadow: 0 16px 48px rgba(35, 24, 6, 0.4);
   animation: mm-pop 0.16s ease both;
 }
 @keyframes mm-pop { from { transform: scale(0.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-.mm-spine { flex: 0 0 14px; background: var(--ncd, #c8b375); order: 2; } /* ページ側の差し色帯（本体の spine 相当・装飾のみ） */
+.mm-spine { flex: 0 0 14px; background: var(--ncd, #f2c84b); order: 2; } /* ページ側の差し色帯（本体の spine 相当・装飾のみ） */
 .mm-body {
   flex: 1; min-width: 0; min-height: 0;
   display: flex; flex-direction: column; gap: 10px;
@@ -610,7 +610,7 @@ body {
   transition: background 0.1s ease;
 }
 .mm-picker .emoji:hover { background: rgba(0, 0, 0, 0.08); }
-.mm-picker .emoji.on { background: var(--ncd, #c8b375); }
+.mm-picker .emoji.on { background: var(--ncd, #f2c84b); }
 
 @media (prefers-reduced-motion: reduce) {
   .memomodal, .mm-box { animation: none; }
