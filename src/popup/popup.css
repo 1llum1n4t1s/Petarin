@@ -12,7 +12,7 @@
   --accent-warm: #e8a13c;
   --shadow-soft: 0 1px 2px rgba(74, 56, 30, 0.1), 0 10px 22px -12px rgba(74, 56, 30, 0.35);
 
-  --note-yellow-d: #f2c84b; /* ロゴの折れ角の縁色（付箋一覧の削除に伴い、生きている付箋色変数はこれだけ） */
+  --note-yellow-d: #c8b375; /* ロゴの折れ角の縁色（付箋一覧の削除に伴い、生きている付箋色変数はこれだけ） */
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
