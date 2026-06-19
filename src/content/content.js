@@ -324,8 +324,8 @@
   // 他タブが別ドメインを書いていても最新の all を読んでから自ドメインだけ差し替え＝相手を巻き戻さない
   // （同ドメインを複数タブで同時編集した場合の geom は last-writer-wins＝見た目設定なので許容）。
   // changedIds: 今回触った id だけを upsert/delete する（commitGeom/dropGeom が渡す）。省略時は
-  // 全 id を突き合わせる（初期化時の在庫掃除など）。全 id を毎回書き戻すと、別タブが同ドメインの
-  // 「他の付箋」を動かしても、このタブが未取り込みの stale な geom で巻き戻してしまうため（Codex/CodeRabbit 指摘）。
+  // 全 id を突き合わせ在庫に無い孤児も一掃する（初期化時の在庫掃除）。全 id を毎回書き戻すと、別タブが
+  // 同ドメインの「他の付箋」を動かしても、このタブが未取り込みの stale な geom で巻き戻してしまう（Codex/CodeRabbit 指摘）。
   function persistGeom(changedIds) {
     return withWrite(async () => {
       const all = (await chrome.storage.local.get(KEY_GEOM))[KEY_GEOM] || {};
@@ -333,12 +333,22 @@
       // 別タブが書いた「他の付箋」の geom を巻き戻してしまう（KEY_NOTES と同じ並行制御方針に揃える）。
       const cur = all[domain] && typeof all[domain] === "object" ? { ...all[domain] } : {};
       const present = new Set(notes.map((n) => n.id));
-      const ids = changedIds || Object.keys(geom);
-      for (const id of ids) {
-        if (present.has(id) && geom[id]) cur[id] = geom[id]; // 在庫にある自タブの値だけ upsert
-        else delete cur[id];                                  // 在庫に無い／自タブで破棄した id は除去
+      if (changedIds) {
+        // 差分書き込み：触った id だけ upsert/delete し、他付箋（別タブ作成・移動分）には一切触れない。
+        // ここで孤児スイープを走らせると、編集中で notes 取り込みを遅延した隙に別タブが作った付箋の
+        // geom を消してしまう（既定位置で開き直す）ため、孤児掃除は全棚卸し時のみに限定する（Codex#341）。
+        for (const id of changedIds) {
+          if (present.has(id) && geom[id]) cur[id] = geom[id];
+          else delete cur[id]; // 在庫に無い／自タブで破棄した id は除去
+        }
+      } else {
+        // 全棚卸し（初期化時）：自タブの geom で突き合わせ、在庫に無い孤児を一掃する。
+        for (const id of Object.keys(geom)) {
+          if (present.has(id) && geom[id]) cur[id] = geom[id];
+          else delete cur[id];
+        }
+        for (const id of Object.keys(cur)) if (!present.has(id)) delete cur[id]; // 在庫に無い孤児だけ掃く
       }
-      for (const id of Object.keys(cur)) if (!present.has(id)) delete cur[id]; // 在庫に無い孤児だけ掃く
       if (Object.keys(cur).length) all[domain] = cur;
       else delete all[domain];
       geomWriteAt = Date.now(); // set の前に打刻（自エコーで loadGeom し直さない）
