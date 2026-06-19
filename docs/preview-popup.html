@@ -104,6 +104,10 @@
           <span class="switch-label">格納中は半透明にする<small>マウスを乗せると、はっきり表示</small></span>
           <span class="switch"><input type="checkbox" id="translucentToggle" /><span class="track"><span class="thumb"></span></span></span>
         </label>
+        <div class="range-row" id="opacityRow">
+          <span class="select-label">半透明の濃さ<small>格納中の透け具合（左ほど薄く）</small></span>
+          <input type="range" id="opacitySlider" min="0.1" max="0.9" step="0.05" aria-label="半透明の濃さ" />
+        </div>
         <label class="switch-row">
           <span class="switch-label">ページ上に付箋を表示<small>オフにすると、このポップアップだけで管理</small></span>
           <span class="switch"><input type="checkbox" id="showOnPageToggle" /><span class="track"><span class="thumb"></span></span></span>
