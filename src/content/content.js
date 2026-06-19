@@ -33,7 +33,7 @@
 
   const COLORS = [
     // 各色は彩度 50% ダウンの淡色（明度維持）。storage.js の COLORS と値も含め一致させること。
-    { id: "yellow", paper: "#DED19B", deep: "#C8B375", ink: "#4D442D" },
+    { id: "yellow", paper: "#F0E6BC", deep: "#C8B375", ink: "#4D442D" }, // paper は他色と明度を揃え白っぽく（黄だけ暗かったため）
     { id: "coral",  paper: "#E8C9B9", deep: "#D4A993", ink: "#5B4134" },
     { id: "pink",   paper: "#EDC8D2", deep: "#DCA8B7", ink: "#5D3B46" },
     { id: "purple", paper: "#D4CAE3", deep: "#B6A5CD", ink: "#49405F" },
