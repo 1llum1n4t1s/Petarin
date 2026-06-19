@@ -31,16 +31,24 @@
     { re: /~~([^\n]+?)~~/, kind: "del" },
     { re: /\[([^\]\n]*)\]\(([^)\s]+)\)/, kind: "link" },
     // 素の URL（Markdown 記法でなくても）を自動リンク化。直前が英数字なら誤検出を避ける（lookbehind）。
-    // 末尾の句読点・閉じ括弧はリンクに含めない（最後の文字が句読点でない所までで止める）。
-    { re: /(?<![A-Za-z0-9])https?:\/\/[^\s<]*[^\s<.,;:!?)\]}'"]/, kind: "autolink" },
+    // 末尾の句読点・閉じ括弧はリンクに含めない（最後の文字が句読点でない所までで止める）。日本語本文では
+    // URL 直後に空白なく 、。！？） 等が続くため、本体・末尾とも全角句読点/括弧を除外して URL 境界で止める。
+    {
+      re: /(?<![A-Za-z0-9])https?:\/\/[^\s<、。！？，；：）（「」『』【】〔〕｛｝・…]*[^\s<.,;:!?)\]}'"、。！？，；：）」』】〕｝]/u,
+      kind: "autolink",
+    },
   ];
 
-  function parseInline(str) {
+  // noAutolink=true のときは autolink 規則を無効化する。link の表示テキストを再帰パースする際に渡し、
+  // 表示テキスト内の素 URL が autolink として再発火して <a> が二重ネストするのを防ぐ
+  // （createElement 直組みなので HTML パーサの anchor 自動分割が効かず、不正な入れ子がそのまま残るため）。
+  function parseInline(str, noAutolink) {
     const frag = document.createDocumentFragment();
     let rest = String(str == null ? "" : str);
     while (rest) {
       let best = null;
       for (const t of INLINE) {
+        if (noAutolink && t.kind === "autolink") continue;
         const m = t.re.exec(rest);
         if (m && (best === null || m.index < best.m.index)) best = { t, m };
       }
@@ -63,7 +71,7 @@
           a.href = url;
           a.target = "_blank";
           a.rel = "noopener noreferrer nofollow";
-          a.append(parseInline(m[1]));
+          a.append(parseInline(m[1], true)); // リンク内は autolink 抑止＝表示テキストの素 URL を二重リンク化しない
           frag.append(a);
         }
       } else if (t.kind === "autolink") {
@@ -82,12 +90,12 @@
       } else if (t.kind === "strongem") {
         const s = document.createElement("strong");
         const e = document.createElement("em");
-        e.append(parseInline(m[1]));
+        e.append(parseInline(m[1], noAutolink)); // リンク内（noAutolink=true）なら強調の中でも autolink 抑止を維持
         s.append(e);
         frag.append(s);
       } else {
         const node = document.createElement(t.kind === "strong" ? "strong" : t.kind === "em" ? "em" : "del");
-        node.append(parseInline(m[1]));
+        node.append(parseInline(m[1], noAutolink));
         frag.append(node);
       }
       rest = rest.slice(m.index + m[0].length);
@@ -113,11 +121,14 @@
   const isTableSep = (line) => typeof line === "string" && line.includes("-") && RE_TABLE_DELIM.test(line);
   // 行が表のセル行に見えるか（| を含み空でない）。
   const looksLikeRow = (line) => typeof line === "string" && line.includes("|") && !isBlank(line);
-  // i 行目から表が始まるか（ヘッダ行 + 次行が区切り行・かつ区切り行に | があるか単独 - 表記）。
-  const startsTable = (lines, i) =>
-    i + 1 < lines.length && looksLikeRow(lines[i]) && isTableSep(lines[i + 1]) &&
-    // 区切り行も列を持つ（| を含む or ヘッダが複数列）＝ HR の誤検出を避ける。
-    (lines[i + 1].includes("|") || lines[i].split("|").length > 2);
+  // i 行目から表が始まるか（ヘッダ行 + 次行が区切り行）。ヘッダと区切り行の列数が一致し、かつ複数列の
+  // ときだけ表とみなす＝「段落 + 水平線(---)」を表に誤変換しない（splitRow で実際の列数を突き合わせる）。
+  const startsTable = (lines, i) => {
+    if (!(i + 1 < lines.length && looksLikeRow(lines[i]) && isTableSep(lines[i + 1]))) return false;
+    const header = splitRow(lines[i]);
+    const sep = splitRow(lines[i + 1]);
+    return header.length >= 2 && sep.length === header.length;
+  };
 
   // 1 行を | 区切りでセル配列へ。\| はエスケープしてリテラル | に。前後の囲い | は捨てる。
   function splitRow(line) {
