@@ -27,7 +27,7 @@
   /* フラット：単色の紙地（グラデ・ベベル無し）＋控えめな単一の影だけ */
   background: var(--paper, #ffe57a);
   box-shadow: 0 1px 2px rgba(35, 24, 6, 0.18);
-  /* 端から箱がせり出す：幅・高さをイージングで動かす（バウンス無し）*/
+  /* 端から箱がせり出す：幅・高さをイージングで動かす（バウンス無し） */
   transition: width 0.28s ease, height 0.28s ease, top 0.28s ease, left 0.28s ease,
     opacity 0.2s ease, box-shadow 0.2s ease;
   overflow: hidden;
@@ -36,7 +36,7 @@
   box-shadow: 0 4px 12px rgba(35, 24, 6, 0.28);
   z-index: 6;
 }
-/* ドラッグ移動／リサイズ中は遷移を切り、指にぴったり追従させる（カクつき防止）*/
+/* ドラッグ移動／リサイズ中は遷移を切り、指にぴったり追従させる（カクつき防止） */
 .note.dragging { transition: none; }
 /* 展開アニメの基点づくり（FLIP）で一瞬だけ遷移を止める */
 .note.no-anim { transition: none; }
@@ -44,7 +44,7 @@
 .layer.repositioning .note { transition: none; }
 
 /* ── ページに面した端の細い差し色帯（フラット：単色。索引タブの目印）──────────
-   格納時はこの帯が色のアクセント。展開時は spine 自体が差し色を担うので隠す。*/
+   格納時はこの帯が色のアクセント。展開時は spine 自体が差し色を担うので隠す。 */
 .note::after {
   content: "";
   position: absolute;
@@ -53,7 +53,7 @@
   background: var(--deep);
 }
 .note.expanded::after { display: none; }
-/* ホバーで少しだけ影を強めて手前に寄せる（フラットな単一の影）*/
+/* ホバーで少しだけ影を強めて手前に寄せる（フラットな単一の影） */
 .note:not(.expanded):not(.dragging):hover {
   box-shadow: 0 2px 6px rgba(35, 24, 6, 0.26);
 }
@@ -68,17 +68,17 @@
   user-select: none;
   touch-action: none;
   position: relative;
-  background: transparent; /* フラット：格納時は紙地のまま。展開時だけ差し色（下で指定）*/
+  background: transparent; /* フラット：格納時は紙地のまま。展開時だけ差し色（下で指定） */
 }
 .note.dragging .spine { cursor: grabbing; }
 .spine .head {
   font-weight: 800;
-  font-size: 8px; /* 格納時の文字サイズ（2 行で文字数を稼ぐ）*/
+  font-size: 8px; /* 格納時の文字サイズ（2 行で文字数を稼ぐ） */
   letter-spacing: 0.01em;
   line-height: 1.18;
   width: 100%;
   text-align: center;
-  /* 折り返して 2 行まで表示（はみ出しは … で省略）*/
+  /* 折り返して 2 行まで表示（はみ出しは … で省略） */
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -103,14 +103,14 @@
 .note.expanded .spine .head { display: none; }
 
 /* 格納時の頭文字を金口(::after, 5px)に重ねない＝ページに面した端に逃げ(padding)を作る。
-   文字は反対側へ寄って 2 行ぶんの幅を稼ぐ。展開時は head 非表示なので collapsed のみ。*/
+   文字は反対側へ寄って 2 行ぶんの幅を稼ぐ。展開時は head 非表示なので collapsed のみ。 */
 .layer[data-side="right"] .note:not(.expanded) .spine { padding-left: 7px; }
 .layer[data-side="left"] .note:not(.expanded) .spine { padding-right: 7px; }
 .layer[data-side="top"] .note:not(.expanded) .spine { padding-bottom: 7px; }
 .layer[data-side="bottom"] .note:not(.expanded) .spine { padding-top: 7px; }
 /* ＋作成タブ・アイコン付き付箋は単一字（記号/絵文字）。金口(::after 5px)はページ側の端を
    塗るので、その 5px ぶんだけページ側に逃げを作る。すると残りの“紙面”の中央に字が来て、
-   タブ全幅で中央に置いたときの「金口側へ寄って見える」ズレが取れる（縁を考慮した中央）。*/
+   タブ全幅で中央に置いたときの「金口側へ寄って見える」ズレが取れる（縁を考慮した中央）。 */
 .layer[data-side="right"] .note.creator:not(.expanded) .spine,
 .layer[data-side="right"] .note.has-icon:not(.expanded) .spine { padding: 0 0 0 5px; }
 .layer[data-side="left"] .note.creator:not(.expanded) .spine,
@@ -138,15 +138,15 @@
   max-width: calc(100vw - 20px);
   max-height: calc(100vh - 20px);
   z-index: 4;
-  /* フラットな浮きパネル：単一のやわらかい影だけ（ベベル・金口は使わない）*/
+  /* フラットな浮きパネル：単一のやわらかい影だけ（ベベル・金口は使わない） */
   box-shadow: 0 8px 28px rgba(35, 24, 6, 0.22);
 }
 .note.expanded .body { display: flex; z-index: 3; }
-/* 展開時の背（spine）はページ側の細い差し色帯にする（製本の背のようなフラットなアクセント）*/
+/* 展開時の背（spine）はページ側の細い差し色帯にする（製本の背のようなフラットなアクセント） */
 .note.expanded .spine { flex: 0 0 14px; background: var(--deep); }
 
 /* ── 展開ボックスのリサイズハンドル（8 方向）。展開時だけ表示・操作可能。──────────────
-   箱は overflow:hidden なので、ハンドルは縁の内側に薄く敷く（クリップされず掴める）。*/
+   箱は overflow:hidden なので、ハンドルは縁の内側に薄く敷く（クリップされず掴める）。 */
 .rz { position: absolute; z-index: 7; display: none; touch-action: none; }
 .note.expanded .rz { display: block; }
 .rz-n { top: 0; left: 12px; right: 12px; height: 7px; cursor: ns-resize; }
@@ -159,7 +159,7 @@
 .rz-se { bottom: 0; right: 0; width: 13px; height: 13px; cursor: nwse-resize; }
 /* 展開時、spine(14px の差し色帯＝箱を移動する取っ手)が乗る辺のリサイズハンドルを内側へ 14px ずらす。
    ずらさないと spine 帯の外側半分がリサイズに取られ「背をつかんで移動」が辺際で効かない。spine の物理辺は
-   side で決まる: right→右辺(.rz-e/ne/se) / left→左辺(.rz-w/nw/sw) / top→上辺(.rz-n/nw/ne) / bottom→下辺(.rz-s/sw/se)。*/
+   side で決まる: right→右辺(.rz-e/ne/se) / left→左辺(.rz-w/nw/sw) / top→上辺(.rz-n/nw/ne) / bottom→下辺(.rz-s/sw/se)。 */
 .layer[data-side="right"] .note.expanded .rz-e,
 .layer[data-side="right"] .note.expanded .rz-ne,
 .layer[data-side="right"] .note.expanded .rz-se { right: 14px; }
@@ -178,13 +178,13 @@
 }
 
 /* 編集面（行番号ガター＋テキストエリア）とプレビュー面の出し分け。
-   .note.editing → 編集面、.note.previewing → プレビュー面。*/
+   .note.editing → 編集面、.note.previewing → プレビュー面。 */
 .editor { display: none; flex: 1; min-height: 0; }
 .preview { display: none; flex: 1; min-height: 0; }
 .note.editing .editor { display: flex; }
 .note.previewing .preview { display: block; overflow-y: auto; }
 
-/* 行番号ガター（行番号 ON のときだけ表示）。textarea と同じ行高で右寄せ。*/
+/* 行番号ガター（行番号 ON のときだけ表示）。textarea と同じ行高で右寄せ。 */
 .gutter {
   display: none;
   flex: 0 0 auto;
@@ -194,7 +194,7 @@
   border-right: 1px solid color-mix(in srgb, var(--ink) 22%, transparent);
   color: var(--ink);
   opacity: 0.42;
-  /* 編集面は UDEV ゴシック固定（行番号も textarea と同じ書体・行高で揃える）*/
+  /* 編集面は UDEV ゴシック固定（行番号も textarea と同じ書体・行高で揃える） */
   font-family: var(--peta-edit-font, ui-monospace, "BIZ UDGothic", Consolas, monospace);
   font-size: var(--peta-size, 11px);
   line-height: 1.6;
@@ -205,10 +205,10 @@
   min-width: 1.6em;
 }
 .editor.with-gutter .gutter { display: block; }
-/* 行番号 ON の間は折り返さない（論理行＝1 視覚行でガターと一致させる）。横はスクロール。*/
+/* 行番号 ON の間は折り返さない（論理行＝1 視覚行でガターと一致させる）。横はスクロール。 */
 .editor.with-gutter .ta { white-space: pre; overflow-x: auto; word-break: normal; }
 
-/* フラット：紙面（付箋の地色）にそのまま書く。フィールド枠・ベベル・影は付けない。*/
+/* フラット：紙面（付箋の地色）にそのまま書く。フィールド枠・ベベル・影は付けない。 */
 .ta {
   flex: 1;
   min-height: 0;            /* 縦並びで縮められ、内容超過は内部スクロール */
@@ -219,29 +219,30 @@
   background: transparent;
   color: var(--ink);
   caret-color: var(--ink); /* 文字色基準のキャレット＝淡い紙(白)でも濃い紙(黒)でも視認できる */
-  /* 編集モードは選択書体に依らず UDEV ゴシック固定（等幅で Markdown コードが整う）*/
+  /* 編集モードは選択書体に依らず UDEV ゴシック固定（等幅で Markdown コードが整う） */
   font-family: var(--peta-edit-font, ui-monospace, "BIZ UDGothic", Consolas, monospace);
   font-size: var(--peta-size, 11px);
   font-weight: 500;
   line-height: 1.6;
   overflow-y: auto;         /* 複数行・あふれたらスクロール */
   white-space: pre-wrap;    /* 改行と折り返しを両立 */
-  word-break: break-word;
+  word-break: normal;
+  overflow-wrap: anywhere;  /* 長い連続文字列（URL 等）も枠内で折り返す */
   padding: 2px 2px;
 }
 .ta::placeholder { color: var(--ink); opacity: 0.4; }
 .ta:read-only { cursor: default; }
-/* 選択ハイライト：deep を透過側へ寄せて紙色に重ねる（白でも黒でも文字が潰れない）*/
+/* 選択ハイライト：deep を透過側へ寄せて紙色に重ねる（白でも黒でも文字が潰れない） */
 .ta::selection { background: color-mix(in srgb, var(--deep) 42%, transparent); }
 
 /* ── プレビュー（Markdown 整形表示）。クリックで編集へ入れるよう手のひらカーソル。──────── */
 .preview {
   color: var(--ink);
-  /* 表示（プレビュー）モードはユーザーが選んだ書体を反映する（編集面の UDEV 固定とは別系統）*/
+  /* 表示（プレビュー）モードはユーザーが選んだ書体を反映する（編集面の UDEV 固定とは別系統） */
   font-family: var(--peta-font, inherit);
   font-size: var(--peta-size, 11px);
   line-height: 1.7;
-  word-break: break-word;
+  word-break: normal;
   overflow-wrap: anywhere;
   cursor: default;
   padding: 2px 2px;
@@ -283,7 +284,7 @@
   overflow-x: auto;
 }
 .preview pre code { background: transparent; padding: 0; font-size: 0.86em; }
-/* GFM テーブル：細い罫線・ヘッダは薄い地色。狭い箱でもはみ出さないよう横スクロール可。*/
+/* GFM テーブル：細い罫線・ヘッダは薄い地色。狭い箱でもはみ出さないよう横スクロール可。 */
 .preview table {
   border-collapse: collapse;
   margin: 0 0 0.5em;
@@ -303,7 +304,7 @@
 .preview tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparent); }
 
 /* 上端バー：左＝プレビュー/編集トグル、中ほど＝文字数、右＝閉じる(×)。
-   展開中はこのバー全体が「箱を掴んで動かす」ドラッグ取っ手（ボタンの上だけは pointer）。*/
+   展開中はこのバー全体が「箱を掴んで動かす」ドラッグ取っ手（ボタンの上だけは pointer）。 */
 .topbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .note.expanded .topbar { cursor: move; }
 .note.expanded.dragging .topbar { cursor: grabbing; }
@@ -322,7 +323,7 @@
 }
 .mode-btn:hover { background: rgba(0, 0, 0, 0.1); opacity: 1; }
 .mode-btn svg { width: 18px; height: 18px; }
-/* 文字数（編集中のみ表示）。右寄せして閉じるボタンの手前に置く。*/
+/* 文字数（編集中のみ表示）。右寄せして閉じるボタンの手前に置く。 */
 .charcount {
   margin-left: auto;
   font-size: 11px;
@@ -346,7 +347,7 @@
 .close-x:hover { background: rgba(0, 0, 0, 0.1); opacity: 1; }
 .close-x svg { width: 18px; height: 18px; }
 
-/* アイコンボタン（下端ツールバーの先頭）: クリックで絵文字ピッカーを開いて選び直す（フラット）。*/
+/* アイコンボタン（下端ツールバーの先頭）: クリックで絵文字ピッカーを開いて選び直す（フラット）。 */
 .icon-btn {
   flex-shrink: 0;
   width: 28px; height: 28px;
@@ -389,7 +390,7 @@
 .icon-picker .emoji:hover { background: rgba(0, 0, 0, 0.08); }
 .icon-picker .emoji.on { background: var(--pk-accent, #f2c84b); }
 
-/* 下端ツールバー（絵文字｜色｜余白｜削除）*/
+/* 下端ツールバー（絵文字｜色｜余白｜削除） */
 .toolbar { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .toolbar .sp { flex: 1; } /* 余白：削除ボタンを右端へ寄せる */
 
@@ -402,7 +403,7 @@
 .swatch:hover { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 0 0 3px rgba(0, 0, 0, 0.22); }
 .swatch.on { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 0 0 3.5px var(--ink); }
 
-/* 削除ボタン（ゴミ箱アイコン・フラット。閉じる(×)と取り違えないよう右端に分離）*/
+/* 削除ボタン（ゴミ箱アイコン・フラット。閉じる(×)と取り違えないよう右端に分離） */
 .del {
   flex-shrink: 0;
   width: 28px; height: 28px;
@@ -435,7 +436,7 @@
 /* ── にょき！：隠れた長い紙が端からせり出す ─────────────────────────
    端は固定したまま軸方向の寸法だけ伸ばす（離れず、出てくる）。
    ホバーで width/height を伸ばすだけ。弾み（ぴょこぴょこ）は無しで、
-   .note の transition がそのまま「すっと出る」一発の動きを担う。*/
+   .note の transition がそのまま「すっと出る」一発の動きを担う。 */
 
 /* ── 半透明（格納中・非ホバー時。＋作成タブも対象）────────────────── */
 .layer[data-translucent="1"] .note:not(.expanded):not(:hover) {
@@ -444,7 +445,7 @@
 
 /* ── サイドごとの貼り付き向き ─────────────────────────────────────── */
 /* 画面端に接する側は丸めず密着（途切れて見えないように）、ページ側だけ 2px。
-   金口は端いっぱいまで通して連続させる。*/
+   金口は端いっぱいまで通して連続させる。 */
 .layer[data-side="right"] .note { right: 0; border-radius: 2px 0 0 2px; --spine-angle: 270deg; }
 .layer[data-side="right"] .note.expanded .spine { order: 2; }
 .layer[data-side="right"] .note:not(.expanded):not(.dragging):hover { width: 44px; }

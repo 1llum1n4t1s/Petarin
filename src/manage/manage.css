@@ -1,7 +1,7 @@
 /* ぺたりん 付箋デスク — 文房具の作業机を広げて、付箋をまとめて整理する */
 
 :root {
-  --paper-bg: #f1e8d4;        /* 机の天板（クリーム）*/
+  --paper-bg: #f1e8d4;        /* 机の天板（クリーム） */
   --paper-card: #fffaf0;      /* 白い紙 */
   --kraft: #6b5847;           /* クラフト紙 */
   --kraft-deep: #4d3f31;
@@ -241,16 +241,16 @@ body {
 
 .memo-text {
   flex: 1; font-family: var(--peta-note-font, inherit);
-  font-size: 14px; font-weight: 700; line-height: 1.55; word-break: break-word;
+  font-size: 14px; font-weight: 700; line-height: 1.55; word-break: normal; overflow-wrap: anywhere;
   white-space: pre-wrap; outline: 0; border-radius: 6px; min-height: 1.55em;
   margin: 2px 0 8px;
 }
 .memo.untitled .memo-text, .memo-text.memo-empty { color: color-mix(in srgb, var(--nci) 55%, transparent); font-style: italic; font-weight: 500; }
-/* 表示プレビューは複数行でも 8 行までに収めてカード高さを揃える（編集中は下の[contenteditable]で展開）*/
+/* 表示プレビューは複数行でも 8 行までに収めてカード高さを揃える（編集中は下の[contenteditable]で展開） */
 .memo-text:not([contenteditable]) {
   display: -webkit-box; -webkit-line-clamp: 8; -webkit-box-orient: vertical; overflow: hidden;
 }
-/* Markdown を整形したカードは block 子を持つので clamp を解き、高さで切り詰める。*/
+/* Markdown を整形したカードは block 子を持つので clamp を解き、高さで切り詰める。 */
 .memo-text:not([contenteditable]):has(> *) {
   display: block; -webkit-line-clamp: initial; max-height: 13em; overflow: hidden;
 }
@@ -265,7 +265,7 @@ body {
 .memo-text pre code { background: transparent; padding: 0; }
 .memo-text hr { border: 0; border-top: 1px solid color-mix(in srgb, var(--nci) 30%, transparent); margin: 0.5em 0; }
 .memo-text a { color: inherit; }
-/* GFM テーブル（カードプレビュー）：細い罫線・ヘッダは薄い地色。*/
+/* GFM テーブル（カードプレビュー）：細い罫線・ヘッダは薄い地色。 */
 .memo-text table { border-collapse: collapse; font-size: 0.92em; margin: 0 0 0.35em; }
 .memo-text th, .memo-text td {
   border: 1px solid color-mix(in srgb, var(--nci) 32%, transparent); padding: 0.18em 0.45em; text-align: left; vertical-align: top;
@@ -359,7 +359,7 @@ body {
 .toast button:hover { background: rgba(255,255,255,0.22); }
 
 /* ── 出現アニメ ────────────────────────────────────────────────── */
-/* 出現アニメは初回ロードのみ（並べ替え・色変更・削除での全カード再アニメを防ぐ）*/
+/* 出現アニメは初回ロードのみ（並べ替え・色変更・削除での全カード再アニメを防ぐ） */
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 .notes.intro .memo { animation: rise 0.4s both; }
 .notes.intro .memo:nth-child(1) { animation-delay: 0.02s; }
@@ -475,7 +475,7 @@ body {
   animation: mm-fade 0.14s ease both;
 }
 @keyframes mm-fade { from { opacity: 0; } to { opacity: 1; } }
-/* 付箋の箱（本体と同じ：紙地＋ページ側の差し色帯 spine＋本文＋下端ツールバー）。固定サイズ＝移動/リサイズ無し。*/
+/* 付箋の箱（本体と同じ：紙地＋ページ側の差し色帯 spine＋本文＋下端ツールバー）。固定サイズ＝移動/リサイズ無し。 */
 .mm-box {
   display: flex; align-items: stretch;
   width: min(680px, 92vw);
@@ -488,7 +488,7 @@ body {
   animation: mm-pop 0.16s ease both;
 }
 @keyframes mm-pop { from { transform: scale(0.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-.mm-spine { flex: 0 0 14px; background: var(--ncd, #c8b375); order: 2; } /* ページ側の差し色帯（本体の spine 相当・装飾のみ）*/
+.mm-spine { flex: 0 0 14px; background: var(--ncd, #c8b375); order: 2; } /* ページ側の差し色帯（本体の spine 相当・装飾のみ） */
 .mm-body {
   flex: 1; min-width: 0; min-height: 0;
   display: flex; flex-direction: column; gap: 10px;
@@ -514,7 +514,7 @@ body {
 .mm-box:not(.editing) .mm-charcount { visibility: hidden; }
 .mm-box:not(.editing) .mm-close { margin-left: auto; }
 
-/* 編集面（行番号ガター＋テキストエリア）とプレビュー面の出し分け（本体と同じ）。*/
+/* 編集面（行番号ガター＋テキストエリア）とプレビュー面の出し分け（本体と同じ）。 */
 .mm-editor { display: none; flex: 1; min-height: 0; }
 .mm-preview { display: none; flex: 1; min-height: 0; overflow-y: auto; }
 .mm-box.editing .mm-editor { display: flex; }
@@ -532,23 +532,23 @@ body {
 .mm-editor.with-gutter .mm-gutter { display: block; }
 .mm-editor.with-gutter .mm-ta { white-space: pre; overflow-x: auto; word-break: normal; }
 
-/* 編集モードは付箋の表示エリア全体を使う（flex:1）。書体は UDEV ゴシック固定。*/
+/* 編集モードは付箋の表示エリア全体を使う（flex:1）。書体は UDEV ゴシック固定。 */
 .mm-ta {
   flex: 1; min-height: 0; width: 100%;
   border: 0; outline: 0; resize: none; background: transparent;
   color: var(--nci); caret-color: var(--nci);
   font-family: var(--peta-edit-font, ui-monospace, "BIZ UDGothic", Consolas, monospace);
   font-size: var(--peta-size, 11px); font-weight: 500; line-height: 1.6;
-  overflow-y: auto; white-space: pre-wrap; word-break: break-word; padding: 2px;
+  overflow-y: auto; white-space: pre-wrap; word-break: normal; overflow-wrap: anywhere; padding: 2px;
 }
 .mm-ta::placeholder { color: var(--nci); opacity: 0.4; }
 
-/* プレビュー面（選択フォントで Markdown 整形）。*/
+/* プレビュー面（選択フォントで Markdown 整形）。 */
 .mm-preview {
   color: var(--nci);
   font-family: var(--peta-note-font, inherit);
   font-size: var(--peta-size, 11px); line-height: 1.7;
-  word-break: break-word; overflow-wrap: anywhere; padding: 2px;
+  word-break: normal; overflow-wrap: anywhere; padding: 2px;
 }
 .mm-preview .pv-empty { opacity: 0.45; font-style: italic; }
 .mm-preview > :first-child { margin-top: 0; }
@@ -597,7 +597,7 @@ body {
 .mm-del:hover { background: rgba(214, 72, 63, 0.16); color: var(--danger); opacity: 1; }
 .mm-del svg { width: 19px; height: 19px; }
 
-/* 絵文字ピッカー（モーダル内）*/
+/* 絵文字ピッカー（モーダル内） */
 .mm-picker {
   position: fixed; z-index: 70; display: grid; grid-template-columns: repeat(12, 26px);
   gap: 2px; padding: 8px; border-radius: 10px; background: #fbf6ec;
