@@ -84,6 +84,18 @@ function syncToggles() {
   $("#translucentToggle").checked = !!settings.collapsedTranslucent;
   $("#showOnPageToggle").checked = !!settings.showOnPage;
   $("#lineNumbersToggle").checked = !!settings.lineNumbers;
+  syncOpacityControl();
+}
+
+// 半透明スライダーの現在値と有効/無効（半透明 OFF のときはグレーアウト）を設定に合わせる。
+function syncOpacityControl() {
+  const slider = $("#opacitySlider");
+  const row = $("#opacityRow");
+  const on = !!settings.collapsedTranslucent;
+  const op = Number.isFinite(settings.translucentOpacity) ? settings.translucentOpacity : 0.45;
+  slider.value = String(op);
+  slider.disabled = !on;
+  row.classList.toggle("is-off", !on);
 }
 
 // 書体・サイズのセレクトを生成し現在値を選択。書体オプションは各フォントで表示してプレビューに。
@@ -123,6 +135,12 @@ function applyNoteFont() {
   document.body.style.setProperty("--peta-note-font", fontFamilyCss(settings.font));
 }
 
+// 一覧の半透明プレビューの濃さを設定値に合わせる（ページ上の挙動をミラー）。
+function applyTranslucentDim() {
+  const op = Number.isFinite(settings.translucentOpacity) ? settings.translucentOpacity : 0.45;
+  $("#list").style.setProperty("--peta-dim", String(op));
+}
+
 // 選択中フォントのライブプレビュー（その 1 書体だけ読み込まれる）。
 function updateFontSample() {
   const s = $("#fontSample");
@@ -139,7 +157,16 @@ function bindEvents() {
 
   $("#translucentToggle").addEventListener("change", async (e) => {
     settings = await saveSettings({ collapsedTranslucent: e.target.checked });
+    syncOpacityControl();
     renderList();
+  });
+
+  // 半透明の濃さ（格納中の透け具合）。入力中はその場で一覧プレビューへ反映し、保存もする。
+  $("#opacitySlider").addEventListener("input", async (e) => {
+    const v = parseFloat(e.target.value);
+    if (!Number.isFinite(v)) return;
+    settings = await saveSettings({ translucentOpacity: v });
+    applyTranslucentDim();
   });
 
   $("#showOnPageToggle").addEventListener("change", async (e) => {
@@ -179,6 +206,7 @@ function renderList() {
   const list = $("#list");
   const empty = $("#empty");
   list.dataset.translucent = settings.collapsedTranslucent ? "1" : "0";
+  applyTranslucentDim();
 
   const totalNotes = Object.values(allNotes).reduce((s, arr) => s + arr.length, 0);
   $("#totalBadge").textContent = String(totalNotes);

@@ -235,6 +235,29 @@ main { padding: 4px 16px 18px; display: flex; flex-direction: column; gap: 14px;
 }
 .select-row select:focus-visible { outline: 2px solid var(--accent-warm); outline-offset: 1px; }
 
+/* 半透明の濃さ（range スライダー）行。select-row と同じ罫線・見出しに揃える。*/
+.range-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 9px 0;
+  border-top: 1px dashed var(--line);
+  transition: opacity 0.18s ease;
+}
+.range-row.is-off { opacity: 0.45; }
+.range-row input[type="range"] {
+  flex-shrink: 0; width: 46%; height: 22px; cursor: pointer;
+  -webkit-appearance: none; appearance: none; background: transparent;
+}
+.range-row.is-off input[type="range"] { cursor: not-allowed; }
+.range-row input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px; border-radius: 999px; background: #ddd0b8;
+}
+.range-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 16px; height: 16px; margin-top: -5px; border-radius: 50%;
+  background: var(--accent-warm); box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+.range-row input[type="range"]:focus-visible { outline: 2px solid var(--accent-warm); outline-offset: 3px; border-radius: 999px; }
+
 /* 選択中フォントのライブプレビュー（1 書体だけ読み込む）*/
 .font-sample {
   margin: 2px 0 2px; padding: 7px 10px;
@@ -343,6 +366,11 @@ main { padding: 4px 16px 18px; display: flex; flex-direction: column; gap: 14px;
 .note-card .nc-text code { font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }
 .note-card .nc-text pre { white-space: pre-wrap; }
 .note-card .nc-text a { color: inherit; }
+.note-card .nc-text table { border-collapse: collapse; font-size: 0.9em; margin: 0 0 0.2em; }
+.note-card .nc-text th, .note-card .nc-text td {
+  border: 1px solid color-mix(in srgb, var(--nci) 35%, transparent); padding: 0.1em 0.35em; text-align: left;
+}
+.note-card .nc-text th { font-weight: 800; background: color-mix(in srgb, var(--nci) 12%, transparent); }
 .note-card.untitled .nc-text, .note-card .nc-text.nc-empty { opacity: 0.5; font-style: italic; }
 .note-card .nc-foot { display: flex; align-items: center; gap: 5px; margin-top: 7px; }
 .note-card .nc-icon { font-size: 12px; line-height: 1; flex-shrink: 0; }
@@ -353,8 +381,8 @@ main { padding: 4px 16px 18px; display: flex; flex-direction: column; gap: 14px;
   box-shadow: 0 3px 6px rgba(74,56,30,0.2), 0 16px 28px -10px rgba(74,56,30,0.55);
   z-index: 2;
 }
-/* 半透明プレビュー（設定 ON のとき、ページ上の挙動をミラー）*/
-.list[data-translucent="1"] .note-card { opacity: 0.55; }
+/* 半透明プレビュー（設定 ON のとき、ページ上の挙動をミラー。濃さはスライダー値 --peta-dim を反映）*/
+.list[data-translucent="1"] .note-card { opacity: var(--peta-dim, 0.55); }
 .list[data-translucent="1"] .note-card:hover { opacity: 1; }
 
 .nc-del {
