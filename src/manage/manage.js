@@ -11,6 +11,7 @@ import {
   colorOf,
   DEFAULT_COLOR,
   DEFAULT_FONT_SIZE,
+  FONT_SIZES,
   MAX_CHARS,
   fontFamilyCss,
   relTime,
@@ -480,6 +481,7 @@ function setupEditor() {
   });
   $("#mmIcon").addEventListener("click", (e) => { e.stopPropagation(); toggleEmojiPicker(); });
   const ta = $("#mmTa");
+  ta.maxLength = MAX_CHARS; // 本体 content.js の textarea と同様に入力段階で上限を効かせる（保存時の静かな切り捨て防止）
   ta.addEventListener("input", () => { updateMMCharcount(); updateMMGutter(); scheduleSave(); });
   ta.addEventListener("scroll", () => { const g = $("#mmGutter"); if (g) g.scrollTop = ta.scrollTop; });
   // 背景クリック / Esc で閉じる
@@ -500,15 +502,24 @@ function openEditor(domain, note) {
   box.style.setProperty("--ncp", c.paper);
   box.style.setProperty("--ncd", c.deep);
   box.style.setProperty("--nci", c.ink);
-  const size = Number.isFinite(appSettings?.fontSize) ? appSettings.fontSize : DEFAULT_FONT_SIZE;
+  // fontSize は FONT_SIZES の離散値ならそのまま、格子外の有限値（同期由来）は範囲へクランプ、
+  // 非数値のみ既定へ。本体 content.js の applyFont と同じ正規化で表示を揃える。
+  const fs = Number(appSettings?.fontSize);
+  const size = FONT_SIZES.includes(fs)
+    ? fs
+    : Number.isFinite(fs)
+      ? Math.min(FONT_SIZES[FONT_SIZES.length - 1], Math.max(FONT_SIZES[0], fs))
+      : DEFAULT_FONT_SIZE;
   box.style.setProperty("--peta-size", size + "px");
   $("#mmEditor").classList.toggle("with-gutter", !!(appSettings && appSettings.lineNumbers));
   $("#mmTa").value = note.text || "";
   $("#mmIcon").textContent = note.icon || "🙂";
   renderPalette();
+  // 先にモーダルを表示してから状態を切り替える（hidden のまま textarea へ focus して背面に置き去りにしない）。
+  $("#memoModal").hidden = false;
   // 中身があればプレビュー、空なら即編集（本体と同じ）。
   setEditMode(!(note.text || "").trim());
-  $("#memoModal").hidden = false;
+  if (!isEditing()) $("#mmMode").focus(); // プレビュー開始時はモードボタンへフォーカス（キーボード操作の起点）
 }
 
 // commit=true（既定）は閉じる前に保存して board を最新化。delete 経由は commit=false（呼び出し側で reload）。
@@ -599,7 +610,10 @@ function scheduleSave() {
 async function flushSave() {
   if (!mm) return;
   clearTimeout(mm.saveTimer);
-  const next = $("#mmTa").value.replace(/\r\n?/g, "\n").slice(0, MAX_CHARS);
+  const ta = $("#mmTa");
+  const next = ta.value.replace(/\r\n?/g, "\n").slice(0, MAX_CHARS);
+  // 改行正規化で上限超過が出たら textarea にも反映（表示と保存値を一致させ、静かな消失を防ぐ）。
+  if (ta.value !== next) { ta.value = next; updateMMCharcount(); updateMMGutter(); }
   if (next !== (mm.note.text || "")) {
     mm.note.text = next;
     await updateNote(mm.domain, mm.note.id, { text: next });
