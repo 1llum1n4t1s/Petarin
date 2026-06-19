@@ -1910,16 +1910,17 @@ async function scenarioS65() {
   const now = 65_000_000;
   // 旧版が書いた shadow（新フィールドを持たない）。
   const oldBase = { side: "right", collapsedTranslucent: true, translucentOpacity: 0.45, showOnPage: true, creatorRatio: 0.78 };
-  // local は getSettings 相当（新フィールドは既定）。remote は別の升級端末が font=yomogi を同期済み。
-  const local = { ...oldBase, font: "system", fontSize: 15, lineNumbers: false, defaultColor: "yellow" };
+  // local は getSettings 相当（新フィールドは既定）。fontSize の既定は 11（DEFAULT_FONT_SIZE）。
+  // remote は別の升級端末が font=yomogi を同期済み。
+  const local = { ...oldBase, font: "system", fontSize: 11, lineNumbers: false, defaultColor: "yellow" };
   // remote は font も defaultColor も非既定（color 側の移行も検証できるよう defaultColor を pink に。CodeRabbit）。
-  const remote = { ...oldBase, font: "yomogi", fontSize: 15, lineNumbers: false, defaultColor: "pink" };
+  const remote = { ...oldBase, font: "yomogi", fontSize: 11, lineNumbers: false, defaultColor: "pink" };
   const res = mod.pickSettings(oldBase, now - DAY, local, remote, now - 1, now);
   ok(res.settings.font === "yomogi", "他端末の font=yomogi を pull する（既定 system で握り潰さない）", JSON.stringify(res.settings.font));
   ok(res.settings.defaultColor === "pink", "他端末の defaultColor=pink を pull する（既定 yellow で握り潰さない）", JSON.stringify(res.settings.defaultColor));
   ok(res.changedLocal === true && res.changedRemote === false, "remote 採用＝local へ反映し push はしない", JSON.stringify({ cl: res.changedLocal, cr: res.changedRemote }));
   // 逆: この端末だけ font を変えた（remote は旧 shadow と同じ既定）なら push される。
-  const local2 = { ...oldBase, font: "klee", fontSize: 15, lineNumbers: false, defaultColor: "yellow" };
+  const local2 = { ...oldBase, font: "klee", fontSize: 11, lineNumbers: false, defaultColor: "yellow" };
   const res2 = mod.pickSettings(oldBase, now - DAY, local2, { ...oldBase }, now - 1, now);
   ok(res2.settings.font === "klee" && res2.changedRemote === true, "自端末だけの font 変更は push される", JSON.stringify(res2.settings.font));
   // 全端末が既定のままなら、移行直後に無駄な push/差分を出さない（churn 回避）。
