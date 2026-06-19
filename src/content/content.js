@@ -156,7 +156,8 @@
   let editingId = null;
   let host, root, layer, closeAllBtn;
   // 付箋ごとの展開時ジオメトリ（このドメインぶん・{ [id]: {left,top,width,height} }）。local 専用・非同期。
-  let geom = {};
+  // null-proto＝id が "__proto__" 等でも geom[id] 読み取りが prototype を拾わず undefined になる（汚染回避）。
+  let geom = Object.create(null);
   // 展開ボックスのドラッグ移動／リサイズ中フラグ（window.resize の自動追従と競合させない）。
   let interacting = false;
   // 自分の書き込みによる onChanged を無視するための時刻（キー別に分離）
@@ -192,12 +193,12 @@
   async function loadGeom() {
     const raw = await chrome.storage.local.get(KEY_GEOM);
     const map = (raw[KEY_GEOM] || {})[domain] || {};
-    geom = {};
+    geom = Object.create(null);
     const finite = (v) => typeof v === "number" && Number.isFinite(v);
     for (const id of Object.keys(map)) {
       const g = map[id];
       if (g && finite(g.left) && finite(g.top) && finite(g.width) && finite(g.height)) {
-        geom[id] = { left: g.left, top: g.top, width: g.width, height: g.height };
+        ownSet(geom, id, { left: g.left, top: g.top, width: g.width, height: g.height }); // __proto__ 等の id でも own で持つ
       }
     }
   }
@@ -328,31 +329,41 @@
   // 同ドメインの「他の付箋」を動かしても、このタブが未取り込みの stale な geom で巻き戻してしまう（Codex/CodeRabbit 指摘）。
   function persistGeom(changedIds) {
     return withWrite(async () => {
-      const all = (await chrome.storage.local.get(KEY_GEOM))[KEY_GEOM] || {};
-      // 最新の自ドメイン map を土台に delta を当てる（upsertNotePersist 同様）。ドメイン丸ごと置換すると、
-      // 別タブが書いた「他の付箋」の geom を巻き戻してしまう（KEY_NOTES と同じ並行制御方針に揃える）。
-      const cur = all[domain] && typeof all[domain] === "object" ? { ...all[domain] } : {};
-      const present = new Set(notes.map((n) => n.id));
-      if (changedIds) {
-        // 差分書き込み：触った id だけ upsert/delete し、他付箋（別タブ作成・移動分）には一切触れない。
-        // ここで孤児スイープを走らせると、編集中で notes 取り込みを遅延した隙に別タブが作った付箋の
-        // geom を消してしまう（既定位置で開き直す）ため、孤児掃除は全棚卸し時のみに限定する（Codex#341）。
-        for (const id of changedIds) {
-          if (present.has(id) && geom[id]) cur[id] = geom[id];
-          else delete cur[id]; // 在庫に無い／自タブで破棄した id は除去
+      // 楽観的並行制御（upsertNotePersist 同様）。毎回「最新を読む→delta を当てる→set 直前に再読し、
+      // ベースが変わっていたら最新で当て直す」。別タブが同ドメインの geom を get〜set の隙に書いても、
+      // 単純 set で相手の付箋座標を巻き戻さない（最終試行は最善努力で書く・Codex#355）。
+      const MAX = 4;
+      for (let attempt = 0; attempt < MAX; attempt++) {
+        const all = (await chrome.storage.local.get(KEY_GEOM))[KEY_GEOM] || {};
+        const baseJSON = JSON.stringify(all);
+        // 最新の自ドメイン map を土台に delta を当てる。null-proto＝id が "__proto__" 等でも安全（Codex#573）。
+        const cur = Object.assign(Object.create(null), all[domain] && typeof all[domain] === "object" ? all[domain] : {});
+        const present = new Set(notes.map((n) => n.id));
+        if (changedIds) {
+          // 差分書き込み：触った id だけ upsert/delete し、他付箋（別タブ作成・移動分）には一切触れない。
+          // ここで孤児スイープを走らせると、編集中で notes 取り込みを遅延した隙に別タブが作った付箋の
+          // geom を消してしまう（既定位置で開き直す）ため、孤児掃除は全棚卸し時のみに限定する（Codex#341）。
+          for (const id of changedIds) {
+            if (present.has(id) && geom[id]) ownSet(cur, id, geom[id]);
+            else delete cur[id]; // 在庫に無い／自タブで破棄した id は除去
+          }
+        } else {
+          // 全棚卸し（初期化時）：自タブの geom で突き合わせ、在庫に無い孤児を一掃する。
+          for (const id of Object.keys(geom)) {
+            if (present.has(id) && geom[id]) ownSet(cur, id, geom[id]);
+            else delete cur[id];
+          }
+          for (const id of Object.keys(cur)) if (!present.has(id)) delete cur[id]; // 在庫に無い孤児だけ掃く
         }
-      } else {
-        // 全棚卸し（初期化時）：自タブの geom で突き合わせ、在庫に無い孤児を一掃する。
-        for (const id of Object.keys(geom)) {
-          if (present.has(id) && geom[id]) cur[id] = geom[id];
-          else delete cur[id];
-        }
-        for (const id of Object.keys(cur)) if (!present.has(id)) delete cur[id]; // 在庫に無い孤児だけ掃く
+        if (Object.keys(cur).length) all[domain] = cur;
+        else delete all[domain];
+        // set 直前に再読。別タブが get〜set の隙に KEY_GEOM を書いていたら最新で当て直す（最終試行は強行）。
+        const fresh = JSON.stringify((await chrome.storage.local.get(KEY_GEOM))[KEY_GEOM] || {});
+        if (fresh !== baseJSON && attempt < MAX - 1) continue;
+        geomWriteAt = Date.now(); // set の前に打刻（自エコーで loadGeom し直さない）
+        await chrome.storage.local.set({ [KEY_GEOM]: all });
+        break;
       }
-      if (Object.keys(cur).length) all[domain] = cur;
-      else delete all[domain];
-      geomWriteAt = Date.now(); // set の前に打刻（自エコーで loadGeom し直さない）
-      await chrome.storage.local.set({ [KEY_GEOM]: all });
     });
   }
   // 指定 id のジオメトリを破棄して保存（付箋削除時）。触った id だけ persist する。
@@ -568,9 +579,18 @@
     if (!wrap) return;
     const r = currentRect(wrap);
     const prev = geom[note.id];
-    const width = keepSize && prev && Number.isFinite(prev.width) ? prev.width : Math.round(r.width);
-    const height = keepSize && prev && Number.isFinite(prev.height) ? prev.height : Math.round(r.height);
-    geom[note.id] = { left: Math.round(r.left), top: Math.round(r.top), width, height };
+    let width, height;
+    if (keepSize && prev && Number.isFinite(prev.width)) {
+      width = prev.width; height = prev.height; // 既存の保存サイズを維持
+    } else if (keepSize) {
+      // 初回移動（保存 geom 無し）：表示クランプ寸法でなく既定原寸を保存する。小窓で既定サイズの付箋を
+      // 移動しただけで、後で大きい窓で開いたとき恒久的に縮むのを防ぐ（Codex#572）。
+      width = EXP_W; height = EXP_H;
+    } else {
+      width = Math.round(r.width); height = Math.round(r.height); // リサイズ：実寸を保存
+    }
+    // ownSet＝id が "__proto__" 等でも prototype を汚さず own プロパティとして保存（Codex#573）。
+    ownSet(geom, note.id, { left: Math.round(r.left), top: Math.round(r.top), width, height });
     persistGeom([note.id]);
   }
   // 展開アニメ：格納タブの位置から目標矩形へなめらかに伸ばす（FLIP）。
