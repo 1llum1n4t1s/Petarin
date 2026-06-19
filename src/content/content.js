@@ -163,8 +163,8 @@
   // 自分の書き込みによる onChanged を無視するための時刻（キー別に分離）
   let notesWriteAt = 0;
   let settingsWriteAt = 0;
-  let geomWriteAt = 0;
   // ドラッグ/リサイズ中に来た KEY_GEOM 外部変更を取りこぼした印。操作を抜けたら取り込む（pendingSync の geom 版）。
+  // geom の自エコー抑止は時間打刻でなく withWrite 直列化で担うため geomWriteAt は持たない（Codex#1355）。
   let geomPendingReload = false;
   // 入力中(textareaフォーカス)に来た外部変更を取りこぼした印。編集を抜けたら取り込む。
   let pendingSync = false;
@@ -362,8 +362,7 @@
         // set 直前に再読。別タブが get〜set の隙に KEY_GEOM を書いていたら最新で当て直す（最終試行は強行）。
         const fresh = JSON.stringify((await chrome.storage.local.get(KEY_GEOM))[KEY_GEOM] || {});
         if (fresh !== baseJSON && attempt < MAX - 1) continue;
-        geomWriteAt = Date.now(); // set の前に打刻（自エコーで loadGeom し直さない）
-        await chrome.storage.local.set({ [KEY_GEOM]: all });
+        await chrome.storage.local.set({ [KEY_GEOM]: all }); // 自エコーの reload は loadGeom が自値を読み戻すだけ＝無害
         break;
       }
     });
@@ -1348,11 +1347,13 @@
       const notesExternal = changes[KEY_NOTES] && now - notesWriteAt >= 500;
       const settingsExternal = changes[KEY_SETTINGS] && now - settingsWriteAt >= 500;
       // 別タブが書いた geom を取り込み、stale な in-memory geom で次回 persist 時に巻き戻さないようにする。
-      // withWrite で直列化＝自タブの in-flight な persistGeom（commitGeom 由来）の後に読み直すことで、
-      // 確定直後・set 着地前の窓で loadGeom が geom を巻き戻して書き込みを失う lost-update を防ぐ（敵対レビュー指摘）。
+      // 時間ベースの自エコー抑止は使わない＝自分の書き込み後 500ms 以内に別タブが他付箋を書くと、それを
+      // 自エコーと誤判定して落とし他付箋の geom が stale に残るため（Codex#1355）。loadGeom は withWrite で
+      // 直列化済みなので、自タブの in-flight な persistGeom の後に走り、自分の書き込みは読み戻すだけ＝
+      // 自エコーで reload しても無害。これで巻き戻し（lost-update）も並行書き込みの取りこぼしも同時に防ぐ。
       // ドラッグ/リサイズ中は取り込まず印だけ立て、操作終了時の flushPendingGeom でまとめて取り込む
       // （操作中に取りこぼすと他付箋の in-memory geom が stale のまま残る・Codex#1340）。
-      if (changes[KEY_GEOM] && now - geomWriteAt >= 500) {
+      if (changes[KEY_GEOM]) {
         if (interacting) geomPendingReload = true;
         else { try { await withWrite(loadGeom); } catch {} }
       }
