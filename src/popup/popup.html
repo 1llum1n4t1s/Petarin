@@ -113,35 +113,15 @@
         </label>
       </section>
 
-      <!-- 付箋デスク（フルページ管理タブ）への入口 -->
+      <!-- 付箋デスク（フルページ管理タブ）への入口。付箋の一覧・検索・編集はデスクで一元管理。 -->
       <button class="open-desk" id="openDesk" type="button">
         <span class="od-ico" aria-hidden="true">🗂</span>
         <span class="od-text">
           付箋デスクを開く
-          <small>全サイトの付箋を別タブでまとめて整理</small>
+          <small>全サイトの付箋を別タブでまとめて整理・検索・編集</small>
         </span>
         <span class="od-arrow" aria-hidden="true">↗</span>
       </button>
-
-      <!-- 検索（このドメイン周辺をさっと探す）-->
-      <div class="search">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="11" cy="11" r="7" /><line x1="16.5" y1="16.5" x2="21" y2="21" />
-        </svg>
-        <input type="search" id="searchInput" placeholder="付箋やドメインを探す…" autocomplete="off" />
-      </div>
-
-      <!-- 付箋一覧 -->
-      <section id="list" class="list"></section>
-
-      <!-- 空状態 -->
-      <div id="empty" class="empty" hidden>
-        <div class="empty-art" aria-hidden="true">
-          <span class="empty-note">＋</span>
-        </div>
-        <p class="empty-title">まだ付箋はないみたい</p>
-        <p class="empty-sub">気になるページを開いて、端の「＋」から<br />最初の一枚をぺたりと貼ってみて。</p>
-      </div>
     </main>
 
     <footer class="foot">
