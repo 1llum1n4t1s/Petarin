@@ -88,6 +88,86 @@
   const RE_OL = /^ {0,3}(\d{1,9})[.)]\s+(.*)$/;
   const isBlank = (s) => /^\s*$/.test(s);
 
+  // ── GFM テーブル ─────────────────────────────────────────────────
+  // ヘッダ行 + 区切り行（| --- | :--: | …）+ 本文行 で表を組む。区切り行は各セルが
+  // 任意の : と 1 個以上の - からなる（少なくとも 1 つの - を含む）。HR（---）と紛らわしいが、
+  // HR は単一トークンで | を含まない一方、区切り行はセル区切り | か少なくとも `-` セルで判定する。
+  const RE_TABLE_DELIM =
+    /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
+  const isTableSep = (line) => typeof line === "string" && line.includes("-") && RE_TABLE_DELIM.test(line);
+  // 行が表のセル行に見えるか（| を含み空でない）。
+  const looksLikeRow = (line) => typeof line === "string" && line.includes("|") && !isBlank(line);
+  // i 行目から表が始まるか（ヘッダ行 + 次行が区切り行・かつ区切り行に | があるか単独 - 表記）。
+  const startsTable = (lines, i) =>
+    i + 1 < lines.length && looksLikeRow(lines[i]) && isTableSep(lines[i + 1]) &&
+    // 区切り行も列を持つ（| を含む or ヘッダが複数列）＝ HR の誤検出を避ける。
+    (lines[i + 1].includes("|") || lines[i].split("|").length > 2);
+
+  // 1 行を | 区切りでセル配列へ。\| はエスケープしてリテラル | に。前後の囲い | は捨てる。
+  function splitRow(line) {
+    const s = String(line == null ? "" : line).trim();
+    const cells = [];
+    let cur = "";
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === "\\" && s[i + 1] === "|") { cur += "|"; i++; continue; }
+      // コードスパン（`…` / ``…``）の内側の | はセル区切りにしない（GFM 準拠）。同じ長さの閉じ列まで丸ごと積む。
+      if (ch === "`") {
+        let n = 1; while (s[i + n] === "`") n++;
+        let j = i + n, close = -1;
+        while (j < s.length) {
+          if (s[j] === "`") { let m = 1; while (s[j + m] === "`") m++; if (m === n) { close = j; break; } j += m; }
+          else j++;
+        }
+        if (close >= 0) { cur += s.slice(i, close + n); i = close + n - 1; continue; }
+        // 閉じが無ければ通常文字扱い（このバッククォートだけ積む）
+      }
+      if (ch === "|") { cells.push(cur); cur = ""; continue; }
+      cur += ch;
+    }
+    cells.push(cur);
+    if (cells.length && cells[0].trim() === "") cells.shift();
+    if (cells.length && cells[cells.length - 1].trim() === "") cells.pop();
+    return cells.map((c) => c.trim());
+  }
+  // 区切りセルから配置を決める（:--=left / --:=right / :-:=center / それ以外=既定）。
+  function cellAlign(cell) {
+    const c = String(cell).trim();
+    const l = c.startsWith(":");
+    const r = c.endsWith(":");
+    if (l && r) return "center";
+    if (r) return "right";
+    if (l) return "left";
+    return "";
+  }
+  // header/aligns/rows から <table> を組む（innerHTML 不使用＝外部入力でも XSS 不能）。
+  function buildTable(header, aligns, rows) {
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    header.forEach((cell, idx) => {
+      const th = document.createElement("th");
+      if (aligns[idx]) th.style.textAlign = aligns[idx];
+      th.append(parseInline(cell));
+      htr.append(th);
+    });
+    thead.append(htr);
+    table.append(thead);
+    const tbody = document.createElement("tbody");
+    for (const r of rows) {
+      const tr = document.createElement("tr");
+      for (let idx = 0; idx < header.length; idx++) {
+        const td = document.createElement("td");
+        if (aligns[idx]) td.style.textAlign = aligns[idx];
+        td.append(parseInline(r[idx] != null ? r[idx] : ""));
+        tr.append(td);
+      }
+      tbody.append(tr);
+    }
+    table.append(tbody);
+    return table;
+  }
+
   // ブロックを DocumentFragment へ。引用は中身を再帰描画（ネストは `>` が 1 段ずつ減るので必ず終端する）。
   function render(text) {
     const frag = document.createDocumentFragment();
@@ -157,12 +237,28 @@
         continue;
       }
 
+      // テーブル（GFM）：ヘッダ行 + 区切り行 + 本文行。段落キャッチオールより前に判定する。
+      if (startsTable(lines, i)) {
+        const header = splitRow(lines[i]);
+        const aligns = splitRow(lines[i + 1]).map(cellAlign);
+        i += 2;
+        const rows = [];
+        // 本文行は「| を含み区切り行でなく他ブロックの開始でもない」かぎり取り込む。
+        while (
+          i < lines.length && looksLikeRow(lines[i]) && !isTableSep(lines[i]) &&
+          !RE_FENCE.test(lines[i]) && !RE_H.test(lines[i]) && !RE_QUOTE.test(lines[i]) && !RE_HR.test(lines[i])
+        ) { rows.push(splitRow(lines[i])); i++; }
+        frag.append(buildTable(header, aligns, rows));
+        continue;
+      }
+
       // 段落：空行/ブロック開始までを集め、行内の単一改行は <br>（ソフト改行）にする。
       const buf = [];
       while (
         i < lines.length && !isBlank(lines[i]) &&
         !RE_FENCE.test(lines[i]) && !RE_H.test(lines[i]) && !RE_QUOTE.test(lines[i]) &&
-        !RE_UL.test(lines[i]) && !RE_OL.test(lines[i]) && !RE_HR.test(lines[i])
+        !RE_UL.test(lines[i]) && !RE_OL.test(lines[i]) && !RE_HR.test(lines[i]) &&
+        !startsTable(lines, i)
       ) { buf.push(lines[i]); i++; }
       const p = document.createElement("p");
       buf.forEach((ln, idx) => {
