@@ -125,6 +125,19 @@ async function init() {
     if (changes["petarin:settings"]) { appSettings = await getSettings(); applyNoteFont(); } // 書体変更をプレビューへ反映
     if (!changes["petarin:notes"]) return;
     allNotes = await getAllNotes(); // データは常に最新へ同期
+    // プレビュー中（編集していない）にモーダルで開いている付箋が外部更新されたら、モーダルへライブ反映する。
+    // 自分の保存エコー（textarea と本文一致）は無視。外部削除なら閉じる。これにより「✎ を押した時点で
+    // allNotes から取り直す」方式（in-flight な flushSave と競合し直前入力を巻き戻す）が不要になる（Codex#499/#561）。
+    if (mm && !isEditing()) {
+      const latest = (allNotes[mm.domain] || []).find((n) => n.id === mm.note.id);
+      const ta = $("#mmTa");
+      if (!latest) { closeEditor(false); }
+      else if (latest.text !== ta.value) {
+        mm.note = latest;
+        ta.value = latest.text || "";
+        updateMMCharcount(); updateMMGutter(); renderMMPreview();
+      }
+    }
     if (editingKey) return;                                // 編集中は全面再描画を抑止（閉じる時に無条件 reload で最新化）
     if (pendingEchoes > 0) { pendingEchoes--; return; }    // 自分の書き込みエコー：再描画は各操作側が担当
     render();                                               // 外部（ページ側＝同期含む）変更のみ再描画
@@ -543,15 +556,9 @@ function setEditMode(edit) {
   mode.replaceChildren(svgIcon(edit ? ICON_EYE : ICON_EDIT));
   mode.title = edit ? "プレビュー表示にする" : "編集する（Markdown）";
   if (edit) {
-    // 編集に入る前に最新の本文へ追従する。プレビュー中は editingKey で再描画を抑止しているため、他タブ/同期で
-    // 本文が更新されても textarea は開いた時点のまま。そのまま編集して保存すると新しい本文を古い内容で
-    // 上書きしてしまう（Codex#499）。allNotes は onChanged で常に最新化されているのでそこから取り直す。
-    const latest = mm && (allNotes[mm.domain] || []).find((n) => n.id === mm.note.id);
-    if (latest) {
-      mm.note = latest;
-      const ta0 = $("#mmTa");
-      if (ta0.value !== (latest.text || "")) ta0.value = latest.text || "";
-    }
+    // 外部更新の追従はプレビュー中に onChanged 側で済ませている（Codex#499/#561）。ここで allNotes から
+    // 取り直すと、直前の preview 遷移で走った fire-and-forget な flushSave がまだ反映されておらず、
+    // 直前入力を古い内容で巻き戻す恐れがあるため、ここでは取り直さない。
     updateMMCharcount();
     updateMMGutter();
     const ta = $("#mmTa");
