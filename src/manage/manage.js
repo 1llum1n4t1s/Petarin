@@ -10,6 +10,7 @@ import {
   COLORS,
   colorOf,
   DEFAULT_COLOR,
+  DEFAULT_FONT_SIZE,
   MAX_CHARS,
   fontFamilyCss,
   relTime,
@@ -18,6 +19,45 @@ import {
 import { isValidDomain } from "../shared/sync.js";
 
 const $ = (sel) => document.querySelector(sel);
+
+// 編集モードの固定フォント（UDEV ゴシック・等幅 fallback）。本体付箋と同じ。manage は @font-face(fonts.css)で解決。
+const EDIT_FONT = '"PetaFont_udev", ui-monospace, "BIZ UDGothic", Consolas, monospace';
+
+// 格納時アイコン候補（content.js の ICONS と同じ集合。manage の絵文字ピッカー用に複製）。
+const ICONS = [
+  "🍎","🍏","🍊","🍋","🍌","🍉","🍇","🍓","🫐","🍈","🍒","🍑","🥭","🍍","🥥","🥝","🍅","🥑","🍆","🥕","🌽","🌶️","🥦","🍄",
+  "🍔","🍕","🍟","🌭","🌮","🍣","🍱","🍙","🍜","🍤","🍳","🥐","🍞","🧀","🍰","🎂","🧁","🍮","🍭","🍬","🍫","🍩","🍪","🍿","🍡","🍵","☕","🧋","🥤","🍷",
+  "🌸","🌷","🌹","🌺","🌻","🌼","💐","🌵","🌴","🌲","🌳","🌱","🌿","🍀","🍁","🍂","🍃","🌾","🪴","🎍","🌰",
+  "🐶","🐱","🐭","🐹","🐰","🦊","🐻","🐼","🐨","🐯","🦁","🐮","🐷","🐸","🐵","🐔","🐧","🐤","🦆","🦉","🦇","🐺","🐴","🦄","🐝","🐞","🦋","🐌","🐢","🐍","🐙","🐠","🐡","🐬","🐳","🦈","🐊","🐘","🦒","🦔",
+  "⭐","🌟","✨","⚡","🔥","❄️","☀️","🌈","🌙","☁️","💧","🌊","🌍","🪐","☄️","🌠","⛄","💫",
+  "❤️","🧡","💛","💚","💙","💜","🤎","🖤","🤍","💖","💗","💕","🔴","🟠","🟡","🟢","🔵","🟣","🟤","⚫","⚪","🔶","🔷","💎",
+  "🎈","🎀","🎁","🔔","📌","📎","✏️","📖","🔑","🎵","🖍️","📕","📗","📘","📙","📒","📚","🗒️","📝","✂️","📐","🔖","🏷️","📍","🧸","🔮",
+  "🎯","🎲","🎮","🧩","🎨","🎬","🎤","🎧","🎸","🎹","🥁","🎺","🏀","⚽","🎾","🚀","✈️","⛵","🚲","🏆","🥇","👑","🎏","🪁","🎉",
+  "0️⃣","1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟",
+];
+
+// フラットな線アイコン（本体と同じデザイン）。
+const SVGNS = "http://www.w3.org/2000/svg";
+function svgIcon(paths, sw = 1.8) {
+  const s = document.createElementNS(SVGNS, "svg");
+  s.setAttribute("viewBox", "0 0 24 24");
+  s.setAttribute("fill", "none");
+  s.setAttribute("stroke", "currentColor");
+  s.setAttribute("stroke-width", String(sw));
+  s.setAttribute("stroke-linecap", "round");
+  s.setAttribute("stroke-linejoin", "round");
+  s.setAttribute("aria-hidden", "true");
+  for (const d of paths) {
+    const p = document.createElementNS(SVGNS, "path");
+    p.setAttribute("d", d);
+    s.append(p);
+  }
+  return s;
+}
+const ICON_CLOSE = ["M6 6 18 18", "M18 6 6 18"];
+const ICON_TRASH = ["M4 7h16", "M9 7V5h6v2", "M6 7l1 13h10l1-13", "M10 10.5v6", "M14 10.5v6"];
+const ICON_EDIT = ["M4 20h4L18.5 9.5a2 2 0 0 0-2.83-2.83L5 17.17V20z", "M14 8l2 2"];
+const ICON_EYE = ["M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z", "M12 9.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6z"];
 
 // 付箋本文の Markdown を安全に整形（globalThis.PetaMD は manage.html が先読み）。未ロード時は素テキスト。
 function renderMarkdownInto(el, text) {
@@ -30,11 +70,8 @@ function renderMarkdownInto(el, text) {
 }
 
 // 付箋プレビューの表示フォントを現在設定に合わせる（CSS 変数）。
-async function applyNoteFont() {
-  try {
-    const s = await getSettings();
-    document.body.style.setProperty("--peta-note-font", fontFamilyCss(s.font));
-  } catch {}
+function applyNoteFont() {
+  document.body.style.setProperty("--peta-note-font", fontFamilyCss((appSettings || {}).font));
 }
 const SEP = "\u001f"; // \u001f = Unit Separator (domain<->id delimiter; never appears in either)
 
@@ -46,6 +83,8 @@ let sortKey = "new";
 const selection = new Set();    // "domain\u001fid"
 let editingKey = null;
 let pendingRender = false;
+let appSettings = null;         // 設定キャッシュ（書体・サイズ・行番号）。エディタで使う。
+let mm = null;                  // 付箋エディタの状態 { domain, note, saveTimer }
 let lastDeleted = null;         // 元に戻す用スナップショット
 let toastTimer = 0;
 let searchTimer = 0;
@@ -61,7 +100,8 @@ const keyOf = (domain, id) => `${domain}${SEP}${id}`;
 
 // ── 起動 ──────────────────────────────────────────────────────────
 async function init() {
-  [allNotes, currentDomain] = await Promise.all([getAllNotes(), getCurrentDomain()]);
+  [allNotes, currentDomain, appSettings] = await Promise.all([getAllNotes(), getCurrentDomain(), getSettings()]);
+  document.body.style.setProperty("--peta-edit-font", EDIT_FONT); // 編集面は UDEV 固定
 
   $("#search").addEventListener("input", (e) => {
     const v = e.target.value.trim().toLowerCase();
@@ -82,7 +122,7 @@ async function init() {
 
   chrome.storage.onChanged.addListener(async (changes, area) => {
     if (area !== "local") return;
-    if (changes["petarin:settings"]) await applyNoteFont(); // 書体変更をプレビューへ反映
+    if (changes["petarin:settings"]) { appSettings = await getSettings(); applyNoteFont(); } // 書体変更をプレビューへ反映
     if (!changes["petarin:notes"]) return;
     allNotes = await getAllNotes(); // データは常に最新へ同期
     if (editingKey) { pendingRender = true; return; }      // 編集中は壊さない
@@ -92,6 +132,7 @@ async function init() {
 
   setupSync();
   setupBackup();
+  setupEditor();
   applyNoteFont();
   render();
 }
@@ -367,9 +408,9 @@ function buildMemo(domain, note) {
   text.className = "memo-text";
   if (note.text?.trim()) renderMarkdownInto(text, note.text);
   else { text.textContent = "（空の付箋）"; text.classList.add("memo-empty"); }
-  text.title = "クリックで編集";
-  // Markdown リンクのクリックはそのリンクを開く（編集には入らない）。
-  text.addEventListener("click", (e) => { if (e.target.closest("a")) return; beginEdit(text, domain, note); });
+  text.title = "クリックで開く";
+  // Markdown リンクのクリックはそのリンクを開く（エディタは開かない）。それ以外は本体と同じ付箋エディタを開く。
+  text.addEventListener("click", (e) => { if (e.target.closest("a")) return; openEditor(domain, note); });
   card.append(text);
 
   // フッター（アイコン・ドメイン・日付・色）
@@ -425,58 +466,192 @@ function buildMemo(domain, note) {
   return card;
 }
 
-// ── インライン編集 ────────────────────────────────────────────────
-function beginEdit(el, domain, note) {
-  if (editingKey) return;
-  editingKey = keyOf(domain, note.id);
-  const original = note.text || "";
-  el.textContent = original;
-  el.setAttribute("contenteditable", "plaintext-only");
-  el.closest(".memo").classList.remove("untitled");
-  el.focus();
-  // 全選択
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
+// ── 付箋エディタ（WEBページ側の展開付箋と同じレイアウト・移動/リサイズ無し）──────────────────
+// 一度だけモーダルの常設ボタンを配線する。
+function setupEditor() {
+  $("#mmClose").append(svgIcon(ICON_CLOSE, 2));
+  $("#mmDel").append(svgIcon(ICON_TRASH));
+  $("#mmMode").addEventListener("click", () => setEditMode(!isEditing()));
+  $("#mmClose").addEventListener("click", () => closeEditor());
+  $("#mmDel").addEventListener("click", async () => {
+    if (!mm) return;
+    const { domain, note } = mm;
+    closeEditor(false);
+    await removeOne(domain, note);
+  });
+  $("#mmIcon").addEventListener("click", (e) => { e.stopPropagation(); toggleEmojiPicker(); });
+  const ta = $("#mmTa");
+  ta.addEventListener("input", () => { updateMMCharcount(); updateMMGutter(); scheduleSave(); });
+  ta.addEventListener("scroll", () => { const g = $("#mmGutter"); if (g) g.scrollTop = ta.scrollTop; });
+  // 背景クリック / Esc で閉じる
+  $("#memoModal").addEventListener("pointerdown", (e) => { if (e.target.id === "memoModal") closeEditor(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && mm) { e.preventDefault(); closeEmojiPicker() || closeEditor(); }
+  });
+}
 
-  let done = false;
-  const finish = async (commit) => {
-    if (done) return;
-    done = true;
-    el.removeEventListener("keydown", onKey);
-    el.removeEventListener("blur", onBlur);
-    el.removeAttribute("contenteditable");
-    editingKey = null;
-    let next = original;
-    if (commit) {
-      // 改行は潰さず複数行のまま保存（content.js の本文と往復しても壊さない）。plaintext-only の
-      // 改行は <br>/ブロック境界になりうるため textContent だと欠落する → innerText で取得。CRLF は LF へ正規化。
-      next = (el.innerText || "").replace(/\r\n?/g, "\n").slice(0, MAX_CHARS);
-      if (next !== original) {
-        expectEcho();
-        await updateNote(domain, note.id, { text: next });
-      }
-    }
-    if (pendingRender || (commit && next !== original)) {
-      pendingRender = false;
-      await reload();
-    } else {
-      // 描画し直さない場合も表示を整える（非編集時は Markdown プレビューに戻す）。
-      el.classList.toggle("memo-empty", !next.trim());
-      if (next.trim()) renderMarkdownInto(el, next);
-      else el.textContent = "（空の付箋）";
-      el.closest(".memo").classList.toggle("untitled", !next.trim());
-    }
+const isEditing = () => $("#mmBox").classList.contains("editing");
+
+function openEditor(domain, note) {
+  if (mm) closeEditor(false); // 念のため
+  mm = { domain, note, saveTimer: 0 };
+  editingKey = keyOf(domain, note.id); // この間 onChanged の全面再描画を抑止（pendingRender に退避）
+  const box = $("#mmBox");
+  const c = colorOf(note.color);
+  box.style.setProperty("--ncp", c.paper);
+  box.style.setProperty("--ncd", c.deep);
+  box.style.setProperty("--nci", c.ink);
+  const size = Number.isFinite(appSettings?.fontSize) ? appSettings.fontSize : DEFAULT_FONT_SIZE;
+  box.style.setProperty("--peta-size", size + "px");
+  $("#mmEditor").classList.toggle("with-gutter", !!(appSettings && appSettings.lineNumbers));
+  $("#mmTa").value = note.text || "";
+  $("#mmIcon").textContent = note.icon || "🙂";
+  renderPalette();
+  // 中身があればプレビュー、空なら即編集（本体と同じ）。
+  setEditMode(!(note.text || "").trim());
+  $("#memoModal").hidden = false;
+}
+
+// commit=true（既定）は閉じる前に保存して board を最新化。delete 経由は commit=false（呼び出し側で reload）。
+async function closeEditor(commit = true) {
+  if (!mm) return;
+  closeEmojiPicker();
+  if (commit) await flushSave();
+  clearTimeout(mm.saveTimer);
+  mm = null;
+  editingKey = null;
+  $("#memoModal").hidden = true;
+  if (commit) { pendingRender = false; await reload(); }
+}
+
+// 編集(true)/プレビュー(false)を切り替える。プレビューへ移るときは保存して整形表示する。
+function setEditMode(edit) {
+  const box = $("#mmBox");
+  box.classList.toggle("editing", edit);
+  box.classList.toggle("previewing", !edit);
+  const mode = $("#mmMode");
+  mode.replaceChildren(svgIcon(edit ? ICON_EYE : ICON_EDIT));
+  mode.title = edit ? "プレビュー表示にする" : "編集する（Markdown）";
+  if (edit) {
+    updateMMCharcount();
+    updateMMGutter();
+    const ta = $("#mmTa");
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  } else {
+    flushSave();
+    renderMMPreview();
+  }
+}
+
+function renderMMPreview() {
+  const pv = $("#mmPreview");
+  const text = $("#mmTa").value;
+  if (!text.trim()) { pv.replaceChildren(Object.assign(document.createElement("p"), { className: "pv-empty", textContent: "（まだ何も書かれていません。✎ で編集）" })); return; }
+  renderMarkdownInto(pv, text);
+}
+
+function updateMMCharcount() {
+  $("#mmCharcount").textContent = `${$("#mmTa").value.length} / ${MAX_CHARS}`;
+}
+
+function updateMMGutter() {
+  const g = $("#mmGutter");
+  const ta = $("#mmTa");
+  if (!(appSettings && appSettings.lineNumbers)) { g.textContent = ""; return; }
+  const lines = ta.value.split("\n").length;
+  let s = "1";
+  for (let i = 2; i <= lines; i++) s += "\n" + i;
+  g.textContent = s;
+  g.scrollTop = ta.scrollTop;
+}
+
+function renderPalette() {
+  const pal = $("#mmPalette");
+  pal.replaceChildren(...COLORS.map((col) => {
+    const dot = document.createElement("button");
+    dot.type = "button";
+    dot.className = "dot" + (col.id === mm.note.color ? " on" : "");
+    dot.style.background = col.paper;
+    dot.title = col.label;
+    dot.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (col.id === mm.note.color) return;
+      mm.note.color = col.id;
+      await updateNote(mm.domain, mm.note.id, { color: col.id });
+      const cc = colorOf(col.id);
+      const box = $("#mmBox");
+      box.style.setProperty("--ncp", cc.paper);
+      box.style.setProperty("--ncd", cc.deep);
+      box.style.setProperty("--nci", cc.ink);
+      for (const d of pal.querySelectorAll(".dot")) d.classList.remove("on");
+      dot.classList.add("on");
+    });
+    return dot;
+  }));
+}
+
+// 本文の保存（デバウンス）。編集中は editingKey ガードで onChanged の再描画を抑止しているので expectEcho 不要。
+function scheduleSave() {
+  if (!mm) return;
+  clearTimeout(mm.saveTimer);
+  mm.saveTimer = setTimeout(flushSave, 300);
+}
+async function flushSave() {
+  if (!mm) return;
+  clearTimeout(mm.saveTimer);
+  const next = $("#mmTa").value.replace(/\r\n?/g, "\n").slice(0, MAX_CHARS);
+  if (next !== (mm.note.text || "")) {
+    mm.note.text = next;
+    await updateNote(mm.domain, mm.note.id, { text: next });
+  }
+}
+
+// ── 絵文字ピッカー（モーダルの絵文字ボタンから開く・重複選択可）────────────────────
+let mmPicker = null;
+function closeEmojiPicker() {
+  if (!mmPicker) return false;
+  document.removeEventListener("pointerdown", mmPicker.onDown, true);
+  mmPicker.el.remove();
+  mmPicker = null;
+  return true;
+}
+function toggleEmojiPicker() {
+  if (mmPicker) { closeEmojiPicker(); return; }
+  if (!mm) return;
+  const btn = $("#mmIcon");
+  const picker = document.createElement("div");
+  picker.className = "mm-picker";
+  for (const emo of ICONS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "emoji" + (emo === mm.note.icon ? " on" : "");
+    b.textContent = emo;
+    b.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      mm.note.icon = emo;
+      btn.textContent = emo;
+      await updateNote(mm.domain, mm.note.id, { icon: emo });
+      closeEmojiPicker();
+    });
+    picker.append(b);
+  }
+  document.body.append(picker);
+  const r = btn.getBoundingClientRect();
+  const pr = picker.getBoundingClientRect();
+  let top = r.top - pr.height - 8;
+  if (top < 8) top = r.bottom + 8;
+  let left = Math.max(8, Math.min(r.left, window.innerWidth - pr.width - 8));
+  top = Math.max(8, Math.min(top, window.innerHeight - pr.height - 8));
+  picker.style.left = left + "px";
+  picker.style.top = top + "px";
+  const onDown = (e) => {
+    const path = e.composedPath ? e.composedPath() : [];
+    if (path.includes(picker) || path.includes(btn)) return;
+    closeEmojiPicker();
   };
-  const onKey = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); finish(true); }
-    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
-  };
-  const onBlur = () => finish(true);
-  el.addEventListener("keydown", onKey);
-  el.addEventListener("blur", onBlur);
+  document.addEventListener("pointerdown", onDown, true);
+  mmPicker = { el: picker, onDown };
 }
 
 // ── 削除 / 一括 / 元に戻す ─────────────────────────────────────────

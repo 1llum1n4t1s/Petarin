@@ -156,6 +156,31 @@
       </div>
     </div>
 
+    <!-- ── 付箋エディタ（WEBページ側の展開付箋と同じレイアウト・移動/リサイズ無し）────────────── -->
+    <div class="memomodal" id="memoModal" hidden>
+      <div class="mm-box" id="mmBox" role="dialog" aria-modal="true" aria-label="付箋の編集">
+        <div class="mm-spine" aria-hidden="true"></div>
+        <div class="mm-body">
+          <div class="mm-topbar">
+            <button class="mm-mode" id="mmMode" type="button" title="編集する（Markdown）"></button>
+            <span class="mm-charcount" id="mmCharcount" aria-hidden="true"></span>
+            <button class="mm-close" id="mmClose" type="button" title="閉じる" aria-label="閉じる"></button>
+          </div>
+          <div class="mm-editor" id="mmEditor">
+            <div class="mm-gutter" id="mmGutter" aria-hidden="true"></div>
+            <textarea class="mm-ta" id="mmTa" placeholder="ここに書いてね（Markdown 対応）" spellcheck="false"></textarea>
+          </div>
+          <div class="mm-preview" id="mmPreview"></div>
+          <div class="mm-toolbar">
+            <button class="mm-iconbtn" id="mmIcon" type="button" title="クリックで絵文字を選ぶ"></button>
+            <div class="mm-palette" id="mmPalette"></div>
+            <div class="mm-sp"></div>
+            <button class="mm-del" id="mmDel" type="button" title="この付箋を削除" aria-label="削除"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 操作のトースト -->
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <!-- 開発用プレビュー：chrome API をモックし、付箋デスク（manage）の見た目と付箋エディタを確認する。
+       本体(manage.html)の構造を手書きミラーしているので、UI 変更時は追従が要る。 -->
+  <head>
+    <meta charset="UTF-8" />
+    <title>ぺたりん manage preview</title>
+    <link rel="stylesheet" href="../src/fonts/fonts.css" />
+    <link rel="stylesheet" href="../src/manage/manage.css" />
+    <script src="../src/shared/markdown.js"></script>
+    <script>
+      const now = Date.now();
+      window.chrome = {
+        storage: {
+          local: {
+            _d: {
+              "petarin:settings": { side: "right", collapsedTranslucent: true, translucentOpacity: 0.45, showOnPage: true, font: "yomogi", fontSize: 14, lineNumbers: true, defaultColor: "mint",
+                syncEnabled: false, syncSettings: false, syncScope: "selected", syncDomains: [] },
+              "petarin:notes": {
+                "www.reddit.com": [
+                  { id: "a1", text: "## やること\n\n- **あとで** 調べる\n- `r/news` も見る\n\n| 項目 | 数 |\n| --- | --: |\n| A | 1 |\n| B | 2 |\n\nリンク https://example.com も貼れる", color: "yellow", icon: "🍎", posRatio: 0.3, createdAt: now - 3600e3, updatedAt: now - 120e3 },
+                  { id: "a2", text: "返信する", color: "mint", icon: "📖", posRatio: 0.5, createdAt: now - 7200e3, updatedAt: now - 6000e3 },
+                ],
+                "github.com": [
+                  { id: "b1", text: "PR レビュー待ち", color: "coral", icon: "🐱", posRatio: 0.2, createdAt: now - 86400e3, updatedAt: now - 86000e3 },
+                  { id: "b2", text: "", color: "pink", icon: "🌸", posRatio: 0.8, createdAt: now - 200000e3, updatedAt: now - 200000e3 },
+                ],
+              },
+            },
+            async get(key) { const ks = typeof key === "string" ? [key] : key; const o = {}; for (const k of ks) if (k in this._d) o[k] = this._d[k]; return o; },
+            async set(obj) { Object.assign(this._d, obj); for (const f of this._l) f(Object.fromEntries(Object.keys(obj).map((k) => [k, { newValue: obj[k] }])), "local"); },
+            _l: [],
+          },
+          sync: { async get() { return {}; }, async set() {}, async remove() {} },
+          onChanged: { addListener(f) { window.chrome.storage.local._l.push(f); } },
+        },
+        tabs: { async query() { return [{ url: "https://www.reddit.com/", lastAccessed: now }]; }, create({ url }) { console.log("open tab:", url); } },
+        runtime: { getURL: (p) => "../" + p, async sendMessage() { return { ok: false }; }, openOptionsPage() {} },
+      };
+    </script>
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <header class="deskbar">
+      <div class="brand">
+        <span class="logo-mark" aria-hidden="true"><span class="logo-note"></span></span>
+        <div class="brand-text"><h1>付箋デスク</h1><p>ぺたりんに貼った付箋を、ぜんぶここで。</p></div>
+      </div>
+      <div class="stats"><div class="stamp"><b id="statDomains">0</b><span>サイト</span></div><div class="stamp accent"><b id="statNotes">0</b><span>付箋</span></div></div>
+      <div class="tools">
+        <div class="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><line x1="16.5" y1="16.5" x2="21" y2="21" /></svg>
+          <input type="search" id="search" placeholder="付箋やサイトを探す…" autocomplete="off" />
+        </div>
+        <label class="sort"><span>並べ替え</span>
+          <select id="sort"><option value="new">新しい順</option><option value="old">古い順</option><option value="domain">サイト順</option><option value="color">色で揃える</option><option value="length">文字数が多い順</option></select>
+        </label>
+        <button class="syncbtn" id="syncBtn" type="button"><span aria-hidden="true">⇄</span> 同期</button>
+        <button class="syncbtn" id="exportBtn" type="button"><span aria-hidden="true">⬇</span> 書き出し</button>
+        <button class="syncbtn" id="importBtn" type="button"><span aria-hidden="true">⬆</span> 読み込み</button>
+        <input type="file" id="importFile" accept="application/json,.json" hidden />
+      </div>
+    </header>
+    <div class="workspace">
+      <aside class="index" id="index" aria-label="サイトの索引"></aside>
+      <main class="board">
+        <div class="board-head">
+          <div class="scope"><span class="scope-favi" id="scopeFavi" aria-hidden="true"></span><div class="scope-text"><h2 id="scopeTitle">すべての付箋</h2><p id="scopeMeta">0 枚</p></div></div>
+          <div class="board-actions">
+            <button class="ghost" id="backAll" type="button" hidden>← すべて</button>
+            <button class="ghost" id="selectAll" type="button">ぜんぶ選択</button>
+            <button class="ghost" id="openDomain" type="button" hidden>↗ このサイトを開く</button>
+          </div>
+        </div>
+        <div class="bulkbar" id="bulkbar" hidden>
+          <span class="bulk-count"><b id="selCount">0</b> 枚を選択中</span>
+          <div class="bulk-right"><button class="ghost" id="clearSel" type="button">選択解除</button><button class="danger" id="bulkDelete" type="button">🗑 まとめて剥がす</button></div>
+        </div>
+        <div class="notes" id="notes"></div>
+        <div class="empty" id="empty" hidden>
+          <div class="empty-art" aria-hidden="true"><span>＋</span></div>
+          <p class="empty-title" id="emptyTitle">まだ付箋はないみたい</p>
+          <p class="empty-sub" id="emptySub">気になるページを開いて、端の「＋」から<br />最初の一枚をぺたりと貼ってみて。</p>
+        </div>
+      </main>
+    </div>
+    <div class="syncpanel" id="syncPanel" hidden>
+      <div class="sp-card" role="dialog" aria-modal="true" aria-labelledby="syncTitle">
+        <div class="sp-head"><h2 id="syncTitle"><span aria-hidden="true">⇄</span> 複数PCで同期</h2><button class="sp-close" id="syncClose" type="button" aria-label="閉じる">✕</button></div>
+        <label class="sp-toggle"><input type="checkbox" id="syncEnabled" /><span class="sp-track" aria-hidden="true"><span class="sp-knob"></span></span><span class="sp-toggle-label">同期を有効にする</span></label>
+        <p class="sp-consent">（プレビュー）</p>
+        <div class="sp-body" id="syncBody" hidden>
+          <fieldset class="sp-scope"><legend>同期するもの</legend>
+            <label class="sp-opt"><input type="checkbox" id="syncSettings" /> 見た目の設定</label>
+            <label class="sp-opt"><input type="radio" name="syncScope" value="selected" /> 選んだサイトの付箋だけ</label>
+            <label class="sp-opt"><input type="radio" name="syncScope" value="all" /> すべてのサイトの付箋</label>
+          </fieldset>
+          <div class="sp-gauge"><div class="sp-gauge-bar"><span id="syncGaugeFill"></span></div><div class="sp-gauge-text" id="syncGaugeText">0 / 100 KB</div></div>
+          <div class="sp-domains" id="syncDomainList"></div>
+          <p class="sp-note" id="syncNote"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="memomodal" id="memoModal" hidden>
+      <div class="mm-box" id="mmBox" role="dialog" aria-modal="true" aria-label="付箋の編集">
+        <div class="mm-spine" aria-hidden="true"></div>
+        <div class="mm-body">
+          <div class="mm-topbar">
+            <button class="mm-mode" id="mmMode" type="button" title="編集する（Markdown）"></button>
+            <span class="mm-charcount" id="mmCharcount" aria-hidden="true"></span>
+            <button class="mm-close" id="mmClose" type="button" title="閉じる" aria-label="閉じる"></button>
+          </div>
+          <div class="mm-editor" id="mmEditor">
+            <div class="mm-gutter" id="mmGutter" aria-hidden="true"></div>
+            <textarea class="mm-ta" id="mmTa" placeholder="ここに書いてね（Markdown 対応）" spellcheck="false"></textarea>
+          </div>
+          <div class="mm-preview" id="mmPreview"></div>
+          <div class="mm-toolbar">
+            <button class="mm-iconbtn" id="mmIcon" type="button" title="クリックで絵文字を選ぶ"></button>
+            <div class="mm-palette" id="mmPalette"></div>
+            <div class="mm-sp"></div>
+            <button class="mm-del" id="mmDel" type="button" title="この付箋を削除" aria-label="削除"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <script type="module" src="../src/manage/manage.js"></script>
+  </body>
+</html>
