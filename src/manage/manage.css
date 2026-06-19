@@ -265,6 +265,12 @@ body {
 .memo-text pre code { background: transparent; padding: 0; }
 .memo-text hr { border: 0; border-top: 1px solid color-mix(in srgb, var(--nci) 30%, transparent); margin: 0.5em 0; }
 .memo-text a { color: inherit; }
+/* GFM テーブル（カードプレビュー）：細い罫線・ヘッダは薄い地色。*/
+.memo-text table { border-collapse: collapse; font-size: 0.92em; margin: 0 0 0.35em; }
+.memo-text th, .memo-text td {
+  border: 1px solid color-mix(in srgb, var(--nci) 32%, transparent); padding: 0.18em 0.45em; text-align: left; vertical-align: top;
+}
+.memo-text th { font-weight: 700; background: color-mix(in srgb, var(--nci) 12%, transparent); }
 .memo-text[contenteditable] {
   cursor: text; background: rgba(255,255,255,0.5);
   box-shadow: inset 0 0 0 1.6px color-mix(in srgb, var(--ncd) 65%, transparent);
