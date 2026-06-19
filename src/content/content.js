@@ -2,12 +2,15 @@
 // 見ているページのドメインに紐づく付箋を、画面の端からそっと出すレールとして描画する。
 // Shadow DOM でページ側の CSS から完全隔離。設定や付箋の変更は storage.onChanged で同期。
 //
-// 付箋は 2 状態:  格納(collapsed) ⇄ 展開・編集(expanded＝箱がせり出し、そのまま複数行を書ける)
-//   spine のクリックで開閉。開くと即フォーカスして編集できる（旧「閲覧」状態と ✎ ボタンは廃止）。
-//   大きい箱は重なると操作しづらいので、同時に開くのは 1 枚（開くと他は畳む＝アコーディオン）。
+// 付箋は 3 状態:  格納(collapsed) ⇄ 展開プレビュー(previewing) ⇄ 展開編集(editing)。
+//   spine のクリックで開閉。中身のある付箋は開くとまずプレビュー（Markdown 整形表示）、空（新規含む）は即編集。
+//   プレビュー⇄編集の切替は右上の ✎/👁 ボタン(mode-btn)のみ。本文クリックでは編集に入らない（誤入力防止）。
+//   展開時は端固定を解除した自由配置の箱で、spine/上端バーのドラッグで移動・8 方向ハンドルでリサイズできる。
+//   寸法・位置は付箋ごとに KEY_GEOM(local 専用・非同期)へ保存し展開時に読み込む。ウィンドウ縮小時は
+//   画面内へクランプ追従（保存値は変えず表示だけ）。同時に開くのは 1 枚（開くと他は畳む＝アコーディオン）。
 //
 // アニメのため開閉/編集/作成/削除は要素を作り直さずクラス切替（applyState）で差分更新する。
-// 全面再描画 render() は初期化・外部同期など限られた場面のみ。resize は位置だけ再計算。
+// 全面再描画 render() は初期化・外部同期など限られた場面のみ。resize は位置・クランプだけ再計算。
 (() => {
   "use strict";
 
@@ -18,6 +21,11 @@
   // ── 定数（shared/storage.js と対応） ────────────────────────────
   const KEY_NOTES = "petarin:notes";
   const KEY_SETTINGS = "petarin:settings";
+  // 展開時のサイズ・位置（端末固有の表示設定）。chrome.storage.sync には載せない＝local 専用。
+  // px 座標は解像度依存で同期の意味が薄く、Note へ持たせると updatedAt LWW で他端末の本文編集を
+  // 握り潰す危険があるため、localTombs と同じ「local 専用キー」に分離する。
+  //   形: { [domain]: { [id]: { left, top, width, height } } }
+  const KEY_GEOM = "petarin:notesGeom";
   // 削除時刻ログ（同期しない・local 専用）。storage.js LOCAL_TOMBS_KEY と同キー・同構造
   // { [domain]: { [id]: deletedAt } }。reconcile が tombstone を実削除時刻で刻むのに使う（Codex#5）。
   const KEY_LOCAL_TOMBS = "petarin:sync:localTombs";
@@ -68,7 +76,7 @@
     showOnPage: true,
     creatorRatio: 0.78,
     font: "system",
-    fontSize: 15,
+    fontSize: 11,
     lineNumbers: false,
     defaultColor: DEFAULT_COLOR,
   };
@@ -99,11 +107,14 @@
     collapsed: { v: { w: 30, h: 32 }, h: { w: 26, h: 32 } }, // 格納タブ（高さは 2 倍）
     creator: { v: { w: 30, h: 32 }, h: { w: 30, h: 32 } },
   };
-  // 展開時は普通の付箋のような箱（端からスライドして出る）。画面が狭ければ収まるよう詰める。
+  // 展開時は普通の付箋のような箱。既定サイズ＝360×420（画面が狭ければ収まるよう詰める）。
+  // ユーザーがリサイズ/移動した寸法・位置は KEY_GEOM に付箋ごとに保存し、次回展開時に読み込む。
   const EXP_W = 360, EXP_H = 420;
+  const EXP_MIN_W = 220, EXP_MIN_H = 200; // リサイズの下限
+  const VIEW_MARGIN = 8;                  // ビューポート端からの最小余白（クランプ用）
   const expandedDim = () => ({
-    w: Math.min(EXP_W, Math.max(160, window.innerWidth - 20)),
-    h: Math.min(EXP_H, Math.max(160, window.innerHeight - 20)),
+    w: Math.min(EXP_W, Math.max(EXP_MIN_W, window.innerWidth - 20)),
+    h: Math.min(EXP_H, Math.max(EXP_MIN_H, window.innerHeight - 20)),
   });
   const MAX_CHARS = 2000;
 
@@ -141,6 +152,10 @@
   const expanded = new Set();
   let editingId = null;
   let host, root, layer, closeAllBtn;
+  // 付箋ごとの展開時ジオメトリ（このドメインぶん・{ [id]: {left,top,width,height} }）。local 専用・非同期。
+  let geom = {};
+  // 展開ボックスのドラッグ移動／リサイズ中フラグ（window.resize の自動追従と競合させない）。
+  let interacting = false;
   // 自分の書き込みによる onChanged を無視するための時刻（キー別に分離）
   let notesWriteAt = 0;
   let settingsWriteAt = 0;
@@ -168,6 +183,19 @@
         createdAt: n.createdAt || Date.now(),
         updatedAt: n.updatedAt || n.createdAt || Date.now(),
       }));
+  }
+  // 展開時ジオメトリ（このドメインぶん）を読む。不正値は捨てる。存在しない付箋ぶんは在庫掃除で間引く。
+  async function loadGeom() {
+    const raw = await chrome.storage.local.get(KEY_GEOM);
+    const map = (raw[KEY_GEOM] || {})[domain] || {};
+    geom = {};
+    const finite = (v) => typeof v === "number" && Number.isFinite(v);
+    for (const id of Object.keys(map)) {
+      const g = map[id];
+      if (g && finite(g.left) && finite(g.top) && finite(g.width) && finite(g.height)) {
+        geom[id] = { left: g.left, top: g.top, width: g.width, height: g.height };
+      }
+    }
   }
   // 自分の書き込み（get→set）をタブ内で直列化し、get と set の隙間に別の書き込みが
   // 割り込んで取りこぼすのを防ぐ（storage.js の _writeLock と同じ考え方をこの IIFE 内に持つ）。
@@ -288,6 +316,30 @@
     return persistSettingField("defaultColor", colorId);
   }
 
+  // 展開時ジオメトリを KEY_GEOM へ保存（local 専用・非同期）。在庫の付箋ぶんだけ残し孤児は掃く。
+  // 他タブが別ドメインを書いていても最新の all を読んでから自ドメインだけ差し替え＝相手を巻き戻さない
+  // （同ドメインを複数タブで同時編集した場合の geom は last-writer-wins＝見た目設定なので許容）。
+  function persistGeom() {
+    return withWrite(async () => {
+      const all = (await chrome.storage.local.get(KEY_GEOM))[KEY_GEOM] || {};
+      // 最新の自ドメイン map を土台に delta を当てる（upsertNotePersist 同様）。ドメイン丸ごと置換すると、
+      // 別タブが書いた「他の付箋」の geom を巻き戻してしまう（KEY_NOTES と同じ並行制御方針に揃える）。
+      const cur = all[domain] && typeof all[domain] === "object" ? { ...all[domain] } : {};
+      const present = new Set(notes.map((n) => n.id));
+      for (const n of notes) if (geom[n.id]) cur[n.id] = geom[n.id]; // 自タブが持つ値だけ上書き
+      for (const id of Object.keys(cur)) if (!present.has(id)) delete cur[id]; // 在庫に無い孤児だけ掃く
+      if (Object.keys(cur).length) all[domain] = cur;
+      else delete all[domain];
+      await chrome.storage.local.set({ [KEY_GEOM]: all });
+    });
+  }
+  // 指定 id のジオメトリを破棄して保存（付箋削除時）。
+  function dropGeom(ids) {
+    let changed = false;
+    for (const id of ids) if (geom[id]) { delete geom[id]; changed = true; }
+    if (changed) persistGeom();
+  }
+
   // ── 同梱フォントの遅延読み込み（FontFace API＝ArrayBuffer 直渡しでページ CSP を回避）──
   // chrome.runtime.getURL の fetch は content script 文脈で許可され、ページの font-src CSP に縛られない。
   // 読み込んだ FontFace は document.fonts に足すと Shadow DOM 内のテキストにも適用される。
@@ -306,12 +358,18 @@
     }
   }
   // レール全体に現在のフォント／サイズを反映（CSS 変数）。選択フォントは遅延ロード。
+  //  --peta-font      : 表示（プレビュー）モードの本文フォント＝ユーザーが選んだ書体。
+  //  --peta-edit-font : 編集モード（textarea/行番号）のフォント＝UDEV ゴシック固定（等幅で Markdown が整う）。
   function applyFont() {
     if (!layer) return;
     const id = FONT_FILES[settings.font] ? settings.font : "system";
-    const size = Number.isFinite(settings.fontSize) ? clamp(settings.fontSize, 8, 96) : 15;
+    const size = Number.isFinite(settings.fontSize) ? clamp(settings.fontSize, 8, 96) : 11;
     layer.style.setProperty("--peta-font", fontFamilyCss(id));
     layer.style.setProperty("--peta-size", size + "px");
+    // 編集モードは UDEV ゴシック固定。選択書体に依らず常に読み込む。fallback は等幅系にする
+    // （fontFamilyCss は proportional な SYSTEM_FONT_STACK を返すので使わない＝UDEV 不在時も等幅を保つ）。
+    layer.style.setProperty("--peta-edit-font", '"PetaFont_udev", ui-monospace, "BIZ UDGothic", Consolas, monospace');
+    ensureFont("udev");
     if (id !== "system") ensureFont(id);
   }
 
@@ -355,6 +413,9 @@
   async function init() {
     await loadSettings();
     await loadNotes();
+    await loadGeom();
+    // 既に存在しない付箋ぶんのジオメトリ（他端末の同期削除等で孤児化）を storage から掃く。
+    if (Object.keys(geom).some((id) => !notes.some((n) => n.id === id))) persistGeom();
 
     host = el("div", { id: "petarin-host" });
     host.style.cssText = "all: initial; position: fixed; inset: 0; z-index: 2147483600; pointer-events: none;";
@@ -397,6 +458,122 @@
   const creatorDim = () => (isVertical() ? DIM.creator.v : DIM.creator.h);
   const dimOf = (id) => (expanded.has(id) ? expandedDim() : collapsedDim());
 
+  // ── 展開ボックスの自由配置（リサイズ・移動）──────────────────────────
+  // 展開時は端固定（right:0 等）を解除し、left/top/width/height を px で直接指定して自由に置く。
+  // 現在の矩形（inline px、無ければ実測）。
+  function currentRect(wrap) {
+    const left = parseFloat(wrap.style.left);
+    const top = parseFloat(wrap.style.top);
+    const width = parseFloat(wrap.style.width) || wrap.offsetWidth;
+    const height = parseFloat(wrap.style.height) || wrap.offsetHeight;
+    if (Number.isFinite(left) && Number.isFinite(top)) return { left, top, width, height };
+    const b = wrap.getBoundingClientRect(); // host は position:fixed inset:0 ＝ viewport 座標
+    return { left: b.left, top: b.top, width: b.width, height: b.height };
+  }
+  // 矩形をビューポート内に収める（サイズ→位置の順）。保存値は変えず「表示だけ」追従させるのに使う。
+  function clampRect(rect) {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const width = clamp(rect.width, EXP_MIN_W, Math.max(EXP_MIN_W, vw - VIEW_MARGIN));
+    const height = clamp(rect.height, EXP_MIN_H, Math.max(EXP_MIN_H, vh - VIEW_MARGIN));
+    const left = clamp(rect.left, 0, Math.max(0, vw - width));
+    const top = clamp(rect.top, 0, Math.max(0, vh - height));
+    return { left, top, width, height };
+  }
+  // 保存ジオメトリが無い付箋の既定矩形（配置サイドの端寄り・posRatio に沿った位置）。
+  function defaultRect(note) {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const width = Math.min(EXP_W, Math.max(EXP_MIN_W, vw - 20));
+    const height = Math.min(EXP_H, Math.max(EXP_MIN_H, vh - 20));
+    const m = 14;
+    let left, top;
+    const side = settings.side;
+    if (side === "left") { left = m; top = clamp(note.posRatio * (vh - height), 0, vh - height); }
+    else if (side === "top") { top = m; left = clamp(note.posRatio * (vw - width), 0, vw - width); }
+    else if (side === "bottom") { top = vh - height - m; left = clamp(note.posRatio * (vw - width), 0, vw - width); }
+    else { left = vw - width - m; top = clamp(note.posRatio * (vh - height), 0, vh - height); } // right（既定）
+    return { left, top, width, height };
+  }
+  // この付箋の展開矩形＝保存ジオメトリ（無ければ既定）をビューポートにクランプして返す。
+  function getExpandedRect(note) {
+    const g = geom[note.id];
+    const base = g && Number.isFinite(g.width) ? { left: g.left, top: g.top, width: g.width, height: g.height } : defaultRect(note);
+    return clampRect(base);
+  }
+  // 矩形を要素へ inline 反映（端固定を解除）。
+  function applyFreeRect(wrap, r) {
+    wrap.style.left = r.left + "px";
+    wrap.style.top = r.top + "px";
+    wrap.style.width = r.width + "px";
+    wrap.style.height = r.height + "px";
+    wrap.style.right = "auto";
+    wrap.style.bottom = "auto";
+    wrap.style.maxWidth = "none";
+    wrap.style.maxHeight = "none";
+  }
+  // 自由配置の inline をすべて消す（格納へ戻すとき＝CSS の端固定 + place() に委ねる）。
+  function clearFreeRect(wrap) {
+    for (const p of ["left", "top", "width", "height", "right", "bottom", "maxWidth", "maxHeight"]) wrap.style[p] = "";
+  }
+  // ドラッグ移動：開始矩形 + 指の移動量から left/top を更新（ビューポート内にクランプ）。
+  function moveTo(wrap, sLeft, sTop, dx, dy) {
+    const w = wrap.offsetWidth, h = wrap.offsetHeight;
+    wrap.style.left = clamp(sLeft + dx, 0, Math.max(0, window.innerWidth - w)) + "px";
+    wrap.style.top = clamp(sTop + dy, 0, Math.max(0, window.innerHeight - h)) + "px";
+  }
+  // リサイズ：方向フラグに応じて矩形を最小サイズ＆ビューポート内へクランプ（動かさない辺は固定）。
+  function clampResizeRect(left, top, width, height, f, r0) {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    if (f.e) { width = clamp(width, EXP_MIN_W, vw - r0.left); left = r0.left; }
+    if (f.w) { const right = r0.left + r0.width; left = clamp(left, 0, right - EXP_MIN_W); width = right - left; }
+    if (f.s) { height = clamp(height, EXP_MIN_H, vh - r0.top); top = r0.top; }
+    if (f.n) { const bottom = r0.top + r0.height; top = clamp(top, 0, bottom - EXP_MIN_H); height = bottom - top; }
+    return { left, top, width, height };
+  }
+  // 保存済みジオメトリ（真値）。無ければ null。表示はクランプされうるが保存値はユーザーの意図（フル
+  // viewport 時の寸法・位置）を保つ。ウィンドウ縮小で表示がクランプされても、ここは縮めない。
+  function baseGeom(note) {
+    const g = geom[note.id];
+    return g && Number.isFinite(g.width) ? { left: g.left, top: g.top, width: g.width, height: g.height } : null;
+  }
+  // 移動の確定：位置だけ更新し、保存サイズは維持する。ウィンドウ縮小でクランプ表示された箱を移動しても、
+  // クランプ後の縮んだ width/height を保存値へ焼き込まない（移動はサイズを変えない＝要件3の「表示だけ追従」を守る）。
+  function commitMove(note) {
+    const wrap = noteEl(note.id);
+    if (!wrap) return;
+    const r = currentRect(wrap);
+    const prev = baseGeom(note);
+    const width = prev ? prev.width : Math.round(r.width);
+    const height = prev ? prev.height : Math.round(r.height);
+    geom[note.id] = { left: Math.round(r.left), top: Math.round(r.top), width, height };
+    persistGeom();
+  }
+  // リサイズの確定：実際にリサイズした矩形を保存（ユーザーが現在の窓で明示的に決めたサイズ）。
+  function commitResize(note) {
+    const wrap = noteEl(note.id);
+    if (!wrap) return;
+    const r = currentRect(wrap);
+    geom[note.id] = { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
+    persistGeom();
+  }
+  // 展開アニメ：格納タブの位置から目標矩形へなめらかに伸ばす（FLIP）。
+  //  重要: applyState で目標矩形を「確定状態」として先に適用する＝rAF が発火しない環境（タブ非表示で
+  //  requestAnimationFrame が止まる等）でも箱は必ず正しいサイズ・位置になる。アニメ（格納位置→目標）は
+  //  rAF が使えるときだけ足す非破壊的な強化で、効かなくても見た目が崩れない（潰れたまま固まらない）。
+  function expandAnimate(wrap, note) {
+    const start = currentRect(wrap);   // まだ格納状態の viewport 矩形
+    applyState(wrap, note);            // .expanded/editing/previewing + 目標 free-rect（確定状態）
+    requestAnimationFrame(() => {
+      const w = noteEl(note.id);
+      if (!w || !expanded.has(note.id) || interacting) return;
+      const target = getExpandedRect(note);
+      w.classList.add("no-anim");      // トランジション停止
+      applyFreeRect(w, start);         // いったん格納位置へ
+      void w.offsetWidth;              // リフローで開始位置を確定（ここがアニメ基点）
+      w.classList.remove("no-anim");   // トランジション再開
+      applyFreeRect(w, target);        // 目標へなめらかに
+    });
+  }
+
   // ── 重なり防止（軸方向 1D 衝突回避）──────────────────────────────
   const GAP_PX = 5; // 付箋同士のすき間
 
@@ -413,7 +590,8 @@
     const out = [];
     for (const n of notes) {
       if (n.id === selfId) continue;
-      const d = dimOf(n.id);
+      if (expanded.has(n.id)) continue; // 展開中の付箋は自由配置＝レール上にいないので障害物にしない
+      const d = collapsedDim();
       const len = v ? d.h : d.w;
       out.push({ start: axisStart(n.posRatio, len), len });
     }
@@ -471,10 +649,17 @@
   // 連続リサイズ中はバウンス遷移を切って静かに追従させる。
   function reposition() {
     if (!layer || !settings.showOnPage) return;
+    if (interacting) return; // ドラッグ/リサイズ中は本人が位置を管理（自動追従と競合させない）
     layer.classList.add("repositioning");
     for (const wrap of layer.querySelectorAll(".note:not(.creator)")) {
       const note = notes.find((n) => n.id === wrap.dataset.id);
-      if (note) place(wrap, note.posRatio, dimOf(note.id));
+      if (!note) continue;
+      if (expanded.has(note.id)) {
+        // 展開ボックスはウィンドウ枠に追従＝viewport 内へクランプ表示（保存 geom は変えない）。
+        applyFreeRect(wrap, getExpandedRect(note));
+      } else {
+        place(wrap, note.posRatio, collapsedDim());
+      }
     }
     const creator = layer.querySelector(".creator");
     if (creator) place(creator, settings.creatorRatio, creatorDim());
@@ -508,6 +693,7 @@
       getRatio: () => note.posRatio,
       setRatio: (r) => { note.posRatio = r; },
       commit: () => { note.updatedAt = Date.now(); upsertNotePersist(note); },
+      commitGeom: () => commitMove(note), // 展開時の自由移動を確定（spine ドラッグ・サイズは維持）
       onTap: () => toggle(note.id),
     });
     wrap.append(spine);
@@ -528,6 +714,7 @@
     closeBtn.addEventListener("pointerdown", (e) => e.preventDefault());
     closeBtn.addEventListener("click", (e) => { e.stopPropagation(); toggle(note.id); }); // 展開中なので畳む
     topbar.append(modeBtn, charCount, closeBtn);
+    attachExpandedMove(topbar, wrap, note); // 上端バー（ボタン以外）をつかんで展開ボックスを移動
     body.append(topbar);
 
     // 編集面：行番号ガター＋テキストエリア（生の Markdown コードを書く）。
@@ -539,14 +726,10 @@
     editor.append(gutter, ta);
     body.append(editor);
 
-    // プレビュー面：Markdown を整形して表示（非編集時）。クリックで編集へ（リンクはそのまま開く）。
+    // プレビュー面：Markdown を整形して表示（非編集時）。本文クリックでは編集に入らない＝右上のペン(✎)
+    // ボタンでのみ編集モードへ（誤って入力モードに入るのを防ぐ。リンクはそのまま開く・テキスト選択も可）。
     const preview = el("div", { class: "preview" });
     preview.addEventListener("pointerdown", (e) => { if (!e.target.closest("a")) e.stopPropagation(); });
-    preview.addEventListener("click", (e) => {
-      if (e.target.closest("a")) return; // リンクは普通に開く（編集に入らない）
-      e.stopPropagation();
-      enterEdit(note.id);
-    });
     body.append(preview);
 
     // 下端ツールバー：絵文字｜色｜（余白）｜削除
@@ -598,6 +781,14 @@
 
     body.append(bar);
     wrap.append(body);
+
+    // 展開時のリサイズハンドル（8 方向）。CSS で .note.expanded のときだけ表示・操作可能。
+    for (const dir of ["n", "s", "e", "w", "ne", "nw", "se", "sw"]) {
+      const h = el("div", { class: `rz rz-${dir}`, "aria-hidden": "true" });
+      attachResize(h, wrap, note, dir);
+      wrap.append(h);
+    }
+
     applyState(wrap, note);
     return wrap;
   }
@@ -663,7 +854,14 @@
     wrap.classList.toggle("expanded", isExp);
     wrap.classList.toggle("editing", isEdit);
     wrap.classList.toggle("previewing", isExp && !isEdit);
-    place(wrap, note.posRatio, isExp ? expandedDim() : collapsedDim());
+    if (isExp) {
+      // 展開：保存ジオメトリ（無ければ既定）で自由配置。インタラクション中は本人が位置を持つので触らない。
+      if (!interacting) applyFreeRect(wrap, getExpandedRect(note));
+    } else {
+      // 格納：自由配置 inline を消し、CSS の端固定 + place() に委ねる。
+      clearFreeRect(wrap);
+      place(wrap, note.posRatio, collapsedDim());
+    }
 
     const ta = wrap.querySelector(".ta");
     if (ta) ta.readOnly = !isEdit; // 編集サブ状態のときだけ書き込み可
@@ -690,7 +888,7 @@
     if (!pv) return;
     const text = noteText(note);
     if (!text.trim()) {
-      pv.replaceChildren(el("p", { class: "pv-empty" }, "（まだ何も書かれていません。クリックで編集）"));
+      pv.replaceChildren(el("p", { class: "pv-empty" }, "（まだ何も書かれていません。✎ で編集）"));
       return;
     }
     if (globalThis.PetaMD && typeof globalThis.PetaMD.render === "function") {
@@ -773,21 +971,38 @@
     return node;
   }
 
-  // ── 共通ドラッグ（軸ロック）。動かなければ onTap ───────────────────
+  // ── 共通ドラッグ。格納時＝軸ロック（posRatio）／展開時＝自由 2D 移動。動かなければ onTap ──────
   function attachDrag(handle, wrap, o) {
-    let dragging = false, moved = false, startPos = 0, startRatio = 0, obs = null;
+    let dragging = false, moved = false, exp = false;
+    let startPos = 0, startRatio = 0, obs = null; // 格納（軸ロック）用
+    let sx = 0, sy = 0, sLeft = 0, sTop = 0;       // 展開（自由移動）用
     handle.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
+      // リサイズハンドル上から始まったら移動は担当しない（リサイズ優先）。
+      if (e.target.closest && e.target.closest(".rz")) return;
+      exp = o.id !== "__creator__" && expanded.has(o.id);
       dragging = true; moved = false;
-      startRatio = o.getRatio();
-      startPos = isVertical() ? e.clientY : e.clientX;
-      obs = obstaclesFor(o.id); // 障害物はドラッグ中不変＝1 回だけ算出（毎 pointermove の全付箋走査を避ける）
+      if (exp) {
+        const r = currentRect(wrap);
+        sx = e.clientX; sy = e.clientY; sLeft = r.left; sTop = r.top;
+        interacting = true;
+      } else {
+        startRatio = o.getRatio();
+        startPos = isVertical() ? e.clientY : e.clientX;
+        obs = obstaclesFor(o.id); // 障害物はドラッグ中不変＝1 回だけ算出（毎 pointermove の全付箋走査を避ける）
+      }
       handle.setPointerCapture(e.pointerId);
       wrap.classList.add("dragging");
       e.preventDefault();
     });
     handle.addEventListener("pointermove", (e) => {
       if (!dragging) return;
+      if (exp) {
+        const dx = e.clientX - sx, dy = e.clientY - sy;
+        if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
+        moveTo(wrap, sLeft, sTop, dx, dy);
+        return;
+      }
       const v = isVertical();
       const cur = v ? e.clientY : e.clientX;
       if (Math.abs(cur - startPos) > 4) moved = true;
@@ -805,13 +1020,85 @@
     const end = (e) => {
       if (!dragging) return;
       dragging = false;
+      interacting = false;
       wrap.classList.remove("dragging");
       try { handle.releasePointerCapture(e.pointerId); } catch {}
-      if (moved) o.commit();
+      if (moved) { if (exp) o.commitGeom && o.commitGeom(); else o.commit(); }
       else o.onTap();
     };
     handle.addEventListener("pointerup", end);
     handle.addEventListener("pointercancel", end);
+  }
+
+  // 展開ボックスを上端バーからつかんで移動（ボタンの上では動かさない）。タップでは何もしない（閉じない）。
+  function attachExpandedMove(handle, wrap, note) {
+    handle.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || !expanded.has(note.id)) return;
+      if (e.target.closest && e.target.closest("button, .rz")) return;
+      e.preventDefault();
+      const r = currentRect(wrap);
+      const sx = e.clientX, sy = e.clientY;
+      handle.setPointerCapture(e.pointerId);
+      wrap.classList.add("dragging");
+      interacting = true;
+      let moved = false;
+      const move = (ev) => {
+        const dx = ev.clientX - sx, dy = ev.clientY - sy;
+        if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
+        moveTo(wrap, r.left, r.top, dx, dy);
+      };
+      const up = (ev) => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", up);
+        handle.removeEventListener("pointercancel", up);
+        wrap.classList.remove("dragging");
+        interacting = false;
+        try { handle.releasePointerCapture(ev.pointerId); } catch {}
+        if (moved) commitMove(note);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", up);
+      handle.addEventListener("pointercancel", up);
+    });
+  }
+
+  // リサイズハンドル。方向（n/s/e/w とその組）に応じて辺を引っぱり、最小サイズ＆ビューポート内へクランプ。
+  function attachResize(handle, wrap, note, dir) {
+    const f = { n: dir.includes("n"), s: dir.includes("s"), e: dir.includes("e"), w: dir.includes("w") };
+    handle.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || !expanded.has(note.id)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const r0 = currentRect(wrap);
+      const sx = e.clientX, sy = e.clientY;
+      let moved = false;
+      handle.setPointerCapture(e.pointerId);
+      wrap.classList.add("dragging");
+      interacting = true;
+      const move = (ev) => {
+        const dx = ev.clientX - sx, dy = ev.clientY - sy;
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
+        let left = r0.left, top = r0.top, width = r0.width, height = r0.height;
+        if (f.e) width = r0.width + dx;
+        if (f.w) { width = r0.width - dx; left = r0.left + dx; }
+        if (f.s) height = r0.height + dy;
+        if (f.n) { height = r0.height - dy; top = r0.top + dy; }
+        applyFreeRect(wrap, clampResizeRect(left, top, width, height, f, r0));
+      };
+      const up = (ev) => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", up);
+        handle.removeEventListener("pointercancel", up);
+        wrap.classList.remove("dragging");
+        interacting = false;
+        try { handle.releasePointerCapture(ev.pointerId); } catch {}
+        // 実際にリサイズしたときだけ保存（ハンドルを 0px クリックしただけでクランプ表示値を焼き込まない）。
+        if (moved) commitResize(note);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", up);
+      handle.addEventListener("pointercancel", up);
+    });
   }
 
   // ── 状態遷移（差分更新でアニメ）───────────────────────────────────
@@ -828,16 +1115,11 @@
       else applyState(wrap, note);
     } else {
       collapseAll();        // 大きい箱は重ねない＝開く前に他の展開を畳む（アコーディオン）
-      expanded.add(id);     // 端からスライドして箱が出る
+      expanded.add(id);     // 自由配置の箱として開く（保存ジオメトリ or 既定位置）
       // 中身があればまずプレビュー（整形表示）、空なら即編集（新規作成と同じ書き心地）。
-      if (isEmpty(note)) {
-        editingId = id;
-        applyState(wrap, note);
-        focusEditor(id);
-      } else {
-        editingId = null;
-        applyState(wrap, note); // プレビュー描画
-      }
+      editingId = isEmpty(note) ? id : null;
+      expandAnimate(wrap, note);
+      if (editingId === id) focusEditor(id);
     }
     updateCloseAll();
   }
@@ -858,6 +1140,7 @@
     if (editingId === id) editingId = null;
     if (wrap) wrap.remove();
     removeNotesPersist([id]);
+    dropGeom([id]); // 展開時ジオメトリも掃除
   }
 
   function createNote() {
@@ -884,14 +1167,9 @@
     updateCloseAll();
     upsertNotePersist(note); // 非同期保存（await しない＝状態確定は完全に同期）
 
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        const w = noteEl(note.id);
-        if (!w) return; // 途中で閉じられて破棄された等
-        applyState(w, note); // expanded.has=true なら展開＝スライド
-        if (editingId === note.id) focusEditor(note.id);
-      })
-    );
+    // 端の＋から格納タブが出た直後に、自由配置の箱として展開アニメ（格納位置→既定矩形へ伸びる）。
+    expandAnimate(wrap, note);
+    if (editingId === note.id) focusEditor(note.id);
   }
 
   // 明示削除（✕）も差分削除で行い、他付箋の編集/フォーカスを壊さない
@@ -922,7 +1200,7 @@
         applyState(wrap, note); // スライドして格納
       }
     }
-    if (removedIds.length) removeNotesPersist(removedIds);
+    if (removedIds.length) { removeNotesPersist(removedIds); dropGeom(removedIds); }
     updateCloseAll();
   }
 
