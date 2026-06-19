@@ -99,6 +99,7 @@
     yomogi: "Yomogi-Regular.woff2",
     klee: "KleeOne-Regular.woff2",
     hachimaru: "HachiMaruPop-Regular.woff2",
+    yusei: "YuseiMagic-Regular.woff2",
   };
   const fontFamilyCss = (id) =>
     FONT_FILES[id] ? `"PetaFont_${id}", ${SYSTEM_FONT_STACK}` : SYSTEM_FONT_STACK;
