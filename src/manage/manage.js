@@ -82,7 +82,6 @@ let activeDomain = null;        // null = すべて
 let sortKey = "new";
 const selection = new Set();    // "domain\u001fid"
 let editingKey = null;
-let pendingRender = false;
 let appSettings = null;         // 設定キャッシュ（書体・サイズ・行番号）。エディタで使う。
 let mm = null;                  // 付箋エディタの状態 { domain, note, saveTimer }
 let lastDeleted = null;         // 元に戻す用スナップショット
@@ -125,7 +124,7 @@ async function init() {
     if (changes["petarin:settings"]) { appSettings = await getSettings(); applyNoteFont(); } // 書体変更をプレビューへ反映
     if (!changes["petarin:notes"]) return;
     allNotes = await getAllNotes(); // データは常に最新へ同期
-    if (editingKey) { pendingRender = true; return; }      // 編集中は壊さない
+    if (editingKey) return;                                // 編集中は全面再描画を抑止（閉じる時に無条件 reload で最新化）
     if (pendingEchoes > 0) { pendingEchoes--; return; }    // 自分の書き込みエコー：再描画は各操作側が担当
     render();                                               // 外部（ページ側＝同期含む）変更のみ再描画
   });
@@ -495,7 +494,7 @@ const isEditing = () => $("#mmBox").classList.contains("editing");
 function openEditor(domain, note) {
   if (mm) closeEditor(false); // 念のため
   mm = { domain, note, saveTimer: 0 };
-  editingKey = keyOf(domain, note.id); // この間 onChanged の全面再描画を抑止（pendingRender に退避）
+  editingKey = keyOf(domain, note.id); // この間 onChanged の全面再描画を抑止（閉じる時に無条件 reload で最新化）
   const box = $("#mmBox");
   const c = colorOf(note.color);
   box.style.setProperty("--ncp", c.paper);
@@ -521,7 +520,7 @@ async function closeEditor(commit = true) {
   mm = null;
   editingKey = null;
   $("#memoModal").hidden = true;
-  if (commit) { pendingRender = false; await reload(); }
+  if (commit) await reload();
 }
 
 // 編集(true)/プレビュー(false)を切り替える。プレビューへ移るときは保存して整形表示する。
