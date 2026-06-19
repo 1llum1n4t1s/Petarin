@@ -14,13 +14,13 @@
   --shadow-soft: 0 1px 2px rgba(74, 56, 30, 0.1), 0 10px 22px -12px rgba(74, 56, 30, 0.35);
   --shadow-lift: 0 3px 6px rgba(74, 56, 30, 0.2), 0 18px 32px -12px rgba(74, 56, 30, 0.5);
 
-  --note-yellow: #ffe57a; --note-yellow-d: #f2c84b; --note-yellow-i: #5c4a1e;
-  --note-coral: #ffc2a1;  --note-coral-d: #f59e72;  --note-coral-i: #6e3a20;
-  --note-pink: #ffb6c9;   --note-pink-d: #f58fac;   --note-pink-i: #6e2a40;
-  --note-purple: #d2bdf0; --note-purple-d: #b392e0; --note-purple-i: #43306e;
-  --note-blue: #a9d6f5;   --note-blue-d: #79b9ed;   --note-blue-i: #1f4a6e;
-  --note-mint: #a6e6d5;   --note-mint-d: #73d0bb;   --note-mint-i: #1c5247;
-  --note-green: #bee89b;  --note-green-d: #95d16c;  --note-green-i: #33501f;
+  --note-yellow: #ded19b; --note-yellow-d: #c8b375; --note-yellow-i: #4d442d;
+  --note-coral: #e8c9b9;  --note-coral-d: #d4a993;  --note-coral-i: #5b4134;
+  --note-pink: #edc8d2;   --note-pink-d: #dca8b7;   --note-pink-i: #5d3b46;
+  --note-purple: #d4cae3; --note-purple-d: #b6a5cd; --note-purple-i: #49405f;
+  --note-blue: #bcd3e2;   --note-blue-d: #96b6d0;   --note-blue-i: #33485a;
+  --note-mint: #b6d6ce;   --note-mint-d: #8ab9ae;   --note-mint-i: #29453f;
+  --note-green: #c0d5ae;  --note-green-d: #9ab885;  --note-green-i: #35442b;
 
   --bar-h: 76px;
 }
@@ -465,3 +465,152 @@ body {
 .sp-badge.off { background: #ece3d0; color: var(--ink-soft); }
 .sp-note { font-size: 12px; color: var(--ink-soft); line-height: 1.6; }
 .sp-note.warn { color: var(--danger); }
+
+/* ── 付箋エディタ（WEBページ側の展開付箋と同じレイアウト・移動/リサイズ無し）────────────────── */
+.memomodal {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  background: rgba(40, 28, 12, 0.42);
+  animation: mm-fade 0.14s ease both;
+}
+@keyframes mm-fade { from { opacity: 0; } to { opacity: 1; } }
+/* 付箋の箱（本体と同じ：紙地＋ページ側の差し色帯 spine＋本文＋下端ツールバー）。固定サイズ＝移動/リサイズ無し。*/
+.mm-box {
+  display: flex; align-items: stretch;
+  width: min(680px, 92vw);
+  height: min(78vh, 640px);
+  border-radius: 4px;
+  overflow: hidden;
+  color: var(--nci, #4d442d);
+  background: var(--ncp, #ded19b);
+  box-shadow: 0 16px 48px rgba(35, 24, 6, 0.4);
+  animation: mm-pop 0.16s ease both;
+}
+@keyframes mm-pop { from { transform: scale(0.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.mm-spine { flex: 0 0 14px; background: var(--ncd, #c8b375); order: 2; } /* ページ側の差し色帯（本体の spine 相当・装飾のみ）*/
+.mm-body {
+  flex: 1; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 14px;
+}
+
+/* 上端バー：左＝プレビュー/編集トグル、右＝閉じる */
+.mm-topbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.mm-mode, .mm-close {
+  width: 30px; height: 30px; border: 0; border-radius: 8px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--nci); opacity: 0.72;
+  transition: background 0.14s ease, opacity 0.14s ease;
+}
+.mm-mode { margin: -2px 0 0 -4px; }
+.mm-close { margin: -2px -4px 0 auto; }
+.mm-mode:hover, .mm-close:hover { background: rgba(0, 0, 0, 0.1); opacity: 1; }
+.mm-mode svg, .mm-close svg { width: 19px; height: 19px; }
+.mm-charcount {
+  margin-left: auto; font-size: 11px; font-variant-numeric: tabular-nums;
+  color: var(--nci); opacity: 0.55; user-select: none;
+}
+.mm-box:not(.editing) .mm-charcount { visibility: hidden; }
+.mm-box:not(.editing) .mm-close { margin-left: auto; }
+
+/* 編集面（行番号ガター＋テキストエリア）とプレビュー面の出し分け（本体と同じ）。*/
+.mm-editor { display: none; flex: 1; min-height: 0; }
+.mm-preview { display: none; flex: 1; min-height: 0; overflow-y: auto; }
+.mm-box.editing .mm-editor { display: flex; }
+.mm-box.previewing .mm-preview { display: block; }
+
+.mm-gutter {
+  display: none; flex: 0 0 auto; text-align: right;
+  padding: 2px 8px 2px 2px; margin-right: 6px;
+  border-right: 1px solid color-mix(in srgb, var(--nci) 22%, transparent);
+  color: var(--nci); opacity: 0.42;
+  font-family: var(--peta-edit-font, ui-monospace, "BIZ UDGothic", Consolas, monospace);
+  font-size: var(--peta-size, 11px); line-height: 1.6;
+  white-space: pre; overflow: hidden; user-select: none; min-width: 1.6em;
+}
+.mm-editor.with-gutter .mm-gutter { display: block; }
+.mm-editor.with-gutter .mm-ta { white-space: pre; overflow-x: auto; word-break: normal; }
+
+/* 編集モードは付箋の表示エリア全体を使う（flex:1）。書体は UDEV ゴシック固定。*/
+.mm-ta {
+  flex: 1; min-height: 0; width: 100%;
+  border: 0; outline: 0; resize: none; background: transparent;
+  color: var(--nci); caret-color: var(--nci);
+  font-family: var(--peta-edit-font, ui-monospace, "BIZ UDGothic", Consolas, monospace);
+  font-size: var(--peta-size, 11px); font-weight: 500; line-height: 1.6;
+  overflow-y: auto; white-space: pre-wrap; word-break: break-word; padding: 2px;
+}
+.mm-ta::placeholder { color: var(--nci); opacity: 0.4; }
+
+/* プレビュー面（選択フォントで Markdown 整形）。*/
+.mm-preview {
+  color: var(--nci);
+  font-family: var(--peta-note-font, inherit);
+  font-size: var(--peta-size, 11px); line-height: 1.7;
+  word-break: break-word; overflow-wrap: anywhere; padding: 2px;
+}
+.mm-preview .pv-empty { opacity: 0.45; font-style: italic; }
+.mm-preview > :first-child { margin-top: 0; }
+.mm-preview > :last-child { margin-bottom: 0; }
+.mm-preview p { margin: 0 0 0.5em; }
+.mm-preview :is(h1, h2, h3, h4, h5, h6) { margin: 0.6em 0 0.35em; line-height: 1.3; font-weight: 700; }
+.mm-preview h1 { font-size: 1.5em; border-bottom: 1px solid color-mix(in srgb, var(--nci) 22%, transparent); padding-bottom: 0.15em; }
+.mm-preview h2 { font-size: 1.32em; } .mm-preview h3 { font-size: 1.18em; }
+.mm-preview h4 { font-size: 1.06em; } .mm-preview h5 { font-size: 0.98em; } .mm-preview h6 { font-size: 0.92em; opacity: 0.85; }
+.mm-preview strong { font-weight: 800; } .mm-preview em { font-style: italic; } .mm-preview del { opacity: 0.7; }
+.mm-preview a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.mm-preview ul, .mm-preview ol { margin: 0 0 0.5em; padding-left: 1.5em; }
+.mm-preview li { margin: 0.12em 0; }
+.mm-preview blockquote { margin: 0 0 0.5em; padding: 0.1em 0.8em; border-left: 3px solid color-mix(in srgb, var(--ncd) 70%, transparent); opacity: 0.92; }
+.mm-preview hr { border: 0; border-top: 1px solid color-mix(in srgb, var(--nci) 28%, transparent); margin: 0.7em 0; }
+.mm-preview code { font-family: ui-monospace, Consolas, monospace; font-size: 0.9em; background: color-mix(in srgb, var(--nci) 12%, transparent); padding: 0.1em 0.35em; border-radius: 4px; }
+.mm-preview pre { margin: 0 0 0.5em; padding: 0.6em 0.8em; border-radius: 6px; background: color-mix(in srgb, var(--nci) 12%, transparent); overflow-x: auto; }
+.mm-preview pre code { background: transparent; padding: 0; font-size: 0.86em; }
+.mm-preview table { border-collapse: collapse; margin: 0 0 0.5em; font-size: 0.95em; display: block; width: max-content; max-width: 100%; overflow-x: auto; }
+.mm-preview th, .mm-preview td { border: 1px solid color-mix(in srgb, var(--nci) 30%, transparent); padding: 0.3em 0.55em; text-align: left; vertical-align: top; }
+.mm-preview th { font-weight: 700; background: color-mix(in srgb, var(--nci) 12%, transparent); }
+.mm-preview tr:nth-child(even) td { background: color-mix(in srgb, var(--nci) 5%, transparent); }
+
+/* 下端ツールバー（絵文字｜色｜余白｜削除）— 本体と同じ並び */
+.mm-toolbar { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.mm-toolbar .mm-sp { flex: 1; }
+.mm-iconbtn {
+  flex-shrink: 0; width: 30px; height: 30px; border: 0; border-radius: 8px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; font-size: 17px; line-height: 1;
+  background: rgba(0, 0, 0, 0.06); color: var(--nci); transition: background 0.14s ease;
+}
+.mm-iconbtn:hover { background: rgba(0, 0, 0, 0.12); }
+.mm-palette { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; min-width: 0; }
+.mm-palette .dot {
+  width: 19px; height: 19px; border-radius: 50%; border: 0; padding: 0; cursor: pointer;
+  transition: box-shadow 0.12s ease;
+}
+.mm-palette .dot:hover { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 0 0 3px rgba(0, 0, 0, 0.22); }
+.mm-palette .dot.on { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 0 0 3.5px var(--nci); }
+.mm-del {
+  flex-shrink: 0; width: 30px; height: 30px; border: 0; border-radius: 8px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--nci); opacity: 0.75;
+  transition: background 0.14s ease, color 0.14s ease, opacity 0.14s ease;
+}
+.mm-del:hover { background: rgba(214, 72, 63, 0.16); color: var(--danger); opacity: 1; }
+.mm-del svg { width: 19px; height: 19px; }
+
+/* 絵文字ピッカー（モーダル内）*/
+.mm-picker {
+  position: fixed; z-index: 70; display: grid; grid-template-columns: repeat(12, 26px);
+  gap: 2px; padding: 8px; border-radius: 10px; background: #fbf6ec;
+  box-shadow: 0 6px 24px rgba(35, 24, 6, 0.3); max-height: 60vh; overflow-y: auto; overflow-x: hidden;
+}
+.mm-picker .emoji {
+  width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent;
+  font-size: 17px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: background 0.1s ease;
+}
+.mm-picker .emoji:hover { background: rgba(0, 0, 0, 0.08); }
+.mm-picker .emoji.on { background: var(--ncd, #c8b375); }
+
+@media (prefers-reduced-motion: reduce) {
+  .memomodal, .mm-box { animation: none; }
+}
