@@ -550,11 +550,17 @@
   }
   // 現在の表示矩形を「絶対座標」でそのまま保存（シンプル）。位置補正は展開時の getExpandedRect が担う
   // （保存値が画面外なら一番近いウィンドウ枠の内側へ寄せ、窓より大きければ収まるよう縮める）。
-  function commitGeom(note) {
+  // keepSize=true（移動のみ）は保存済みの幅・高さを維持し位置だけ更新する。小窓で開くと getExpandedRect が
+  // 表示用に寸法をクランプするため、その状態で移動して現寸法を焼き込むと、窓を戻したとき保存サイズが
+  // 縮んだまま復元できなくなる（Codex#557）。リサイズ時のみ現寸法を保存する。
+  function commitGeom(note, keepSize) {
     const wrap = noteEl(note.id);
     if (!wrap) return;
     const r = currentRect(wrap);
-    geom[note.id] = { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
+    const prev = geom[note.id];
+    const width = keepSize && prev && Number.isFinite(prev.width) ? prev.width : Math.round(r.width);
+    const height = keepSize && prev && Number.isFinite(prev.height) ? prev.height : Math.round(r.height);
+    geom[note.id] = { left: Math.round(r.left), top: Math.round(r.top), width, height };
     persistGeom([note.id]);
   }
   // 展開アニメ：格納タブの位置から目標矩形へなめらかに伸ばす（FLIP）。
@@ -656,7 +662,10 @@
     for (const wrap of layer.querySelectorAll(".note:not(.creator)")) {
       const note = notes.find((n) => n.id === wrap.dataset.id);
       if (!note) continue;
-      if (expanded.has(note.id)) continue; // 展開ボックスは絶対座標のまま（追従しない）。画面外補正は展開時に行う。
+      // 展開ボックスは「表示だけ」ビューポート内へクランプ追従（保存値は変えない＝commitGeom しない）。
+      // これで窓を縮めても操作系（ツールバー・リサイズハンドル）が画面外に出て触れなくなるのを防ぐ
+      // （Codex#659）。getExpandedRect は保存済みの原寸法を読むので、窓を戻せば原サイズへ復元する。
+      if (expanded.has(note.id)) { applyFreeRect(wrap, getExpandedRect(note)); continue; }
       place(wrap, note.posRatio, collapsedDim());
     }
     const creator = layer.querySelector(".creator");
@@ -691,7 +700,7 @@
       getRatio: () => note.posRatio,
       setRatio: (r) => { note.posRatio = r; },
       commit: () => { note.updatedAt = Date.now(); upsertNotePersist(note); },
-      commitGeom: () => commitGeom(note), // 展開時の自由移動を確定（spine ドラッグ）
+      commitGeom: () => commitGeom(note, true), // 展開時の自由移動を確定（spine ドラッグ・サイズは維持）
       onTap: () => toggle(note.id),
     });
     wrap.append(spine);
@@ -1052,7 +1061,7 @@
         wrap.classList.remove("dragging");
         interacting = false;
         try { handle.releasePointerCapture(ev.pointerId); } catch {}
-        if (moved) commitGeom(note);
+        if (moved) commitGeom(note, true); // 上端バーの移動＝位置のみ更新（保存サイズは維持）
       };
       handle.addEventListener("pointermove", move);
       handle.addEventListener("pointerup", up);
@@ -1296,9 +1305,10 @@
       const notesExternal = changes[KEY_NOTES] && now - notesWriteAt >= 500;
       const settingsExternal = changes[KEY_SETTINGS] && now - settingsWriteAt >= 500;
       // 別タブが書いた geom を取り込み、stale な in-memory geom で次回 persist 時に巻き戻さないようにする。
-      // 表示中の箱には再適用しない（ウィンドウ縮小の自動追従はしない方針＝次回展開/操作時に反映）。
+      // withWrite で直列化＝自タブの in-flight な persistGeom（commitGeom 由来）の後に読み直すことで、
+      // 確定直後・set 着地前の窓で loadGeom が geom を巻き戻して書き込みを失う lost-update を防ぐ（敵対レビュー指摘）。
       if (changes[KEY_GEOM] && now - geomWriteAt >= 500 && !interacting) {
-        try { await loadGeom(); } catch {}
+        try { await withWrite(loadGeom); } catch {}
       }
       if (!notesExternal && !settingsExternal) return;
       // textarea にフォーカスして入力中のときだけ全面再描画を見送る（入力・フォーカス・IME 保護）。
