@@ -13,7 +13,8 @@ export const SIDES = ["right", "left", "top", "bottom"];
 //   paper: 本体の地色 / deep: 折れ角・背・濃い縁 / ink: 文字色
 export const COLORS = [
   // 各色は彩度を 50% に落とした淡色（明度は維持＝可読性そのまま）。content.js の COLORS と必ず一致させること。
-  { id: "yellow", label: "きいろ",  paper: "#DED19B", deep: "#C8B375", ink: "#4D442D" },
+  { id: "yellow", label: "きいろ",  paper: "#F0E6BC", deep: "#C8B375", ink: "#4D442D" }, // paper は他色と明度を揃え白っぽく（彩度半減だと黄だけ暗く黒ずんで見えたため）
+
   { id: "coral",  label: "コーラル", paper: "#E8C9B9", deep: "#D4A993", ink: "#5B4134" },
   { id: "pink",   label: "ピンク",   paper: "#EDC8D2", deep: "#DCA8B7", ink: "#5D3B46" },
   { id: "purple", label: "むらさき", paper: "#D4CAE3", deep: "#B6A5CD", ink: "#49405F" },
