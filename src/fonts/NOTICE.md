@@ -20,6 +20,7 @@
 | `Yomogi-Regular.woff2` | Yomogi（よもぎ） | 手書き風 | Google Fonts |
 | `KleeOne-Regular.woff2` | Klee One | 手書き風（ペン字） | Google Fonts |
 | `HachiMaruPop-Regular.woff2` | Hachi Maru Pop（はちまるポップ） | 手書き風（まる文字） | Google Fonts |
+| `YuseiMagic-Regular.woff2` | Yusei Magic（遊星マジック） | 手書き風（ポップ） | Google Fonts |
 
 ゴシック系・手書き風は Google Fonts（`ofl/`）由来、コーディング系（UDEV Gothic / PlemolJP / Moralerspace）は
 [ReplaceFontSelect](https://github.com/) で配布されている OFL-1.1 版を流用しています。

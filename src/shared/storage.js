@@ -52,6 +52,7 @@ export const FONTS = [
   { id: "yomogi",       label: "Yomogi（手書き）",                file: "Yomogi-Regular.woff2" },
   { id: "klee",         label: "Klee One（ペン字・手書き）",      file: "KleeOne-Regular.woff2" },
   { id: "hachimaru",    label: "はちまるポップ（まる文字・手書き）", file: "HachiMaruPop-Regular.woff2" },
+  { id: "yusei",        label: "Yusei Magic（ポップ手書き）",      file: "YuseiMagic-Regular.woff2" }, // 付箋デスクのタイトル書体
 ];
 export const DEFAULT_FONT = "system";
 
