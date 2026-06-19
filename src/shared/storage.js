@@ -12,18 +12,18 @@ export const SIDES = ["right", "left", "top", "bottom"];
 // 付箋カラーパレット（デフォルトは yellow）。
 //   paper: 本体の地色 / deep: 折れ角・背・濃い縁 / ink: 文字色
 export const COLORS = [
-  // content.js の COLORS と値も含め一致させること（content は import 不可で手動複製）。
-  { id: "yellow", label: "きいろ",  paper: "#FFE57A", deep: "#F2C84B", ink: "#5C4A1E" },
-  { id: "coral",  label: "コーラル", paper: "#FFC2A1", deep: "#F59E72", ink: "#6E3A20" },
-  { id: "pink",   label: "ピンク",   paper: "#FFB6C9", deep: "#F58FAC", ink: "#6E2A40" },
-  { id: "purple", label: "むらさき", paper: "#D2BDF0", deep: "#B392E0", ink: "#43306E" },
-  { id: "blue",   label: "そら",     paper: "#A9D6F5", deep: "#79B9ED", ink: "#1F4A6E" },
-  { id: "mint",   label: "みんと",   paper: "#A6E6D5", deep: "#73D0BB", ink: "#1C5247" },
-  { id: "green",  label: "わかば",   paper: "#BEE89B", deep: "#95D16C", ink: "#33501F" },
+  // 各色は彩度を 50% に落とした淡色（明度は維持＝可読性そのまま）。content.js の COLORS と必ず一致させること。
+  { id: "yellow", label: "きいろ",  paper: "#DED19B", deep: "#C8B375", ink: "#4D442D" },
+  { id: "coral",  label: "コーラル", paper: "#E8C9B9", deep: "#D4A993", ink: "#5B4134" },
+  { id: "pink",   label: "ピンク",   paper: "#EDC8D2", deep: "#DCA8B7", ink: "#5D3B46" },
+  { id: "purple", label: "むらさき", paper: "#D4CAE3", deep: "#B6A5CD", ink: "#49405F" },
+  { id: "blue",   label: "そら",     paper: "#BCD3E2", deep: "#96B6D0", ink: "#33485A" },
+  { id: "mint",   label: "みんと",   paper: "#B6D6CE", deep: "#8AB9AE", ink: "#29453F" },
+  { id: "green",  label: "わかば",   paper: "#C0D5AE", deep: "#9AB885", ink: "#35442B" },
   // 無彩色。sync は色を id 文字列で持つ（並び順非依存）。content.js にも同じ COLORS があるが
   // content script は import 不可のため手動複製＝両者で id 集合を一致させること（未知 id は黄にフォールバック）。
-  { id: "white",  label: "しろ",     paper: "#FBFAF6", deep: "#D2CABA", ink: "#4A463C" }, // 生成りの白：白ページにも溶けず、ink=暗で文字
-  { id: "black",  label: "くろ",     paper: "#2C2B2E", deep: "#6A6770", ink: "#F3F0E8" }, // ソフトな墨：deep=持ち上げ灰で帯が映え、ink=明で文字反転
+  { id: "white",  label: "しろ",     paper: "#FAF9F7", deep: "#CCC8C0", ink: "#474540" }, // 生成りの白：白ページにも溶けず、ink=暗で文字
+  { id: "black",  label: "くろ",     paper: "#2C2C2D", deep: "#6B696E", ink: "#F0EFEB" }, // ソフトな墨：deep=持ち上げ灰で帯が映え、ink=明で文字反転
 ];
 
 export const DEFAULT_COLOR = "yellow";
