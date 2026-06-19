@@ -240,7 +240,7 @@ body {
 .memo.selected { box-shadow: 0 0 0 3px var(--accent-warm), var(--shadow-lift); transform: rotate(0deg) scale(1.015); }
 
 .memo-text {
-  flex: 1; font-family: var(--peta-note-font, inherit);
+  flex: 1; font-family: var(--peta-font, inherit);
   font-size: 14px; font-weight: 700; line-height: 1.55; word-break: normal; overflow-wrap: anywhere;
   white-space: pre-wrap; outline: 0; border-radius: 6px; min-height: 1.55em;
   margin: 2px 0 8px;
@@ -393,7 +393,8 @@ body {
 /* hidden 属性を効かせる: 作者の display 指定が UA の [hidden]{display:none} を上書きするため、
    属性セレクタで明示的に打ち消す（これが無いと閉じる/段階表示が効かない）。 */
 .syncpanel[hidden],
-.sp-body[hidden] { display: none !important; }
+.sp-body[hidden],
+.memomodal[hidden] { display: none !important; }
 
 .syncpanel {
   position: fixed; inset: 0; z-index: 20;
@@ -546,7 +547,7 @@ body {
 /* プレビュー面（選択フォントで Markdown 整形）。 */
 .mm-preview {
   color: var(--nci);
-  font-family: var(--peta-note-font, inherit);
+  font-family: var(--peta-font, inherit);
   font-size: var(--peta-size, 11px); line-height: 1.7;
   word-break: normal; overflow-wrap: anywhere; padding: 2px;
 }
