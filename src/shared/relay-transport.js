@@ -12,6 +12,11 @@ import { keyHash, encryptItem, decryptItem, signRequest } from "./vault.js";
 
 const ENC = new TextEncoder();
 
+// 新規 vault 作成（generateVault）時に使う既定リレー。dev は workers.dev、本番は Custom Domain
+// (relay.petarin.nephilim.jp 等)へ寄せて差し替える。各 vault は pairing.url に自分のリレーを持つので、
+// 既存ペアリングはこの定数に依存しない（これは「新規作成時の初期値」だけ）。
+export const DEFAULT_RELAY_URL = "https://petarin-relay.1llum1n4t1.workers.dev";
+
 export function createRelayTransport(vault) {
   let lastSeq = 0;
 

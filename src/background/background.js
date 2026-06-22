@@ -65,6 +65,15 @@ async function loadVault() {
   return _vault;
 }
 
+// cloud モードだが未ペアリングのときに使う「使用不可」transport。chrome へフォールバックすると
+// 「cloud を選んだのに chrome.storage.sync へ送る」誤動作になるため、hasSync()=false で reconcile を空振りさせる。
+const UNAVAILABLE_TRANSPORT = {
+  isAvailable: () => false,
+  getAll: async () => ({}),
+  set: async () => {},
+  remove: async () => {},
+};
+
 // 現在のモード/vault に応じて transport を差し替え、WS・keepalive alarm を起こす/畳む。
 async function applyTransport() {
   if (isCloudActive()) {
@@ -75,9 +84,13 @@ async function applyTransport() {
       connectRelaySocket();
       return;
     }
-    // cloud 指定だが未ペアリング → 何も送れないので chrome 既定へフォールバック（reconcile は hasSync で空振り）。
+    // cloud 指定だが未ペアリング → chrome へ漏らさず同期を止める（ペアリングするまで何もしない）。
+    setSyncTransport(UNAVAILABLE_TRANSPORT);
+    closeRelaySocket();
+    chrome.alarms.clear(KEEPALIVE_ALARM);
+    return;
   }
-  setSyncTransport(null); // chrome.storage.sync 既定へ戻す
+  setSyncTransport(null); // off / chrome → chrome.storage.sync 既定へ戻す
   closeRelaySocket();
   chrome.alarms.clear(KEEPALIVE_ALARM);
 }

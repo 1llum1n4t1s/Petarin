@@ -21,8 +21,13 @@ import {
   fontFamilyCss,
   relTime,
   hashHue,
+  getVaultPairing,
+  saveVaultPairing,
+  clearVaultPairing,
 } from "../shared/storage.js";
 import { isValidDomain } from "../shared/sync.js";
+import { DEFAULT_RELAY_URL } from "../shared/relay-transport.js";
+import { generateVault, importVault, exportPairingCode, parsePairingCode } from "../shared/vault.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -1099,8 +1104,13 @@ async function importNotes(e) {
 // ── 複数PC同期パネル（既定OFF）────────────────────────────────────
 // 同期ロジック本体は background（reconcile）に一元化。ここは設定の読み書きと、
 // 容量レポートの描画だけを担う。reconcile はメッセージで依頼する。
-let syncCfg = { syncEnabled: false, syncSettings: false, syncScope: "selected", syncDomains: [] };
+let syncCfg = { syncEnabled: false, syncMode: "chrome", syncSettings: false, syncScope: "selected", syncDomains: [] };
 let reportTimer = 0;
+
+// 排他3モード: off / chrome（ブラウザ標準同期）/ cloud（リレー）。syncEnabled + syncMode の二段で表現。
+function curMode() {
+  return !syncCfg.syncEnabled ? "off" : (syncCfg.syncMode === "cloud" ? "cloud" : "chrome");
+}
 
 function setupSync() {
   const panel = $("#syncPanel");
@@ -1109,15 +1119,9 @@ function setupSync() {
   panel.addEventListener("click", (e) => { if (e.target === panel) closeSyncPanel(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !panel.hidden) closeSyncPanel(); });
 
-  $("#syncEnabled").addEventListener("change", async (e) => {
-    await saveSyncCfg({ syncEnabled: e.target.checked });
-    if (!e.target.checked) {
-      // OFF: この端末が出した投影を撤去（プライバシー配慮・任意）
-      try { await chrome.runtime.sendMessage({ type: "petarin:purgeSync" }); } catch {}
-    }
-    renderSyncPanel();
-    if (e.target.checked) refreshSyncReport();
-  });
+  for (const r of document.querySelectorAll('input[name="syncMode3"]')) {
+    r.addEventListener("change", (e) => onModeChange(e.target.value));
+  }
   $("#syncSettings").addEventListener("change", async (e) => {
     await saveSyncCfg({ syncSettings: e.target.checked });
     refreshSyncReport();
@@ -1129,13 +1133,43 @@ function setupSync() {
       refreshSyncReport();
     });
   }
+
+  // クラウド同期のペアリング操作
+  $("#pairCreate").addEventListener("click", onPairCreate);
+  $("#pairJoinToggle").addEventListener("click", () => {
+    const box = $("#pairJoinBox");
+    box.hidden = !box.hidden;
+    if (!box.hidden) $("#pairInput").focus();
+  });
+  $("#pairJoin").addEventListener("click", onPairJoin);
+  $("#pairReveal").addEventListener("click", onPairReveal);
+  $("#pairCopy").addEventListener("click", onPairCopy);
+  $("#pairUnlink").addEventListener("click", onPairUnlink);
+}
+
+async function onModeChange(mode) {
+  if (mode === "off") {
+    await saveSyncCfg({ syncEnabled: false });
+    // この端末が出した sync 投影（shadow）を撤去（プライバシー配慮・再接続時の誤判定防止）。
+    try { await chrome.runtime.sendMessage({ type: "petarin:purgeSync" }); } catch {}
+  } else if (mode === "chrome") {
+    await saveSyncCfg({ syncEnabled: true, syncMode: "chrome" });
+  } else if (mode === "cloud") {
+    await saveSyncCfg({ syncEnabled: true, syncMode: "cloud" });
+  }
+  renderSyncPanel();
+  await renderPairing();
+  if (mode === "chrome") refreshSyncReport();
+  else if (mode === "cloud" && (await isPaired())) refreshSyncReport();
 }
 
 async function openSyncPanel() {
   syncCfg = await loadSyncCfg();
   renderSyncPanel();
+  await renderPairing();
   $("#syncPanel").hidden = false;
-  if (syncCfg.syncEnabled) refreshSyncReport();
+  const mode = curMode();
+  if (mode === "chrome" || (mode === "cloud" && (await isPaired()))) refreshSyncReport();
 }
 function closeSyncPanel() { $("#syncPanel").hidden = true; }
 
@@ -1143,6 +1177,7 @@ async function loadSyncCfg() {
   const s = await getSettings();
   return {
     syncEnabled: !!s.syncEnabled,
+    syncMode: s.syncMode === "cloud" ? "cloud" : "chrome",
     syncSettings: !!s.syncSettings,
     syncScope: s.syncScope || "selected",
     syncDomains: Array.isArray(s.syncDomains) ? s.syncDomains : [],
@@ -1154,12 +1189,115 @@ async function saveSyncCfg(partial) {
 }
 
 function renderSyncPanel() {
-  $("#syncEnabled").checked = syncCfg.syncEnabled;
+  const mode = curMode();
+  for (const r of document.querySelectorAll('input[name="syncMode3"]')) r.checked = (r.value === mode);
   $("#syncBtn").classList.toggle("on", syncCfg.syncEnabled);
-  $("#syncBody").hidden = !syncCfg.syncEnabled;
+  $("#consentChrome").hidden = mode !== "chrome";
+  $("#consentCloud").hidden = mode !== "cloud";
+  $("#cloudPair").hidden = mode !== "cloud";
+  $("#syncBody").hidden = mode === "off";
+  $("#syncGauge").hidden = mode !== "chrome"; // 100KB ゲージは容量上限のある chrome 標準同期のみ
   $("#syncSettings").checked = syncCfg.syncSettings;
   for (const r of document.querySelectorAll('input[name="syncScope"]')) r.checked = (r.value === syncCfg.syncScope);
   renderSyncDomains(null);
+}
+
+// ── クラウド同期ペアリング（鍵束は storage の local 専用キーに保存・never sync）─────────
+async function isPaired() { return !!(await getVaultPairing()); }
+function shortId(id) { return String(id || "").slice(0, 6) + "…"; }
+function setPairNote(msg, warn) {
+  const n = $("#pairNote");
+  n.textContent = msg || "";
+  n.classList.toggle("warn", !!warn);
+}
+
+async function renderPairing() {
+  if (curMode() !== "cloud") return;
+  const pairing = await getVaultPairing();
+  const paired = !!pairing;
+  $("#pairSetup").hidden = paired;
+  $("#pairLinked").hidden = !paired;
+  $("#pairStatus").textContent = paired
+    ? `接続済み: グループ ${shortId(pairing.id)}`
+    : "まだどのグループにも接続していません。";
+  $("#pairStatus").classList.toggle("linked", paired);
+  if (paired) {
+    $("#pairCodeBox").hidden = true; // 引き継ぎコードは「表示」操作のときだけ出す
+  } else {
+    $("#pairJoinBox").hidden = true;
+    $("#pairInput").value = "";
+  }
+  setPairNote("");
+}
+
+async function onPairCreate() {
+  setPairNote("作成中…");
+  try {
+    const vault = await generateVault(DEFAULT_RELAY_URL);
+    await saveVaultPairing(vault.pairing);
+    await renderPairing();
+    // 作成直後に引き継ぎコードを出す（他端末をこのグループへ招くため）。
+    $("#pairCode").value = exportPairingCode(vault);
+    $("#pairCodeBox").hidden = false;
+    setPairNote("同期グループを作成しました。下のコードを他の端末で読み込むと同じグループに入れます。");
+    refreshSyncReport();
+  } catch (e) {
+    setPairNote("作成に失敗しました: " + (e && e.message), true);
+  }
+}
+
+async function onPairJoin() {
+  const code = $("#pairInput").value.trim();
+  if (!code) { setPairNote("コードを貼り付けてください。", true); return; }
+  setPairNote("参加中…");
+  try {
+    const pairing = parsePairingCode(code);
+    await importVault(pairing); // 形式・鍵を検証（不正なら throw）
+    await saveVaultPairing(pairing);
+    await renderPairing();
+    setPairNote("グループに参加しました。他の端末の付箋が順次同期されます。");
+    refreshSyncReport();
+  } catch {
+    setPairNote("参加に失敗しました。コードが正しいか確認してください。", true);
+  }
+}
+
+async function onPairReveal() {
+  const pairing = await getVaultPairing();
+  if (!pairing) return;
+  const box = $("#pairCodeBox");
+  if (box.hidden) {
+    try {
+      const vault = await importVault(pairing);
+      $("#pairCode").value = exportPairingCode(vault);
+      box.hidden = false;
+    } catch {
+      setPairNote("コードの表示に失敗しました。", true);
+    }
+  } else {
+    box.hidden = true;
+  }
+}
+
+async function onPairCopy() {
+  const ta = $("#pairCode");
+  try {
+    await navigator.clipboard.writeText(ta.value);
+    setPairNote("コードをコピーしました。");
+  } catch {
+    ta.select();
+    try { document.execCommand("copy"); } catch { /* noop */ }
+    setPairNote("コードを選択しました。Ctrl+C でコピーしてください。");
+  }
+}
+
+async function onPairUnlink() {
+  if (!confirm("この端末のクラウド同期接続を解除します。\nこの端末の付箋は残りますが、以降このグループとは同期しません。よろしいですか？")) return;
+  await clearVaultPairing();
+  // この端末の sync 投影（shadow）も撤去し、再接続時に誤った削除/復活が起きないようにする。
+  try { await chrome.runtime.sendMessage({ type: "petarin:purgeSync" }); } catch {}
+  await renderPairing();
+  setPairNote("接続を解除しました。");
 }
 
 // 同期サイト一覧（scope=selected はチェックボックス、all は読み取り専用）。
