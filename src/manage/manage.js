@@ -533,7 +533,7 @@ function openEditor(domain, note) {
       ? Math.min(FONT_SIZES[FONT_SIZES.length - 1], Math.max(FONT_SIZES[0], fs))
       : DEFAULT_FONT_SIZE;
   box.style.setProperty("--peta-size", size + "px");
-  $("#mmEditor").classList.toggle("with-gutter", !!(appSettings && appSettings.lineNumbers));
+  $("#mmEditor").classList.toggle("with-gutter", !!appSettings?.lineNumbers);
   $("#mmTa").value = note.text || "";
   $("#mmIcon").textContent = note.icon || "🙂";
   renderPalette();
@@ -593,7 +593,7 @@ function updateMMCharcount() {
 function updateMMGutter() {
   const g = $("#mmGutter");
   const ta = $("#mmTa");
-  if (!(appSettings && appSettings.lineNumbers)) { g.textContent = ""; return; }
+  if (!appSettings?.lineNumbers) { g.textContent = ""; return; }
   const lines = ta.value.split("\n").length;
   let s = "1";
   for (let i = 2; i <= lines; i++) s += "\n" + i;
@@ -687,7 +687,7 @@ function toggleEmojiPicker() {
   picker.style.left = left + "px";
   picker.style.top = top + "px";
   const onDown = (e) => {
-    const path = e.composedPath ? e.composedPath() : [];
+    const path = e.composedPath?.() ?? [];
     if (path.includes(picker) || path.includes(btn)) return;
     closeEmojiPicker();
   };

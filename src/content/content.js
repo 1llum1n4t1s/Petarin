@@ -126,7 +126,7 @@
   const colorOf = (id) => COLORS.find((c) => c.id === id) || COLORS[0];
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const isVertical = () => settings.side === "right" || settings.side === "left";
-  const esc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s);
+  const esc = (s) => (window.CSS?.escape ? CSS.escape(s) : s);
   const noteEl = (id) => layer.querySelector(`.note[data-id="${esc(id)}"]`);
   const noteText = (note) => (typeof note.text === "string" ? note.text : "");
   const isEmpty = (note) => !noteText(note).trim();
@@ -887,7 +887,7 @@
     picker.style.top = `${top}px`;
     // 外側クリック / Esc で閉じる（Esc は付箋格納より先に拾って止める）
     const onDown = (e) => {
-      const path = e.composedPath ? e.composedPath() : [];
+      const path = e.composedPath?.() ?? [];
       if (path.includes(picker) || path.includes(btn)) return;
       closeIconPicker();
     };
@@ -1032,7 +1032,7 @@
     handle.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       // リサイズハンドル上から始まったら移動は担当しない（リサイズ優先）。
-      if (e.target.closest && e.target.closest(".rz")) return;
+      if (e.target.closest?.(".rz")) return;
       exp = o.id !== "__creator__" && expanded.has(o.id);
       dragging = true; moved = false;
       if (exp) {
@@ -1088,7 +1088,7 @@
   function attachExpandedMove(handle, wrap, note) {
     handle.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 || !expanded.has(note.id)) return;
-      if (e.target.closest && e.target.closest("button, .rz")) return;
+      if (e.target.closest?.("button, .rz")) return;
       e.preventDefault();
       const r = currentRect(wrap);
       const sx = e.clientX, sy = e.clientY;
@@ -1242,7 +1242,7 @@
     expanded.clear();
     editingId = null;
     const active = root.activeElement;
-    if (active && active.blur) active.blur();
+    active?.blur?.();
     const removedIds = [];
     for (const id of ids) {
       const note = notes.find((n) => n.id === id);

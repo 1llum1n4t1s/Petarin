@@ -15,7 +15,7 @@ import { reconcile, purgeSyncProjection, wasJustPushed, SYNC_KEYS } from "../sha
 let _enabledCache = null;
 chrome.storage.local.get(STORAGE_KEYS.settings).then((r) => {
   const s = r[STORAGE_KEYS.settings];
-  if (s && typeof s.syncEnabled === "boolean") _enabledCache = s.syncEnabled;
+  if (typeof s?.syncEnabled === "boolean") _enabledCache = s.syncEnabled;
 }).catch(() => {});
 
 chrome.runtime.onInstalled.addListener(async () => {
