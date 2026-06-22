@@ -5,6 +5,11 @@ import {
   deleteNotes,
   updateNote,
   restoreNotes,
+  getTrash,
+  restoreFromTrash,
+  purgeFromTrash,
+  emptyTrash,
+  TRASH_KEY,
   getSettings,
   saveSettings,
   COLORS,
@@ -77,6 +82,8 @@ function applyNoteFont() {
 const SEP = "\u001f"; // \u001f = Unit Separator (domain<->id delimiter; never appears in either)
 
 let allNotes = {};
+let trashItems = [];            // ゴミ箱エントリ（getTrash() の結果・[{domain, note, deletedAt, origin}]）
+let trashView = false;          // true = ボードにゴミ箱を表示中
 let currentDomain = "";
 let query = "";
 let activeDomain = null;        // null = すべて
@@ -101,7 +108,7 @@ const keyOf = (domain, id) => `${domain}${SEP}${id}`;
 
 // ── 起動 ──────────────────────────────────────────────────────────
 async function init() {
-  [allNotes, currentDomain, appSettings] = await Promise.all([getAllNotes(), getCurrentDomain(), getSettings()]);
+  [allNotes, currentDomain, appSettings, trashItems] = await Promise.all([getAllNotes(), getCurrentDomain(), getSettings(), getTrash()]);
   document.body.style.setProperty("--peta-edit-font", EDIT_FONT); // 編集面は UDEV 固定
 
   $("#search").addEventListener("input", (e) => {
@@ -113,10 +120,11 @@ async function init() {
     sortKey = e.target.value;
     renderBoard();
   });
-  $("#backAll").addEventListener("click", () => { activeDomain = null; render(); });
+  $("#backAll").addEventListener("click", () => { activeDomain = null; trashView = false; render(); });
   $("#selectAll").addEventListener("click", toggleSelectAllVisible);
   $("#clearSel").addEventListener("click", () => { selection.clear(); render(); });
   $("#bulkDelete").addEventListener("click", bulkDelete);
+  $("#emptyTrash").addEventListener("click", emptyTrashAll);
   $("#openDomain").addEventListener("click", () => {
     if (activeDomain) chrome.tabs.create({ url: `https://${activeDomain}/` });
   });
@@ -124,6 +132,12 @@ async function init() {
   chrome.storage.onChanged.addListener(async (changes, area) => {
     if (area !== "local") return;
     if (changes["petarin:settings"]) { appSettings = await getSettings(); applyNoteFont(); } // 書体変更をプレビューへ反映
+    // ゴミ箱の変化（自分の削除/復元・同期 pull）を反映。索引のバッジ件数も変わるので index も更新。
+    if (changes[TRASH_KEY]) {
+      trashItems = await getTrash();
+      renderIndex();
+      if (trashView && !editingKey) renderBoard();
+    }
     if (!changes["petarin:notes"]) return;
     allNotes = await getAllNotes(); // データは常に最新へ同期
     // プレビュー中（編集していない）にモーダルで開いている付箋が外部更新されたら、モーダルへライブ反映する。
@@ -208,6 +222,17 @@ function visibleItems() {
   return sortItems(items);
 }
 
+// 表示するゴミ箱エントリ。notes に現存する (domain,id) は隠す（他端末で復元済み等のゾンビを見せない＝
+// 「追加だけ同期」で除去を伝播しない割り切りを UX 側で吸収する）。deletedAt 降順で新しい削除を上に。
+function visibleTrash() {
+  const present = new Set();
+  for (const [domain, arr] of Object.entries(allNotes)) for (const n of arr) present.add(keyOf(domain, n.id));
+  return trashItems
+    .filter((e) => e && e.note && typeof e.note.id === "string" && !present.has(keyOf(e.domain, e.note.id)))
+    .filter((e) => matchesQuery(e.domain, e.note))
+    .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+}
+
 function sortItems(items) {
   const t = (x) => x.note.updatedAt || x.note.createdAt || 0;
   const ci = (x) => {
@@ -257,7 +282,39 @@ function renderIndex() {
     frag.append(sec);
     for (const g of groups) frag.append(buildIndexRow(g));
   }
+
+  // ゴミ箱（常に末尾に出す。0 件でも入口として見せる）
+  const trashCount = visibleTrash().length;
+  const sec2 = document.createElement("div");
+  sec2.className = "idx-section";
+  sec2.textContent = "ゴミ箱";
+  frag.append(sec2, buildTrashIndexRow(trashCount));
+
   index.replaceChildren(frag);
+}
+
+function buildTrashIndexRow(count) {
+  const row = document.createElement("button");
+  row.className = "idx-row" + (trashView ? " active" : "");
+  row.type = "button";
+  const favi = document.createElement("div");
+  favi.className = "idx-favi trash";
+  favi.textContent = "🗑";
+  const body = document.createElement("div");
+  body.className = "idx-body";
+  const name = document.createElement("div");
+  name.className = "idx-name";
+  name.textContent = "ゴミ箱";
+  const sub = document.createElement("div");
+  sub.className = "idx-sub";
+  sub.textContent = "消した付箋から復元できる";
+  body.append(name, sub);
+  const cnt = document.createElement("span");
+  cnt.className = "idx-count";
+  cnt.textContent = String(count);
+  row.append(favi, body, cnt);
+  row.addEventListener("click", () => { trashView = true; activeDomain = null; renderIndex(); renderBoard(); });
+  return row;
 }
 
 function buildIndexRow(g) {
@@ -282,9 +339,9 @@ function buildIndexRow(g) {
     sub.className = "idx-sub";
     sub.textContent = "全サイトをまとめて見る";
     body.append(name, sub);
-    row.classList.toggle("active", activeDomain === null);
+    row.classList.toggle("active", activeDomain === null && !trashView);
     row.append(favi, body, count);
-    row.addEventListener("click", () => { activeDomain = null; renderIndex(); renderBoard(); });
+    row.addEventListener("click", () => { activeDomain = null; trashView = false; renderIndex(); renderBoard(); });
     return row;
   }
 
@@ -295,7 +352,7 @@ function buildIndexRow(g) {
   name.textContent = label;
   name.title = g.domain;
   body.append(name);
-  row.classList.toggle("active", activeDomain === g.domain);
+  row.classList.toggle("active", activeDomain === g.domain && !trashView);
 
   if (g.domain === currentDomain) {
     const here = document.createElement("span");
@@ -305,7 +362,7 @@ function buildIndexRow(g) {
   } else {
     row.append(favi, body, count);
   }
-  row.addEventListener("click", () => { activeDomain = g.domain; renderIndex(); renderBoard(); });
+  row.addEventListener("click", () => { activeDomain = g.domain; trashView = false; renderIndex(); renderBoard(); });
   return row;
 }
 
@@ -337,9 +394,11 @@ function refreshCardLive(card, note, key) {
 }
 
 function renderBoard() {
+  if (trashView) { renderTrashBoard(); return; }
   const items = visibleItems();
   const notes = $("#notes");
   const empty = $("#empty");
+  $("#emptyTrash").hidden = true;
 
   // スコープ見出し
   const favi = $("#scopeFavi");
@@ -423,6 +482,125 @@ function renderBulkBar() {
   const bar = $("#bulkbar");
   bar.hidden = selection.size === 0;
   $("#selCount").textContent = String(selection.size);
+}
+
+// ── ゴミ箱ビュー ──────────────────────────────────────────────────
+function renderTrashBoard() {
+  const notes = $("#notes");
+  const empty = $("#empty");
+  const list = visibleTrash();
+
+  // 見出し
+  const favi = $("#scopeFavi");
+  favi.textContent = "🗑";
+  favi.style.background = "";
+  $("#scopeTitle").textContent = "ゴミ箱";
+  $("#scopeTitle").removeAttribute("title");
+  $("#scopeMeta").textContent = `${list.length} 件${query ? "（検索中）" : ""}`;
+
+  // ボタン群（ゴミ箱では選択・サイトを開くは使わない。戻る・空にするを出す）
+  $("#backAll").hidden = false;
+  $("#selectAll").hidden = true;
+  $("#openDomain").hidden = true;
+  $("#emptyTrash").hidden = list.length === 0;
+  $("#bulkbar").hidden = true;
+
+  if (!list.length) {
+    notes.replaceChildren();
+    empty.hidden = false;
+    if (query) {
+      $("#emptyTitle").textContent = "見つからなかったわ";
+      $("#emptySub").textContent = `「${query}」に合う付箋はゴミ箱に無いみたい。`;
+    } else {
+      $("#emptyTitle").textContent = "ゴミ箱は空っぽ";
+      $("#emptySub").textContent = "付箋を消すと、ここでしばらく預かるよ（全体で最新100件まで）。";
+    }
+    return;
+  }
+  empty.hidden = true;
+  notes.replaceChildren(...list.map(buildTrashCard));
+
+  if (!introDone) {
+    introDone = true;
+    notes.classList.add("intro");
+    setTimeout(() => notes.classList.remove("intro"), 800);
+  }
+}
+
+function buildTrashCard(entry) {
+  const { domain, note, deletedAt } = entry;
+  const c = colorOf(note.color);
+  const card = document.createElement("article");
+  card.className = "memo trash-card" + (note.text?.trim() ? "" : " untitled");
+  card.style.setProperty("--ncp", c.paper);
+  card.style.setProperty("--ncd", c.deep);
+  card.style.setProperty("--nci", c.ink);
+
+  // 本文プレビュー（クリックでは復元しない＝誤操作防止。操作は下のボタンのみ）
+  const text = document.createElement("div");
+  text.className = "memo-text";
+  if (note.text?.trim()) renderMarkdownInto(text, note.text);
+  else { text.textContent = "（空の付箋）"; text.classList.add("memo-empty"); }
+  card.append(text);
+
+  // フッター（アイコン・元サイト・削除時刻）
+  const foot = document.createElement("div");
+  foot.className = "memo-foot";
+  if (note.icon) {
+    const ic = document.createElement("span");
+    ic.className = "memo-icon";
+    ic.textContent = note.icon;
+    foot.append(ic);
+  }
+  const dom = document.createElement("span");
+  dom.className = "memo-domain";
+  dom.textContent = domain.replace(/^www\./, "");
+  dom.title = domain;
+  foot.append(dom);
+  const when = document.createElement("span");
+  when.className = "memo-date";
+  when.textContent = `${relTime(deletedAt, true)}に削除`;
+  foot.append(when);
+  card.append(foot);
+
+  // 操作（復元 / 完全削除）
+  const acts = document.createElement("div");
+  acts.className = "trash-acts";
+  const restore = document.createElement("button");
+  restore.className = "ghost";
+  restore.textContent = "↩ 復元";
+  restore.title = "この付箋を元のサイトに戻す";
+  restore.addEventListener("click", () => restoreOne(entry));
+  const purge = document.createElement("button");
+  purge.className = "danger";
+  purge.textContent = "完全に削除";
+  purge.title = "ゴミ箱から完全に削除する（戻せません）";
+  purge.addEventListener("click", () => purgeOne(entry));
+  acts.append(restore, purge);
+  card.append(acts);
+  return card;
+}
+
+async function restoreOne(entry) {
+  await restoreFromTrash([{ domain: entry.domain, note: entry.note }]);
+  [allNotes, trashItems] = await Promise.all([getAllNotes(), getTrash()]);
+  renderIndex(); renderBoard();
+  showToast("付箋を元に戻したよ");
+}
+
+async function purgeOne(entry) {
+  await purgeFromTrash([{ domain: entry.domain, id: entry.note.id }]);
+  trashItems = await getTrash();
+  renderIndex(); renderBoard();
+  showToast("ゴミ箱から完全に削除したよ");
+}
+
+async function emptyTrashAll() {
+  if (!visibleTrash().length) return;
+  await emptyTrash();
+  trashItems = await getTrash();
+  renderIndex(); renderBoard();
+  showToast("ゴミ箱を空にしたよ");
 }
 
 // ── 付箋カード ────────────────────────────────────────────────────

@@ -26,9 +26,17 @@
                   { id: "b2", text: "", color: "pink", icon: "🌸", posRatio: 0.8, createdAt: now - 200000e3, updatedAt: now - 200000e3 },
                 ],
               },
+              // ゴミ箱（local 集約リスト・追加だけ同期）。プレビュー確認用のシード。
+              "petarin:trash": [
+                { domain: "reddit.com", note: { id: "t1", text: "## 消した買い物メモ\n\n- 牛乳\n- 卵\n- ~~パン~~", color: "mint", icon: "🍎", posRatio: 0.4, createdAt: now - 500000e3, updatedAt: now - 400000e3 }, deletedAt: now - 120e3, origin: "user" },
+                { domain: "github.com", note: { id: "t2", text: "古い TODO（同期競合で消えた）", color: "blue", icon: "🐱", posRatio: 0.5, createdAt: now - 900000e3, updatedAt: now - 800000e3 }, deletedAt: now - 3 * 86400e3, origin: "sync" },
+                { domain: "news.example.org", note: { id: "t3", text: "あとで読む記事のリンク https://example.com", color: "yellow", icon: "📰", posRatio: 0.6, createdAt: now - 1000000e3, updatedAt: now - 1000000e3 }, deletedAt: now - 20 * 86400e3, origin: "user" },
+              ],
             },
-            async get(key) { const ks = typeof key === "string" ? [key] : key; const o = {}; for (const k of ks) if (k in this._d) o[k] = this._d[k]; return o; },
-            async set(obj) { Object.assign(this._d, obj); for (const f of this._l) f(Object.fromEntries(Object.keys(obj).map((k) => [k, { newValue: obj[k] }])), "local"); },
+            // 実 chrome.storage と同様に get は値のコピーを返す（参照を返すと呼び出し側の改変が
+            // ストアを直接汚し、_writeNotes の verify-before-set 楽観リトライが誤作動する）。
+            async get(key) { const ks = typeof key === "string" ? [key] : key; const o = {}; for (const k of ks) if (k in this._d) o[k] = structuredClone(this._d[k]); return o; },
+            async set(obj) { Object.assign(this._d, structuredClone(obj)); for (const f of this._l) f(Object.fromEntries(Object.keys(obj).map((k) => [k, { newValue: structuredClone(obj[k]) }])), "local"); },
             _l: [],
           },
           sync: { async get() { return {}; }, async set() {}, async remove() {} },
@@ -70,6 +78,7 @@
             <button class="ghost" id="backAll" type="button" hidden>← すべて</button>
             <button class="ghost" id="selectAll" type="button">ぜんぶ選択</button>
             <button class="ghost" id="openDomain" type="button" hidden>↗ このサイトを開く</button>
+            <button class="ghost danger" id="emptyTrash" type="button" hidden>🗑 ゴミ箱を空にする</button>
           </div>
         </div>
         <div class="bulkbar" id="bulkbar" hidden>

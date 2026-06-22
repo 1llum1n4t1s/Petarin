@@ -151,6 +151,8 @@ body {
   font-family: "Zen Maru Gothic", sans-serif; box-shadow: 0 2px 5px -2px rgba(74,56,30,0.5);
 }
 .idx-favi.all { background: linear-gradient(150deg, var(--kraft), var(--kraft-deep)); }
+/* ゴミ箱の索引アイコンは絵文字を地色なしで（🗑 をそのまま）。 */
+.idx-favi.trash { background: rgba(107,88,71,0.12); box-shadow: none; font-size: 16px; }
 .idx-body { flex: 1; min-width: 0; }
 .idx-name { font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .idx-sub { font-size: 10.5px; color: var(--ink-soft); margin-top: 1px; }
@@ -243,6 +245,22 @@ body {
   transform: rotate(0deg) translateY(-3px) scale(1.015); box-shadow: var(--shadow-lift); z-index: 2;
 }
 .memo.selected { box-shadow: 0 0 0 3px var(--accent-warm), var(--shadow-lift); transform: rotate(0deg) scale(1.015); }
+
+/* ゴミ箱カード：通常カードを流用しつつ少し色を抜き、下端に復元/完全削除ボタンを並べる。 */
+.memo.trash-card { filter: saturate(0.82); }
+.memo.trash-card:hover { filter: none; }
+.trash-acts { display: flex; gap: 8px; margin-top: 10px; }
+.trash-acts button {
+  flex: 1; border-radius: 8px; padding: 6px 8px; font-size: 12px; font-weight: 700; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--nci) 28%, transparent); background: rgba(255,255,255,0.55);
+  color: var(--nci); transition: transform 0.14s ease, filter 0.14s ease, background 0.14s ease;
+}
+.trash-acts button:hover { transform: translateY(-1px); }
+.trash-acts .ghost:hover { background: #fff; }
+.trash-acts .danger {
+  background: var(--danger); color: #fff; border-color: transparent;
+}
+.trash-acts .danger:hover { filter: brightness(1.06); }
 
 .memo-text {
   flex: 1; font-family: var(--peta-font, inherit);
