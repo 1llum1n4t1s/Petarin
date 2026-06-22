@@ -240,25 +240,8 @@ export function getAllNotes() {
   return _getAllRaw();
 }
 
-export async function getNotes(domain) {
-  const all = await _getAllRaw();
-  return all[domain] || [];
-}
-
 // 以降の更新系はすべて withLock 内で「読み→ delta 算出→最新へ delta 適用して書き」で完結させる
 // （書き込みは _writeNotes が note 単位 delta を最新スナップショットへ当てる＝同/他ドメインの pull を巻き戻さない）。
-export function saveNotes(domain, notes) {
-  return withLock(async () => {
-    const all = await _getAllRaw();
-    const keep = new Set((notes || []).map((n) => n.id));
-    // 配列置換で「以前あって今回無い」付箋は削除＝実削除時刻を記録する（clearDomain も saveNotes 経由）。
-    const removed = (all[domain] || []).filter((n) => !keep.has(n.id)).map((n) => ({ domain, id: n.id }));
-    const upserts = (notes || []).map((note) => ({ domain, note }));
-    // upsert で新しい配列を反映し removed を消す。並行 pull された別 id の付箋は delete 対象でないので温存される。
-    await _writeNotes(upserts, removed, removed);
-  });
-}
-
 export function deleteNote(domain, id) {
   return withLock(async () => {
     const all = await _getAllRaw();
@@ -290,11 +273,6 @@ export function deleteNotes(pairs) {
     }
     await _writeNotes([], removed, removed);
   });
-}
-
-// 1 ドメインの付箋を全部消す（locked な saveNotes を 1 回呼ぶだけ＝ネスト無し）
-export function clearDomain(domain) {
-  return saveNotes(domain, []);
 }
 
 // 削除した付箋を元の位置へ戻す（pairs: [{domain, note}]）。重複は除外し、書き込みは 1 回。
