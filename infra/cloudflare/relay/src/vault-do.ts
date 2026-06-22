@@ -40,6 +40,8 @@ export class VaultDO {
     if (url.pathname === "/push" && req.method === "PUT") return this.handlePush(bodyBytes);
     if (url.pathname === "/pull" && req.method === "GET") return this.handlePull(url);
     if (url.pathname === "/catchup" && req.method === "GET") return this.handleCatchup(url);
+    if (url.pathname === "/dump" && req.method === "GET") return this.handleDump();
+    if (url.pathname === "/item" && req.method === "DELETE") return this.handleDelete(url);
     return new Response("Not found", { status: 404 });
   }
 
@@ -171,6 +173,41 @@ export class VaultDO {
       .all<{ d: string; seq: number }>();
     const max = results.length ? results[results.length - 1].seq : since;
     return Response.json({ changes: results, seq: max });
+  }
+
+  // 全 item を 1 回で返す(客側 RelayTransport.getAll = chrome.storage.sync.get(null) 相当)。
+  async handleDump(): Promise<Response> {
+    const vid = this.state.id.toString();
+    const { results } = await this.env.DB.prepare(
+      `SELECT domain_hash AS d, ciphertext AS c, nonce AS n, seq FROM notes WHERE vault_id = ?1`
+    )
+      .bind(vid)
+      .all<{ d: string; c: string; n: string; seq: number }>();
+    const seq = (await this.state.storage.get<number>("seq")) || 0;
+    return Response.json({ items: results, seq });
+  }
+
+  // item 削除(remove)。行を消し seq を進め、他端末へ変更ピンを broadcast。削除の伝播自体は
+  // エンジンの墓石(meta item の更新)が担うが、即時通知のため ping は出す。
+  async handleDelete(url: URL): Promise<Response> {
+    const d = url.searchParams.get("d");
+    if (!d) return new Response("Missing d", { status: 400 });
+    const vid = this.state.id.toString();
+    await this.env.DB.prepare(`DELETE FROM notes WHERE vault_id = ?1 AND domain_hash = ?2`).bind(vid, d).run();
+    let seq = (await this.state.storage.get<number>("seq")) || 0;
+    seq += 1;
+    await this.state.storage.put("seq", seq);
+    const msg = JSON.stringify({ t: "changed", d, seq });
+    for (const ws of this.state.getWebSockets()) {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(msg);
+        } catch {
+          /* 片側切断は無視 */
+        }
+      }
+    }
+    return Response.json({ seq });
   }
 
   // クライアントの keepalive のみ想定。'ping'→'pong'。配信はサーバー→クライアント方向なので他は無視。
