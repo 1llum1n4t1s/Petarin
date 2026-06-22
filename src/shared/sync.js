@@ -22,6 +22,8 @@ import {
   FONTS,
   getSettings,
   LOCAL_TOMBS_KEY,
+  TRASH_KEY,
+  mergeTrash,
 } from "./storage.js";
 
 // ── 端末判定 & sync の上限（2026 時点 Chrome / Firefox 共通: 100KB / 8KB-item / 512items）──
@@ -49,6 +51,7 @@ export const SYNC_KEYS = {
   settings: "petarin:sync:settings", // { s:{...見た目設定}, t:更新時刻 }
   meta: "petarin:sync:meta",         // { v, tomb:{ "domain<SEP>id": deletedAt } }
   notePrefix: "petarin:sync:n:",     // + domainHash → { d, n:[タプル...] } か { d, z:"base64gz" }
+  trash: "petarin:sync:trash",       // ゴミ箱（追加だけ同期）。{ n:[タプル...] } か { z:"base64gz" }
 };
 // shadow（前回合意状態）は local 限定（sync しない）
 const LOCAL_SHADOW = "petarin:sync:shadow";  // { notes:{[domain]:Note[]}, settings, settingsT }
@@ -217,6 +220,48 @@ export async function decodeDomainItem(item) {
   // ローカルを消し墓石まで書く。throw して readSync に corrupt 隔離させる（触らない＝データ保護。Codex 指摘）。
   // 正規 item は encodeDomainItem が必ず n:[配列] か z:string を入れるので、ここに来るのは破損のみ。
   throw new Error("malformed domain payload");
+}
+
+// ── ゴミ箱 item の符号化（単一集約・追加だけ同期）─────────────────────
+// TrashEntry → タプル [domain, deletedAt, originFlag(0=user/1=sync), 付箋タプル(compactNote)]。
+export function compactTrashEntry(e) {
+  return [e.domain, e.deletedAt || 0, e.origin === "sync" ? 1 : 0, compactNote(e.note)];
+}
+export function expandTrashEntry(t) {
+  if (!Array.isArray(t)) return null;
+  const domain = t[0];
+  if (!isValidDomain(domain)) return null; // 信頼境界の外＝不正ドメインは取り込まない（domain item と同じ防御）
+  const note = expandNote(t[3]);
+  if (!note) return null;
+  const deletedAt = typeof t[1] === "number" && Number.isFinite(t[1]) ? t[1] : 0;
+  return { domain, note, deletedAt, origin: t[2] === 1 ? "sync" : "user" };
+}
+// ゴミ箱 item を作る。{ n:[タプル...] } と { z:"base64gz" } の小さい方。
+export async function encodeTrashItem(entries) {
+  const compact = entries.map(compactTrashEntry);
+  const rawItem = { n: compact };
+  if (hasCompression()) {
+    try {
+      const gz = await gzipString(JSON.stringify(compact));
+      const zItem = { z: bytesToB64(gz) };
+      if (bytesOf({ [SYNC_KEYS.trash]: zItem }) < bytesOf({ [SYNC_KEYS.trash]: rawItem })) return zItem;
+    } catch { /* CompressionStream 不在/失敗 → 生で格納 */ }
+  }
+  return rawItem;
+}
+// ゴミ箱 item を TrashEntry[] へ復号。ゴミ箱は和集合（union-only）でローカルを消さないため、破損は
+// throw せず []（＝今回 remote から取り込まない）で安全に握る（domain item の corrupt 隔離より緩くてよい）。
+export async function decodeTrashItem(item) {
+  try {
+    if (!item || typeof item !== "object") return [];
+    let arr = null;
+    if (typeof item.z === "string") arr = JSON.parse(await gunzipToString(b64ToBytes(item.z)));
+    else if (Array.isArray(item.n)) arr = item.n;
+    if (!Array.isArray(arr)) return [];
+    return arr.map(expandTrashEntry).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -424,6 +469,12 @@ async function getShadow() {
   const raw = await chrome.storage.local.get(LOCAL_SHADOW);
   return raw[LOCAL_SHADOW] || { notes: {}, settings: null, settingsT: 0 };
 }
+// ゴミ箱（local 専用の集約リスト）。storage.js / content.js の削除経路が書く。reconcile は和集合で
+// remote と突き合わせ、ローカルへ書き戻す（追加だけ＝除去は伝播しない）。
+async function getLocalTrash() {
+  const raw = await chrome.storage.local.get(TRASH_KEY);
+  return Array.isArray(raw[TRASH_KEY]) ? raw[TRASH_KEY] : [];
+}
 // sync 全体を読み、扱いやすい形へ。
 //  byDomain    : 復号した Note[]（マージ入力）
 //  rawByDomain : 格納されている生 item（書き込み要否の比較を符号化形同士で行うため）
@@ -462,8 +513,8 @@ async function readSync() {
   // 二重計上すると上限近傍で誤って item_limit/quota_exceeded になり、上書きで収まる書き込みを skip する（Codex）。
   const orphanKeyBytes = new Map();
   for (const [k, v] of Object.entries(all)) {
-    // meta / settings は別途読んで会計するのでここでは飛ばす。
-    if (k === SYNC_KEYS.meta || k === SYNC_KEYS.settings) continue;
+    // meta / settings / trash は別途読んで会計するのでここでは飛ばす。
+    if (k === SYNC_KEYS.meta || k === SYNC_KEYS.settings || k === SYNC_KEYS.trash) continue;
     // 健全な note item だけ取り込む（不正・危険なドメイン名は弾く A1-001／キーが d の正規ハッシュ
     // でないものは別キーに置かれた stale/改竄＝canonical として取り込むと正規キーへ二重書き＆元キー残置で
     // 会計漏れ→write_failed になるので orphan 扱いにする。Codex 指摘）。
@@ -494,9 +545,19 @@ async function readSync() {
     settingsItem && settingsItem.s && typeof settingsItem.s === "object" && !Array.isArray(settingsItem.s)
       ? settingsItem.s
       : null;
+  // ゴミ箱 item（追加だけ同期）。会計は他 item と同じく「キーが在るか」＝生サイズで数える。
+  // 復号失敗は decodeTrashItem が [] を返す（union-only でローカルを消さないので空扱いで安全）。
+  const trashExists = SYNC_KEYS.trash in all;
+  const trashRaw = trashExists ? all[SYNC_KEYS.trash] : null;
+  const rawTrashBytes = trashExists ? bytesOf({ [SYNC_KEYS.trash]: trashRaw }) : 0;
+  const trashRemote = trashExists ? await decodeTrashItem(trashRaw) : [];
   return {
     settings: settingsS,
     settingsT: settingsItem ? settingsItem.t || 0 : 0,
+    trashRemote,    // 復号済みの remote ゴミ箱エントリ（和集合マージの入力）
+    trashRaw,       // 生 item（再 push 要否を符号化形同士で比較するため）
+    trashExists,    // cloud に trash item が在るか（会計）
+    rawTrashBytes,  // その実バイト（会計）
     // 生の settings item（破損で settingsS=null に sanitize しても cloud には残り占有するので、会計は
     // sanitize 後ではなく実在で数える。Codex#1）。falsy 値（false/0/""）も占有するので存在フラグで会計する。
     rawSettings: settingsItem,
@@ -594,11 +655,12 @@ async function _reconcile(opts) {
     syncSettings: !!settings.syncSettings,
   };
 
-  const [localNotes, shadow, sync, localTombs] = await Promise.all([
+  const [localNotes, shadow, sync, localTombs, localTrash] = await Promise.all([
     getLocalNotes(),
     getShadow(),
     readSync(),
     getLocalTombs(),
+    getLocalTrash(),
   ]);
   const tomb = sync.meta.tomb || {};
   // corrupt（復号失敗）ドメインは scope から外し、local/sync とも一切いじらない（データ保護）。
@@ -616,12 +678,22 @@ async function _reconcile(opts) {
   // （metaDeferred 時に「墓石を永続化できなかったドメイン」だけ shadow を据え置くため。監査 R2b）。
   const tombKeysBefore = new Set(Object.keys(tomb));
   const mergedByDomain = {};
+  // 同期競合で local から消える付箋（merged に id が残らない＝消失）をゴミ箱へ退避する候補。
+  // local スナップショット基準で集め、書き戻し時に !mergeStale を確認してから採用する（誤退避防止）。
+  const evictedEntries = [];
   for (const domain of domains) {
     const base = (shadow.notes && shadow.notes[domain]) || [];
     const local = localNotes[domain] || [];
     const remote = sync.byDomain[domain] || [];
-    mergedByDomain[domain] = mergeDomainNotes(base, local, remote, domain, tomb, now, localTombs[domain]);
+    const merged = mergeDomainNotes(base, local, remote, domain, tomb, now, localTombs[domain]);
+    mergedByDomain[domain] = merged;
+    const mergedIds = new Set(merged.map((n) => n.id));
+    for (const n of local) if (n && n.id && !mergedIds.has(n.id)) {
+      evictedEntries.push({ domain, note: n, deletedAt: now, origin: "sync" });
+    }
   }
+  // ゴミ箱の和集合マージ（local ＋ 今回の消失退避 ＋ remote）。push/会計/local 書き戻しで使う。
+  const nextTrash = mergeTrash(mergeTrash(localTrash, evictedEntries), sync.trashRemote);
   // 今回新規に立った墓石。実削除時刻(localTombs 由来)が TTL より古くても「初確立」なので、同回の
   // gcTombstones で即消されないよう除外する。即消すと墓石が cloud meta に永続化されず、shadow 無し端末の
   // rejoin でゾンビ復活しうる（>180日オフライン後に削除を初観測する稀ケース。監査 I4）。
@@ -712,6 +784,37 @@ async function _reconcile(opts) {
   const metaItems = sync.metaExists || willWriteMeta ? 1 : 0;
   let itemCount = metaItems + settingsItems + sync.orphanCount;
   for (const d of Object.keys(sync.rawByDomain)) if (!domainSet.has(d)) itemCount += 1;
+
+  // ── ゴミ箱 item（追加だけ同期）を notes ループ前に予約する ──
+  // cloud item は per-item 予算(8KB)に収める＝収まらなければ末尾(最古)から間引く（local は全件保持）。
+  // スコープ: selected は選択ドメインのゴミ箱だけ送る（インフォームドコンセント）／all は全件。
+  let forCloudTrash = nextTrash;
+  if (cfg.syncScope === "selected") {
+    const sel = new Set(cfg.syncDomains || []);
+    forCloudTrash = nextTrash.filter((e) => sel.has(e.domain));
+  }
+  let trashItem = forCloudTrash.length ? await encodeTrashItem(forCloudTrash) : null;
+  while (trashItem && forCloudTrash.length > 1 && bytesOf({ [SYNC_KEYS.trash]: trashItem }) > perItemBudget) {
+    forCloudTrash = forCloudTrash.slice(0, -1); // 末尾＝最古から落として 8KB に収める
+    trashItem = await encodeTrashItem(forCloudTrash);
+  }
+  // 1 件でも per-item 予算を超えるなら今回は書けない（極端な巨大付箋）。据え置く＝既存 cloud item を温存。
+  if (trashItem && bytesOf({ [SYNC_KEYS.trash]: trashItem }) > perItemBudget) trashItem = null;
+  let willWriteTrash = false;
+  if (trashItem && JSON.stringify(trashItem) !== JSON.stringify(sync.trashRaw)) {
+    const tb = bytesOf({ [SYNC_KEYS.trash]: trashItem });
+    const net = tb - (sync.trashExists ? sync.rawTrashBytes : 0);
+    const slot = sync.trashExists ? 0 : 1; // 既存 trash item を上書きするなら item 純増 0
+    if (used + net <= totalBudget && itemCount + slot <= SYNC_LIMITS.MAX_ITEMS) {
+      willWriteTrash = true;
+      used += net;
+      itemCount += slot;
+      setOps[SYNC_KEYS.trash] = trashItem;
+    }
+  }
+  // 今回 trash を書かないが既存 cloud item が在るなら、その占有を会計に積む（cloud に残るので二重計上しない）。
+  if (!willWriteTrash && sync.trashExists) { used += sync.rawTrashBytes; itemCount += 1; }
+
   const ordered = domains
     .map((d) => ({ d, latest: Math.max(0, ...((mergedByDomain[d] || []).map(tsOf))) }))
     .sort((a, b) => b.latest - a.latest);
@@ -839,6 +942,7 @@ async function _reconcile(opts) {
   // corrupt（復号失敗）ドメインも未同期としてUIに見せる
   for (const d of sync.corrupt) report.domains.push({ domain: d, count: 0, synced: false, reason: "decode_error" });
   report.usedBytes = used;
+  report.trash = { count: nextTrash.length, synced: willWriteTrash }; // ゴミ箱の件数と今回 cloud へ送ったか
 
   // meta を setOps に載せる（収まる かつ 変化ありの willWriteMeta 時のみ。metaDeferred 時は据え置き＝
   // 下で shadow も前進させない）。変化検出は「読み取り時のスナップショット metaBefore」と行う（tomb は
@@ -881,15 +985,26 @@ async function _reconcile(opts) {
   const localWrites = [];
   if (mergeStale) {
     _dirty = true; // 割り込み書き込みあり → 陳腐な merge を当てず、最新値で再マージ
-  } else if (localChanged) {
-    // 楽観的並行制御（#1）: petarin:notes は単一キーなので RMW が衝突しうる。書き込み直前に
-    // もう一度読み、freshLocal から変化していたら（別コンテキスト＝content.js 等が割り込んで
-    // 書いた）自分の書き込みは見送り、再 reconcile に委ねる。これで verify→set 間の極小区間も守る。
-    const verify = await getLocalNotes();
-    if (JSON.stringify(verify) !== JSON.stringify(freshLocal)) {
-      _dirty = true; // 終了後にもう一巡（最新値で取り直して当て直す）
-    } else {
-      localWrites.push(chrome.storage.local.set({ [STORAGE_KEYS.notes]: nextLocal }));
+  } else {
+    // ゴミ箱（pull＋消失退避）を書き込み直前の最新ローカルへ重ねる。和集合ゆえ順不同・冪等で、notes の
+    // mergeStale とは独立に正しい（除去は伝播しない＝追加だけ）。notes と同一 set で原子的に書く
+    // （消失退避＝notes から消す と ゴミ箱へ入れる を不可分にして取りこぼしを防ぐ）。
+    const freshTrash = await getLocalTrash();
+    const writeTrash = mergeTrash(mergeTrash(freshTrash, evictedEntries), sync.trashRemote);
+    const trashChanged = JSON.stringify(writeTrash) !== JSON.stringify(freshTrash);
+    if (localChanged || trashChanged) {
+      // 楽観的並行制御（#1）: 単一キー RMW の衝突を避けるため書き込み直前に notes/trash を再読し、
+      // freshLocal/freshTrash から変化していたら（content.js 等の割り込み）見送って再 reconcile に委ねる。
+      const verifyN = await getLocalNotes();
+      const verifyT = await getLocalTrash();
+      if (JSON.stringify(verifyN) !== JSON.stringify(freshLocal) || JSON.stringify(verifyT) !== JSON.stringify(freshTrash)) {
+        _dirty = true; // 終了後にもう一巡（最新値で取り直して当て直す）
+      } else {
+        const obj = {};
+        if (localChanged) obj[STORAGE_KEYS.notes] = nextLocal;
+        if (trashChanged) obj[TRASH_KEY] = writeTrash;
+        localWrites.push(chrome.storage.local.set(obj));
+      }
     }
   }
   if (settingsForLocal) {
@@ -960,7 +1075,12 @@ async function _reconcile(opts) {
     const row = report.domains.find((r) => r.domain === d);
     if (row && row.synced) { row.synced = false; row.reason = "scope_changed"; }
   }
-  if (scopeNarrowed) _dirty = true; // 新 config で再 reconcile（凍結・再 push 判断をやり直す）
+  if (scopeNarrowed) {
+    // スコープが in-flight で狭まった → ゴミ箱 item も今回は送らない（now-out-of-scope ドメインの削除済み
+    // 本文を external に送らない）。次回 reconcile が新スコープで forCloudTrash を組み直して push する。
+    if (setOps[SYNC_KEYS.trash] !== undefined) delete setOps[SYNC_KEYS.trash];
+    _dirty = true; // 新 config で再 reconcile（凍結・再 push 判断をやり直す）
+  }
   const hasSet = Object.keys(setOps).length > 0;
   let pushOk = true;
   try {

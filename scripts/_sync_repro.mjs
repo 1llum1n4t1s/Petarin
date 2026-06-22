@@ -64,6 +64,7 @@ const KEY_NOTES = "petarin:notes";
 const KEY_SETTINGS = "petarin:settings";
 const KEY_DEVICE = "petarin:sync:device";
 const KEY_LOCAL_TOMBS = LOCAL_TOMBS_KEY; // storage.js の契約定数を参照（単一の源）
+const KEY_TRASH = "petarin:trash"; // ゴミ箱（local 集約リスト・追加だけ同期）
 
 function seedDevice(dev, { notes = {}, settings = {} } = {}) {
   dev.localStore[KEY_DEVICE] = dev.deviceId;
@@ -1928,9 +1929,149 @@ async function scenarioS65() {
   ok(res3.changedLocal === false && res3.changedRemote === false, "全員既定なら移行で churn しない", JSON.stringify({ cl: res3.changedLocal, cr: res3.changedRemote }));
 }
 
+// ════════════════════════════════════════════════════════════════
+// S66（ゴミ箱）: mergeTrash 単体。和集合＋(domain,id) で dedupe（deletedAt 新しい方）＋ deletedAt 降順＋
+//   全体 TRASH_MAX 件キャップ（最古から押し出す）。同期 OFF でも使う「追加だけ」マージの核。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS66() {
+  console.log("S66（ゴミ箱）mergeTrash 単体（和集合・(domain,id) dedupe・deletedAt LWW・100件キャップ）:");
+  const { mergeTrash, TRASH_MAX } = await import("../src/shared/storage.js?dev=trash1");
+  const e = (domain, id, at, origin = "user") => ({ domain, note: note(id, "x", at), deletedAt: at, origin });
+  const u = mergeTrash([e("a.com", "X", 100)], [e("b.com", "Y", 200)]);
+  ok(u.length === 2 && u[0].note.id === "Y", "和集合＋deletedAt 降順（新しい順）", JSON.stringify(u.map((x) => x.note.id)));
+  const d = mergeTrash([e("a.com", "X", 100)], [e("a.com", "X", 300)]);
+  ok(d.length === 1 && d[0].deletedAt === 300, "(domain,id) 重複は deletedAt 新しい方を採用", JSON.stringify(d.map((x) => x.deletedAt)));
+  const dd = mergeTrash([e("a.com", "X", 100)], [e("b.com", "X", 200)]);
+  ok(dd.length === 2, "同 id でもドメインが違えば別エントリ", String(dd.length));
+  const many = [];
+  for (let i = 0; i < 150; i++) many.push(e("a.com", "n" + i, 1000 + i));
+  const capped = mergeTrash(many, []);
+  ok(capped.length === TRASH_MAX, "全体 TRASH_MAX(100) 件にキャップ", String(capped.length));
+  ok(capped[0].deletedAt === 1149 && capped.every((x) => x.deletedAt >= 1050), "新しい順で残り最古から押し出す", `min=${Math.min(...capped.map((x) => x.deletedAt))}`);
+  // 不正エントリ（note/domain 欠落）は無視する。
+  const clean = mergeTrash([null, { domain: "a.com" }, { note: note("Z", "z", 1) }, e("a.com", "OK", 5)], []);
+  ok(clean.length === 1 && clean[0].note.id === "OK", "不正エントリ（note/domain 欠落）は捨てる", JSON.stringify(clean.map((x) => x.note.id)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S67（ゴミ箱）: ある端末の削除がゴミ箱として同期され、他端末では notes から消えつつ（墓石伝播）
+//   ゴミ箱に出る（同期 pull ＋ 消失退避）。ゴミ箱は cloud item として publish される。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS67() {
+  console.log("S67（ゴミ箱）削除がゴミ箱として同期され、他端末で notes から消えつつゴミ箱に出る:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const B = makeDevice(sync, "dev-B");
+  const modA = await loadSync();
+  const modB = await loadSync();
+  const t0 = 67_000_000;
+  seedDevice(A, { notes: { "ex.com": [note("X", "本文", t0)] } });
+  seedDevice(B, { notes: { "ex.com": [note("X", "本文", t0)] } });
+  await reconcileAs(A, modA, { now: t0 });
+  await reconcileAs(B, modB, { now: t0 }); // 両者合意
+  // t1: A が X を削除（storage.js が書く形＝notes から除去＋localTombs＋ゴミ箱）
+  const t1 = t0 + DAY;
+  A.localStore[KEY_NOTES] = {};
+  A.localStore[KEY_LOCAL_TOMBS] = { "ex.com": { X: t1 } };
+  A.localStore[KEY_TRASH] = [{ domain: "ex.com", note: note("X", "本文", t0), deletedAt: t1, origin: "user" }];
+  await reconcileAs(A, modA, { now: t1 });
+  ok(!!sync[modA.SYNC_KEYS.trash], "cloud に trash item が publish される", JSON.stringify(Object.keys(sync)));
+  // t2: B が pull
+  const t2 = t1 + 1000;
+  await reconcileAs(B, modB, { now: t2 });
+  const bn = localNotes(B)["ex.com"] || [];
+  ok(!bn.some((n) => n.id === "X"), "B の notes から X が消える（墓石伝播）", JSON.stringify(bn.map((n) => n.id)));
+  const bt = B.localStore[KEY_TRASH] || [];
+  ok(bt.some((e) => e.domain === "ex.com" && e.note.id === "X"), "B のゴミ箱に X が入る（同期＋消失退避）", JSON.stringify(bt.map((e) => e.note.id)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S68（ゴミ箱）: ゴミ箱から復元すると notes に戻り（updatedAt=now）、同期削除の墓石に LWW 勝ちして
+//   reconcile しても再消失しない。復元したエントリはゴミ箱から除去される。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS68() {
+  console.log("S68（ゴミ箱）復元→notes 復活・墓石に LWW 勝ち・再消失しない・ゴミ箱から除去:");
+  const sync = {};
+  const B = makeDevice(sync, "dev-B");
+  const modB = await loadSync();
+  const t0 = 68_000_000, t1 = t0 + DAY;
+  sync[modB.SYNC_KEYS.meta] = { v: 1, tomb: { ["ex.com" + SEP + "X"]: t1 } }; // cloud は X 削除済み
+  seedDevice(B, { notes: {} });
+  B.localStore[KEY_LOCAL_TOMBS] = { "ex.com": { X: t1 } };
+  B.localStore[KEY_TRASH] = [{ domain: "ex.com", note: note("X", "本文", t0), deletedAt: t1, origin: "user" }];
+  const { restoreFromTrash } = await import("../src/shared/storage.js?dev=trash3");
+  globalThis.chrome = B.chrome;
+  await restoreFromTrash([{ domain: "ex.com", note: note("X", "本文", t0) }]);
+  ok((localNotes(B)["ex.com"] || []).some((n) => n.id === "X"), "復元で notes に X が戻る", JSON.stringify(localNotes(B)));
+  ok((B.localStore[KEY_TRASH] || []).length === 0, "復元したエントリはゴミ箱から除去される", JSON.stringify(B.localStore[KEY_TRASH]));
+  const t2 = t1 + 2 * DAY;
+  await reconcileAs(B, modB, { now: t2 });
+  ok((localNotes(B)["ex.com"] || []).some((n) => n.id === "X"), "復元後 reconcile しても X は墓石に勝って残る（updatedAt=now）", JSON.stringify(localNotes(B)["ex.com"]));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S69（ゴミ箱）: 同期 OFF（既定）ではゴミ箱を cloud に一切送らない（外部送信ゼロを維持）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS69() {
+  console.log("S69（ゴミ箱）同期 OFF ではゴミ箱を cloud に送らない（外部送信ゼロ）:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 69_000_000;
+  seedDevice(A, { notes: {}, settings: { syncEnabled: false } });
+  A.localStore[KEY_TRASH] = [{ domain: "ex.com", note: note("X", "本文", t0), deletedAt: t0, origin: "user" }];
+  const r = await reconcileAs(A, mod, { now: t0 });
+  ok(r.enabled === false, "OFF なら reconcile は即終了", JSON.stringify({ e: r.enabled }));
+  ok(Object.keys(sync).length === 0, "cloud には何も書かれない（trash も）", JSON.stringify(Object.keys(sync)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S70（ゴミ箱）: storage.deleteNote が削除した付箋の実体をゴミ箱へ退避し、削除していない付箋は触らない。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS70() {
+  console.log("S70（ゴミ箱）storage.deleteNote が削除した付箋をゴミ箱へ退避する（通常削除→ゴミ箱）:");
+  const { deleteNote } = await import("../src/shared/storage.js?dev=trash4");
+  const store = { [KEY_NOTES]: { "ex.com": [note("X", "本文", 1000), note("Y", "y", 1000)] } };
+  const area = makeArea(store, {}, "local");
+  globalThis.chrome = { storage: { local: { get: area.get, set: area.set, remove: area.remove } } };
+  await deleteNote("ex.com", "X");
+  const trash = store[KEY_TRASH] || [];
+  ok(trash.some((e) => e.domain === "ex.com" && e.note.id === "X" && e.note.text === "本文"), "削除した X の実体がゴミ箱に入る", JSON.stringify(trash.map((e) => e.note.id)));
+  ok(trash.every((e) => e.note.id !== "Y"), "削除していない Y はゴミ箱に入らない", JSON.stringify(trash.map((e) => e.note.id)));
+  ok((store[KEY_NOTES]["ex.com"] || []).some((n) => n.id === "Y"), "Y は notes に残る", "ok");
+}
+
+// ════════════════════════════════════════════════════════════════
+// S71（ゴミ箱）: cloud trash item が per-item 予算を超えるとき最古から間引いて収める（local は全件保持）。
+//   局所的な graceful degrade（notes の domain_too_large と同方針）。最新エントリ優先で残す。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS71() {
+  console.log("S71（ゴミ箱）cloud item が per-item 予算超なら最古から間引いて収める（local は全件保持・最新優先）:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 71_000_000;
+  const trash = [];
+  for (let i = 0; i < 20; i++) trash.push({ domain: "ex.com", note: note("n" + i, "ゴミ箱本文サンプル番号" + i + "-" + "あいうえお".repeat(4), t0 + i), deletedAt: t0 + i, origin: "user" });
+  seedDevice(A, { notes: {} });
+  A.localStore[KEY_TRASH] = trash;
+  // 全件を1 item にした実バイトの半分を予算にして truncation を誘発する。
+  const fullBytes = mod.bytesOf({ [mod.SYNC_KEYS.trash]: await mod.encodeTrashItem(trash) });
+  const budget = Math.floor(fullBytes * 0.5);
+  await reconcileAs(A, mod, { now: t0 + 100, perItemBudget: budget });
+  ok((A.localStore[KEY_TRASH] || []).length === 20, "local のゴミ箱は全件保持される", String((A.localStore[KEY_TRASH] || []).length));
+  const item = sync[mod.SYNC_KEYS.trash];
+  ok(item, "cloud に trash item がある（間引いて収めた）", JSON.stringify(Object.keys(sync)));
+  ok(mod.bytesOf({ [mod.SYNC_KEYS.trash]: item }) <= budget, "cloud trash item は per-item 予算内", `bytes=${mod.bytesOf({ [mod.SYNC_KEYS.trash]: item })} budget=${budget}`);
+  const cloud = await mod.decodeTrashItem(item);
+  const ids = cloud.map((e) => e.note.id);
+  ok(cloud.length > 0 && cloud.length < 20, "cloud は一部だけ（最新優先で残す）", String(cloud.length));
+  ok(ids.includes("n19") && !ids.includes("n0"), "最新 n19 は残り最古 n0 は落ちる", JSON.stringify(ids));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56, scenarioS57, scenarioS58, scenarioS59, scenarioS60, scenarioS61, scenarioS62, scenarioS63, scenarioS64, scenarioS65]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56, scenarioS57, scenarioS58, scenarioS59, scenarioS60, scenarioS61, scenarioS62, scenarioS63, scenarioS64, scenarioS65, scenarioS66, scenarioS67, scenarioS68, scenarioS69, scenarioS70, scenarioS71]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);
