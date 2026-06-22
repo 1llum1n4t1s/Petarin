@@ -171,12 +171,12 @@
   let pendingSync = false;
 
   // ── ストレージ ────────────────────────────────────────────────────
-  async function loadSettings() {
-    const raw = await chrome.storage.local.get(KEY_SETTINGS);
+  async function loadSettings(raw) {
+    raw = raw || (await chrome.storage.local.get(KEY_SETTINGS));
     settings = { ...DEFAULTS, ...(raw[KEY_SETTINGS] || {}) };
   }
-  async function loadNotes() {
-    const raw = await chrome.storage.local.get(KEY_NOTES);
+  async function loadNotes(raw) {
+    raw = raw || (await chrome.storage.local.get(KEY_NOTES));
     const list = (raw[KEY_NOTES] || {})[domain] || [];
     // 旧データ・不完全データでも描画が落ちないよう各フィールドを正規化
     notes = list
@@ -193,8 +193,8 @@
       }));
   }
   // 展開時ジオメトリ（このドメインぶん）を読む。不正値は捨てる。存在しない付箋ぶんは在庫掃除で間引く。
-  async function loadGeom() {
-    const raw = await chrome.storage.local.get(KEY_GEOM);
+  async function loadGeom(raw) {
+    raw = raw || (await chrome.storage.local.get(KEY_GEOM));
     const map = (raw[KEY_GEOM] || {})[domain] || {};
     geom = Object.create(null);
     const finite = (v) => typeof v === "number" && Number.isFinite(v);
@@ -462,9 +462,12 @@
 
   // ── 初期化 ────────────────────────────────────────────────────────
   async function init() {
-    await loadSettings();
-    await loadNotes();
-    await loadGeom();
+    // 設定／付箋／ジオメトリを 1 回の get でまとめて読む（初描画までの storage 往復を 3→1 に。
+    // 各 load は raw 未指定なら従来どおり自前 get するので onChanged 等の個別呼び出しは不変）。
+    const raw = await chrome.storage.local.get([KEY_SETTINGS, KEY_NOTES, KEY_GEOM]);
+    await loadSettings(raw);
+    await loadNotes(raw);
+    await loadGeom(raw);
     // 既に存在しない付箋ぶんのジオメトリ（他端末の同期削除等で孤児化）を storage から掃く。
     if (Object.keys(geom).some((id) => !notes.some((n) => n.id === id))) persistGeom();
 

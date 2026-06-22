@@ -244,7 +244,6 @@
       const ulm = RE_UL.exec(line);
       const olm = RE_OL.exec(line);
       if (ulm || olm) {
-        const ordered = !!olm && !ulm; // 同じ行が両方に当たることは無いが安全側で
         const listEl = document.createElement(olm ? "ol" : "ul");
         if (olm) {
           const start = parseInt(olm[1], 10);
@@ -259,7 +258,6 @@
           listEl.append(li);
           i++;
         }
-        void ordered;
         frag.append(listEl);
         continue;
       }
