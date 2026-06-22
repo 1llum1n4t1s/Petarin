@@ -59,7 +59,7 @@ body {
   border-bottom: 1px solid var(--line);
   box-shadow: 0 6px 18px -12px rgba(74, 56, 30, 0.5);
 }
-.brand { display: flex; align-items: center; gap: 13px; }
+.brand { display: flex; align-items: center; gap: 13px; min-width: 0; }
 .logo-mark {
   width: 46px; height: 46px; display: grid; place-items: center;
   background: var(--accent); border-radius: 12px 4px 12px 12px;
@@ -76,11 +76,16 @@ body {
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M5 3h10l6 6v12H5z'/%3E%3C/svg%3E") center/contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M5 3h10l6 6v12H5z'/%3E%3C/svg%3E") center/contain no-repeat;
 }
+.brand-text { min-width: 0; } /* 子(h1/p)を縮められるようにし、狭幅では縦書きでなく … で省略させる */
 .brand-text h1 {
   font-family: "Yusei Magic", "Zen Maru Gothic", sans-serif;
   font-size: 26px; font-weight: 400; line-height: 1; color: var(--kraft-deep); letter-spacing: 0.02em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; /* CJK の縦折り返しを止め、狭ければ … 省略 */
 }
-.brand-text p { font-size: 12px; color: var(--ink-soft); margin-top: 4px; }
+.brand-text p {
+  font-size: 12px; color: var(--ink-soft); margin-top: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 .stats { display: flex; gap: 10px; }
 .stamp {
@@ -376,10 +381,17 @@ body {
 }
 
 /* 狭い幅では索引を畳む */
+/* 中間幅: ツールが詰まる前に装飾(スタンプ/サブ見出し)を畳み検索を縮める＝タイトルと操作ボタンを守る */
+@media (max-width: 1080px) {
+  .stats { display: none; }
+  .brand-text p { display: none; }
+  .search { width: 185px; max-width: 30vw; }
+}
+/* 狭幅: 索引を畳んで一覧を全幅に。検索はさらに詰める */
 @media (max-width: 720px) {
   .workspace { grid-template-columns: 1fr; }
   .index { display: none; }
-  .stats { display: none; }
+  .search { width: 150px; max-width: 42vw; }
 }
 
 /* ── 同期ボタン & パネル ───────────────────────────────────────── */
