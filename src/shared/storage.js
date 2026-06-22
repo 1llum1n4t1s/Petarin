@@ -93,6 +93,7 @@ export const DEFAULT_SETTINGS = {
   // 勝手に有効化しない＝インフォームドコンセントを維持するため。
   // syncEnabled=false の間は sync API を一切呼ばず、現状と完全に同一の挙動。
   syncEnabled: false,         // 同期そのものの ON/OFF（既定 OFF＝外部送信ゼロを維持）
+  syncMode: "chrome",         // 同期 ON 時の経路（排他）: "chrome"（ブラウザ標準同期）| "cloud"（relay）。OFF は syncEnabled=false。transport 選択は background が syncMode で行い sync.js は不変
   syncSettings: false,        // 見た目設定（side/色味/表示）も同期するか
   syncScope: "selected",      // "selected"（選択ドメインのみ）| "all"（容量内で全部）
   syncDomains: [],            // syncScope==="selected" のとき同期するドメイン配列
@@ -109,6 +110,23 @@ export function colorOf(id) {
 export async function getSettings() {
   const raw = await chrome.storage.local.get(STORAGE_KEYS.settings);
   return { ...DEFAULT_SETTINGS, ...(raw[STORAGE_KEYS.settings] || {}) };
+}
+
+// ── クラウド同期 vault（端末ローカル専用・never sync）─────────────────
+// 同期グループの鍵束（pairing payload: vaultId/relayUrl/vaultKey/署名鍵 JWK）。秘密を含むため
+// chrome.storage.local にのみ保存し、chrome.storage.sync には一切出さない（鍵は端末から出さない）。
+// 別端末への引き継ぎは QR/コード（exportPairingCode）で行う。SYNCABLE_SETTINGS にも含めない。
+export const VAULT_KEY = "petarin:sync:vault";
+
+export async function getVaultPairing() {
+  const raw = await chrome.storage.local.get(VAULT_KEY);
+  return raw[VAULT_KEY] || null;
+}
+export async function saveVaultPairing(pairing) {
+  await chrome.storage.local.set({ [VAULT_KEY]: pairing });
+}
+export async function clearVaultPairing() {
+  await chrome.storage.local.remove(VAULT_KEY);
 }
 
 // ── 書き込みの直列化（read-modify-write の競合＝ロストアップデート防止）──
