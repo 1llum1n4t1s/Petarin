@@ -375,26 +375,33 @@ export function restoreFromTrash(pairs) {
   });
 }
 
+// ゴミ箱を keep フィルタで書き直す共通 RMW。set 直前に再読し、ベースが変わっていたら（background reconcile の
+// trash pull／消失退避の割り込み）最新へ filter を当て直す＝跨コンテキストの lost-update を閉じる（restoreFromTrash
+// と同じ verify-before-set。purge/empty は除去操作だが、reconcile が pull/退避した「追加」を黙って巻き戻さないため）。
+function _rewriteTrash(keep) {
+  return withLock(async () => {
+    const MAX = 4;
+    for (let attempt = 0; attempt < MAX; attempt++) {
+      const baseJSON = JSON.stringify((await chrome.storage.local.get(TRASH_KEY))[TRASH_KEY] || null);
+      const cur = JSON.parse(baseJSON) || [];
+      const next = (Array.isArray(cur) ? cur : []).filter(keep);
+      const verify = JSON.stringify((await chrome.storage.local.get(TRASH_KEY))[TRASH_KEY] || null);
+      if (verify !== baseJSON && attempt < MAX - 1) continue; // 割り込みあり → 最新で当て直す
+      await chrome.storage.local.set({ [TRASH_KEY]: next });
+      return;
+    }
+  });
+}
+
 // ゴミ箱から完全削除（pairs: [{domain, id}]）。notes は触らない。
 export function purgeFromTrash(pairs) {
-  return withLock(async () => {
-    const rmKeys = new Set(pairs.map(({ domain, id }) => domain + TRASH_SEP + id));
-    const raw = await chrome.storage.local.get(TRASH_KEY);
-    const trash = (Array.isArray(raw[TRASH_KEY]) ? raw[TRASH_KEY] : []).filter(
-      (e) => !(e && e.note && rmKeys.has(e.domain + TRASH_SEP + e.note.id))
-    );
-    await chrome.storage.local.set({ [TRASH_KEY]: trash });
-  });
+  const rmKeys = new Set(pairs.map(({ domain, id }) => domain + TRASH_SEP + id));
+  return _rewriteTrash((e) => !(e && e.note && rmKeys.has(e.domain + TRASH_SEP + e.note.id)));
 }
 
 // ゴミ箱を空にする（domain 指定でそのサイト分のみ、未指定で全部）。
 export function emptyTrash(domain) {
-  return withLock(async () => {
-    if (!domain) { await chrome.storage.local.set({ [TRASH_KEY]: [] }); return; }
-    const raw = await chrome.storage.local.get(TRASH_KEY);
-    const trash = (Array.isArray(raw[TRASH_KEY]) ? raw[TRASH_KEY] : []).filter((e) => e && e.domain !== domain);
-    await chrome.storage.local.set({ [TRASH_KEY]: trash });
-  });
+  return _rewriteTrash(domain ? (e) => e && e.domain !== domain : () => false);
 }
 
 // 軽量なユニーク ID（時刻 + 乱数）。

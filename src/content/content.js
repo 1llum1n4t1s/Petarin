@@ -285,7 +285,9 @@
       for (let attempt = 0; attempt < MAX; attempt++) {
         const raw = await chrome.storage.local.get([KEY_NOTES, KEY_LOCAL_TOMBS, KEY_TRASH]);
         const all = raw[KEY_NOTES] || {};
-        const baseJSON = JSON.stringify(all);
+        // notes だけでなく trash / localTombs の割り込み変化も検知する（reconcile の trash pull/消失退避を
+        // 巻き戻さない＝storage.js _writeNotes と同形の verify-before-set。監査・content↔storage 乖離の修正）。
+        const baseJSON = JSON.stringify({ n: all, t: raw[KEY_TRASH] || null, l: raw[KEY_LOCAL_TOMBS] || null });
         const before = all[domain] || [];
         const removedNotes = before.filter((n) => n && drop.has(n.id)); // ゴミ箱退避用に実体を控える
         const removed = removedNotes.map((n) => n.id);
@@ -312,8 +314,9 @@
           Array.isArray(raw[KEY_TRASH]) ? raw[KEY_TRASH] : [],
           removedNotes.map((n) => ({ domain, note: n, deletedAt: now, origin: "user" }))
         );
-        // set 直前に notes を再読。ベースが変わっていたら最新で当て直す（最終試行は強行＝削除を取りこぼさない）。
-        const cur = JSON.stringify((await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {});
+        // set 直前に notes/trash/localTombs を再読。ベースが変わっていたら最新で当て直す（最終試行は強行＝削除を取りこぼさない）。
+        const fresh = await chrome.storage.local.get([KEY_NOTES, KEY_LOCAL_TOMBS, KEY_TRASH]);
+        const cur = JSON.stringify({ n: fresh[KEY_NOTES] || {}, t: fresh[KEY_TRASH] || null, l: fresh[KEY_LOCAL_TOMBS] || null });
         if (cur !== baseJSON && attempt < MAX - 1) continue;
         notesWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
         await chrome.storage.local.set({ [KEY_NOTES]: all, [KEY_LOCAL_TOMBS]: log, [KEY_TRASH]: trash });

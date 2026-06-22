@@ -2069,9 +2069,89 @@ async function scenarioS71() {
   ok(ids.includes("n19") && !ids.includes("n0"), "最新 n19 は残り最古 n0 は落ちる", JSON.stringify(ids));
 }
 
+// ════════════════════════════════════════════════════════════════
+// S72（ゴミ箱・consent／監査 high）: all→selected の in-flight 切替で、非選択(trash-only・live note なし)
+//   ドメインの削除済み本文を cloud へ送らない。scopeNarrowed は live-note ドメインの増減でしか立たないため、
+//   trash は push 直前に freshScope で独立再検査する。load-bearing: 再検査が無いと secret.com の本文が漏れる。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS72() {
+  console.log("S72（ゴミ箱・consent）all→selected の in-flight 切替で非選択 trash-only ドメインの削除済み本文を送らない:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 72_000_000;
+  seedDevice(A, { notes: { "a.com": [note("a", "x", t0)] }, settings: { syncScope: "all", syncDomains: [] } });
+  A.localStore[KEY_TRASH] = [{ domain: "secret.com", note: note("s", "ヒミツの削除メモ", t0), deletedAt: t0, origin: "user" }];
+  const realGet = A.chrome.storage.local.get;
+  let sread = 0;
+  A.chrome.storage.local.get = async (keys) => {
+    const res = await realGet(keys);
+    const wantSettings = keys === KEY_SETTINGS || (Array.isArray(keys) && keys.includes(KEY_SETTINGS));
+    // 冒頭 getSettings 直後に all→selected（a.com のみ）へ。a.com は残るので scopeNarrowed は立たない。
+    if (wantSettings && ++sread === 1) A.localStore[KEY_SETTINGS] = { ...A.localStore[KEY_SETTINGS], syncScope: "selected", syncDomains: ["a.com"] };
+    return res;
+  };
+  await reconcileAs(A, mod, { now: t0 });
+  const item = sync[mod.SYNC_KEYS.trash];
+  const cloud = item ? await mod.decodeTrashItem(item) : [];
+  ok(!cloud.some((e) => e.domain === "secret.com"), "非選択ドメイン secret.com の削除済み本文を cloud に送らない", JSON.stringify(cloud.map((e) => e.domain)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S73（ゴミ箱／監査）: push 直前に同期 OFF なら trash を送らず、report.trash.synced も実態に合わせ false にする。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS73() {
+  console.log("S73（ゴミ箱）push 直前に同期 OFF なら trash を送らず report.trash.synced=false:");
+  const sync = {};
+  const A = makeDevice(sync, "dev-A");
+  const mod = await loadSync();
+  const t0 = 73_000_000;
+  seedDevice(A, { notes: { "ex.com": [note("X", "本文", t0)] } });
+  A.localStore[KEY_TRASH] = [{ domain: "ex.com", note: note("D", "削除済み", t0), deletedAt: t0, origin: "user" }];
+  const realGet = A.chrome.storage.local.get;
+  let sread = 0;
+  A.chrome.storage.local.get = async (keys) => {
+    const res = await realGet(keys);
+    const wantSettings = keys === KEY_SETTINGS || (Array.isArray(keys) && keys.includes(KEY_SETTINGS));
+    if (wantSettings && ++sread === 1) A.localStore[KEY_SETTINGS] = { ...A.localStore[KEY_SETTINGS], syncEnabled: false };
+    return res;
+  };
+  const r = await reconcileAs(A, mod, { now: t0 });
+  ok(r.abortedByOptOut === true, "opt-out で push 中止", JSON.stringify({ a: r.abortedByOptOut }));
+  ok(r.trash && r.trash.synced === false, "report.trash.synced が false（送れていない実態に一致）", JSON.stringify(r.trash));
+  ok(!sync[mod.SYNC_KEYS.trash], "cloud に trash item を書かない", JSON.stringify(Object.keys(sync)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// S74（ゴミ箱／監査）: purgeFromTrash は read〜set 間に割り込んだ reconcile の trash 追加（pull/退避）を
+//   verify-before-set で巻き戻さない（restoreFromTrash と同じ防御を purge/empty にも入れた回帰）。
+// ════════════════════════════════════════════════════════════════
+async function scenarioS74() {
+  console.log("S74（ゴミ箱）purgeFromTrash は read〜set 間に割り込んだ reconcile の trash 追加を巻き戻さない:");
+  const { purgeFromTrash } = await import("../src/shared/storage.js?dev=trash5");
+  const e = (id, at) => ({ domain: "ex.com", note: note(id, "x", at), deletedAt: at, origin: "user" });
+  const store = { [KEY_TRASH]: [e("X", 1000), e("Y", 1000)] };
+  const area = makeArea(store, {}, "local");
+  let reads = 0;
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => {
+      const res = await area.get(keys);
+      const wantTrash = keys === KEY_TRASH || (Array.isArray(keys) && keys.includes(KEY_TRASH));
+      // base-read（1 回目の trash 読み）直後に reconcile が Z を pull したと見立てる
+      if (wantTrash && ++reads === 1) store[KEY_TRASH] = [e("X", 1000), e("Y", 1000), e("Z", 2000)];
+      return res;
+    },
+    set: area.set, remove: area.remove,
+  } } };
+  await purgeFromTrash([{ domain: "ex.com", id: "X" }]);
+  const ids = (store[KEY_TRASH] || []).map((x) => x.note.id);
+  ok(!ids.includes("X"), "X は完全削除される", JSON.stringify(ids));
+  ok(ids.includes("Y") && ids.includes("Z"), "Y と割り込み pull の Z は温存される（lost-update なし）", JSON.stringify(ids));
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56, scenarioS57, scenarioS58, scenarioS59, scenarioS60, scenarioS61, scenarioS62, scenarioS63, scenarioS64, scenarioS65, scenarioS66, scenarioS67, scenarioS68, scenarioS69, scenarioS70, scenarioS71]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56, scenarioS57, scenarioS58, scenarioS59, scenarioS60, scenarioS61, scenarioS62, scenarioS63, scenarioS64, scenarioS65, scenarioS66, scenarioS67, scenarioS68, scenarioS69, scenarioS70, scenarioS71, scenarioS72, scenarioS73, scenarioS74]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);

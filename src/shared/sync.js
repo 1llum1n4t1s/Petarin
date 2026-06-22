@@ -1044,6 +1044,7 @@ async function _reconcile(opts) {
     report.abortedByOptOut = true;
     for (const d of report.domains) if (d.synced) { d.synced = false; d.reason = d.reason || "opt_out"; }
     report.settingsSynced = false;
+    if (report.trash) report.trash.synced = false; // push 中止＝ゴミ箱も送っていない（report 真偽を実態に合わせる）
     return report;
   }
   // スコープ／見た目同期フラグも push 直前に再読する。in-flight 中にユーザーが対象を狭めた（selected から
@@ -1075,11 +1076,18 @@ async function _reconcile(opts) {
     const row = report.domains.find((r) => r.domain === d);
     if (row && row.synced) { row.synced = false; row.reason = "scope_changed"; }
   }
-  if (scopeNarrowed) {
-    // スコープが in-flight で狭まった → ゴミ箱 item も今回は送らない（now-out-of-scope ドメインの削除済み
-    // 本文を external に送らない）。次回 reconcile が新スコープで forCloudTrash を組み直して push する。
-    if (setOps[SYNC_KEYS.trash] !== undefined) delete setOps[SYNC_KEYS.trash];
-    _dirty = true; // 新 config で再 reconcile（凍結・再 push 判断をやり直す）
+  if (scopeNarrowed) _dirty = true; // 新 config で再 reconcile（凍結・再 push 判断をやり直す）
+  // ゴミ箱 item は scopeNarrowed と独立に freshScope で再検査する。forCloudTrash は関数冒頭の stale cfg で
+  // 組まれており（all なら無フィルタ）、in-flight で all→selected やドメイン除外が起きると非選択ドメインの
+  // 削除済み本文を送りうる。scopeNarrowed は live-note ドメインの増減でしか立たないので gate にできない
+  // （all→selected で live-note ドメインが全て残るケースは scopeNarrowed=false のまま漏れる。監査・consent）。
+  if (setOps[SYNC_KEYS.trash] !== undefined && freshCfg.syncScope === "selected") {
+    const fsel = new Set(freshCfg.syncDomains || []);
+    if (forCloudTrash.some((e) => !fsel.has(e.domain))) {
+      delete setOps[SYNC_KEYS.trash]; // 非選択ドメインの削除済み本文を含む → 今回は送らない
+      if (report.trash) report.trash.synced = false;
+      _dirty = true; // 次回 reconcile が新スコープで forCloudTrash を組み直して push
+    }
   }
   const hasSet = Object.keys(setOps).length > 0;
   let pushOk = true;
@@ -1115,6 +1123,7 @@ async function _reconcile(opts) {
     report.error = String((e && e.message) || e);
     for (const d of report.domains) if (d.synced) { d.synced = false; d.reason = d.reason || "write_failed"; }
     report.settingsSynced = false;
+    if (report.trash) report.trash.synced = false; // push 失敗＝ゴミ箱も送れていない
   }
 
   // (3) shadow（合意状態）は push 成功時のみ前進させる。失敗時に前進させると「local と shadow が一致＝
