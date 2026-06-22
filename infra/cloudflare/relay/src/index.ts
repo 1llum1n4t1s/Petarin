@@ -1,0 +1,62 @@
+/**
+ * ぺたりん 同期リレー (Cloudflare Workers + Durable Objects)
+ *
+ * 方式: notify-then-pull の store-and-forward。vault(同期グループ)ごとに 1 つの VaultDO が
+ *   (1) 暗号文 blob の窓口(本体は D1) (2) per-vault の seq 採番 (3) Hibernatable WebSocket の fan-out ハブ
+ * を担う。編集→push で D1 へ暗号文を貯め、薄い変更ピンだけ WS で他端末へ broadcast、受信側は
+ * 該当ドメインだけ pull する。ferry-relay の「2 peer 生パススルー」とは別物(あちらは同時オンライン前提)。
+ *
+ * プライバシー: サーバーは暗号文しか受け取らない(本文は端末側 vaultKey で AES-GCM 暗号化)。
+ *   ドメイン名も端末側で HMAC ハッシュ化して送るため、サーバーは「どのサイトか」も知らない。
+ *
+ * 認証(自己完結ペアリング鍵): vault は ECDSA P-256 鍵ペアを持ち、QR で端末間に秘密鍵を渡す。公開鍵は
+ *   初回 first-write-wins で VaultDO に登録。以降の各リクエストは署名で検証(サーバーは秘密を持たない)。
+ *
+ * Worker 本体は薄い router: vaultId を SALT 付き SHA-256 でハッシュ化して DO を引き、リクエストを丸ごと転送する。
+ */
+import { VaultDO } from "./vault-do";
+export { VaultDO };
+
+export interface Env {
+  VAULT: DurableObjectNamespace;
+  DB: D1Database;
+  SALT: string;
+  RATELIMIT_IP?: RateLimit;
+  RATELIMIT_VAULT?: RateLimit;
+}
+
+/** Cloudflare Rate Limit binding の最小型(@cloudflare/workers-types と互換)。 */
+export interface RateLimit {
+  limit(opts: { key: string }): Promise<{ success: boolean }>;
+}
+
+export default {
+  async fetch(req: Request, env: Env): Promise<Response> {
+    const url = new URL(req.url);
+    if (url.pathname === "/health") return new Response("OK");
+
+    // vaultId: HTTP はヘッダ、WS はブラウザがヘッダを付けられないのでクエリで受ける。
+    const isWs = req.headers.get("Upgrade") === "websocket";
+    const vaultId = isWs ? url.searchParams.get("vault") : req.headers.get("X-Vault-Id");
+    if (!vaultId) return new Response("Missing vault", { status: 400 });
+
+    // IP レート制限(粗い網。vault 単位の制限は DO 内で認証後に掛ける)。
+    if (env.RATELIMIT_IP) {
+      const ip = req.headers.get("CF-Connecting-IP") || "unknown";
+      const { success } = await env.RATELIMIT_IP.limit({ key: ip });
+      if (!success) return new Response("Rate limited", { status: 429 });
+    }
+
+    // 生 vaultId を idFromName へ直入れすると漏洩時に第三者が同じ vault へ到達できるため、
+    // SALT 付き SHA-256 でハッシュ化してから DO を引く(ferry-relay と同方針)。
+    const idStr = await hashVaultId(vaultId, env.SALT);
+    const stub = env.VAULT.get(env.VAULT.idFromName(idStr));
+    return stub.fetch(req);
+  },
+};
+
+async function hashVaultId(vaultId: string, salt: string): Promise<string> {
+  const data = new TextEncoder().encode(vaultId + "|" + salt);
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
