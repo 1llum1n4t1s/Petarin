@@ -774,10 +774,15 @@
     editor.append(gutter, ta);
     body.append(editor);
 
-    // プレビュー面：Markdown を整形して表示（非編集時）。本文クリックでは編集に入らない＝右上のペン(✎)
-    // ボタンでのみ編集モードへ（誤って入力モードに入るのを防ぐ。リンクはそのまま開く・テキスト選択も可）。
+    // プレビュー面：Markdown を整形して表示（非編集時）。シングルクリックでは編集に入らない＝右上のペン(✎)
+    // ボタン、または本文の【ダブルクリック】で編集モードへ（シングルは選択/リンク用＝誤入力防止は維持）。
     const preview = el("div", { class: "preview" });
     preview.addEventListener("pointerdown", (e) => { if (!e.target.closest("a")) e.stopPropagation(); });
+    preview.addEventListener("dblclick", (e) => {
+      if (e.target.closest("a")) return;          // リンクのダブルクリックは編集に入らない
+      e.stopPropagation();
+      if (editingId !== note.id) enterEdit(note.id); // プレビュー → 編集
+    });
     body.append(preview);
 
     // 下端ツールバー：絵文字｜色｜（余白）｜削除

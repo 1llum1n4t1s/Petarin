@@ -489,6 +489,11 @@ function setupEditor() {
   $("#mmClose").append(svgIcon(ICON_CLOSE, 2));
   $("#mmDel").append(svgIcon(ICON_TRASH));
   $("#mmMode").addEventListener("click", () => setEditMode(!isEditing()));
+  // プレビュー本文の【ダブルクリック】で編集モードへ（シングルは選択/リンク用＝本体レールと同じ挙動）。
+  $("#mmPreview").addEventListener("dblclick", (e) => {
+    if (e.target.closest("a")) return; // リンクのダブルクリックは編集に入らない
+    if (!isEditing()) setEditMode(true);
+  });
   $("#mmClose").addEventListener("click", () => closeEditor());
   $("#mmDel").addEventListener("click", async () => {
     if (!mm) return;
