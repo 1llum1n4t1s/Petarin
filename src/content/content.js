@@ -120,7 +120,7 @@
     w: Math.min(EXP_W, Math.max(EXP_MIN_W, window.innerWidth - 20)),
     h: Math.min(EXP_H, Math.max(EXP_MIN_H, window.innerHeight - 20)),
   });
-  const MAX_CHARS = 2000;
+  const MAX_CHARS = 10000; // shared/storage.js の MAX_CHARS と同値（content は import 不可・変更時は両方）
 
   const domain = location.hostname;
   const colorOf = (id) => COLORS.find((c) => c.id === id) || COLORS[0];

@@ -29,8 +29,11 @@ export const COLORS = [
 
 export const DEFAULT_COLOR = "yellow";
 
-// 付箋本文の最大文字数（複数行プレーンテキスト）。content.js は import 不可のため同値を再定義している。
-export const MAX_CHARS = 2000;
+// 付箋本文の最大文字数（複数行プレーンテキスト）。content.js は import 不可のため同値を再定義している（変更時は両方）。
+// 同期ON時は 1 ドメイン分を gzip して 1 item ≒6KB(Chrome)/4.9KB(Firefox) に収める必要があるが、実コンテンツは
+// よく圧縮される（普通の日本語メモなら 10000 字でも約 550B）。超過したドメインは sync.js が graceful に未同期へ
+// 退避し（ローカル保存は維持・データ非破壊）、ローカルのみなら local quota(~10MB) まで実質無制限。
+export const MAX_CHARS = 10000;
 
 // ── 書体（同梱フォント）──────────────────────────────────────────────
 // 付箋本文のフォント。id を設定値として保存する（並び順非依存・未知 id は system にフォールバック）。
