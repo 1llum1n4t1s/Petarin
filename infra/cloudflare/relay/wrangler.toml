@@ -7,8 +7,10 @@ compatibility_date = "2026-05-26"
 # 「2 peer 生パススルー」とは別物(あちらは同時オンライン前提のファイル転送用)。
 # ハイバネート WebSocket でアイドル中はメモリ 0 / duration 課金 0(CF 公式保証)。
 
-# Custom Domain でのみ公開し口を増やさない(ferry-relay と同方針)。デプロイ時にホスト名を確定する。
-workers_dev = false
+# 開発中は workers.dev を一時的に開けて実機検証する(リレーは vault 署名認証必須＝無認証は 401
+# でデータ露出なし)。本番 go-live 時は ferry-relay と同様 Custom Domain(relay.petarin.nephilim.jp 等)
+# へ寄せ、workers_dev=false に戻して口を絞る。
+workers_dev = true
 preview_urls = false
 
 # === Durable Object: vault(同期グループ)単位の fan-out ハブ + 暗号文ストア窓口 + seq 採番 ===
