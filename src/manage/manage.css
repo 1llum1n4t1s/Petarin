@@ -387,11 +387,59 @@ body {
   .brand-text p { display: none; }
   .search { width: 185px; max-width: 30vw; }
 }
-/* 狭幅: 索引を畳んで一覧を全幅に。検索はさらに詰める */
+/* ── コンパクト/サイドパネル（〜スマホ幅）：縦に積むパネルレイアウト ──────────────
+   サイドパネルやスマホは「狭くて縦に長い」。ヘッダを縦積み、サイドバー索引を
+   上部の横スクロール「タブ帯」に変身させ、ボードを全幅にして 1 本指で扱えるようにする。 */
 @media (max-width: 720px) {
-  .workspace { grid-template-columns: 1fr; }
-  .index { display: none; }
-  .search { width: 150px; max-width: 42vw; }
+  /* バー高さ固定の calc をやめ、body を縦 flex に＝ヘッダが何行になっても破綻しない */
+  body { display: flex; flex-direction: column; }
+
+  .deskbar {
+    flex: 0 0 auto; height: auto;
+    flex-wrap: wrap; align-items: center; gap: 9px 10px; padding: 11px 14px;
+  }
+  .brand { flex: 1 1 auto; gap: 10px; }
+  .logo-mark { width: 38px; height: 38px; }
+  .brand-text h1 { font-size: 21px; }
+  .tools { order: 3; flex: 1 1 100%; flex-wrap: wrap; gap: 8px; margin-left: 0; }
+  .search { flex: 1 1 100%; width: auto; max-width: none; } /* 検索は独立行・全幅で目立たせる */
+  .sort { gap: 0; flex: 0 0 auto; }
+  .sort span { display: none; }     /* 「並べ替え」ラベルは select だけで自明なので畳む */
+  .btn-label { display: none; }     /* 同期/書き出し/読み込み＝アイコンのみ（title はツールチップで残る） */
+  .syncbtn { padding: 8px 12px; font-size: 15px; flex: 0 0 auto; }
+
+  /* ワークスペース＝縦積み（索引は上部の横スクロール「タブ帯」へ変身） */
+  .workspace {
+    flex: 1 1 auto; min-height: 0; height: auto;
+    display: flex; flex-direction: column;
+  }
+  .index {
+    flex: 0 0 auto; display: flex; flex-direction: row; gap: 8px;
+    overflow-x: auto; overflow-y: hidden;
+    padding: 9px 12px; border-right: 0; border-bottom: 1px solid var(--line);
+    scrollbar-width: thin;
+  }
+  .idx-section, .idx-sub { display: none; } /* 帯では節見出し・補足を畳む */
+  .idx-row {
+    flex: 0 0 auto; width: auto; margin: 0; padding: 7px 11px;
+    border: 1px solid var(--line); background: var(--paper-card); box-shadow: var(--shadow-soft);
+  }
+  .idx-row.active {
+    background: var(--paper-card); border-color: var(--accent-warm);
+    box-shadow: 0 0 0 1px var(--accent-warm), var(--shadow-soft);
+  }
+  .idx-row.active::before { display: none; } /* 縦帯インジケータは使わず枠色で示す */
+  .idx-body { flex: 0 0 auto; }
+  .idx-name { max-width: 96px; font-size: 12.5px; }
+
+  .board { flex: 1 1 auto; min-height: 0; padding: 14px 14px 48px; }
+  .board-head { gap: 10px; flex-wrap: wrap; padding: 4px 0 12px; margin-bottom: 14px; }
+  .scope-favi { width: 32px; height: 32px; font-size: 15px; }
+  .scope-text h2 { font-size: 18px; }
+  .board-actions { flex-wrap: wrap; }
+  .ghost { padding: 7px 11px; font-size: 12px; }
+
+  .notes { gap: 12px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 }
 
 /* ── 同期ボタン & パネル ───────────────────────────────────────── */
@@ -628,4 +676,14 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .memomodal, .mm-box { animation: none; }
+}
+
+/* ── コンパクト時のモーダル上書き（モーダル本体定義より後に置く＝同詳細度で確実に勝たせる）──
+   スマホ/サイドパネルではエディタを全画面化して編集領域を最大化し、絵文字ピッカーの
+   列数を減らして横はみ出しを防ぐ。 */
+@media (max-width: 720px) {
+  .memomodal { padding: 0; }
+  .mm-box { width: 100vw; height: 100vh; height: 100dvh; max-width: none; border-radius: 0; }
+  .sp-card { width: 94vw; padding: 18px 16px 20px; }
+  .mm-picker { grid-template-columns: repeat(8, 1fr); width: min(300px, 88vw); }
 }
