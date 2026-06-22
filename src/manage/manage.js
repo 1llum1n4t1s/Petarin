@@ -309,6 +309,33 @@ function buildIndexRow(g) {
   return row;
 }
 
+// 描画済みカードの再利用キャッシュ。keyOf(domain,id) -> { el, sig }。内容シグネチャが一致する
+// カードは作り直さず DOM ノードを並べ替えで使い回す（並べ替え・検索・外部の単一変更で全面再構築を避ける）。
+const cardCache = new Map();
+
+// カードが note から描画する内容（＋スコープ依存のドメインラベル表示有無）のシグネチャ。
+// 一致すれば再利用＝note 内容（色/本文/絵文字/更新時刻）とラベル表示が同一のときだけ使い回す。
+// 選択状態は含めない（選択操作で作り直さない）＝再利用時に refreshCardLive で別途同期する。
+function memoSig(note) {
+  return JSON.stringify([
+    note.color || "",
+    note.text || "",
+    note.icon || "",
+    note.updatedAt || note.createdAt || 0,
+    activeDomain ? 1 : 0, // memo-domain ラベルの表示有無（スコープ依存）
+  ]);
+}
+
+// 再利用カードの「sig に含めない動的部分」＝日付（時間相対）と選択状態を現在値へ合わせる。
+function refreshCardLive(card, note, key) {
+  const date = card.querySelector(".memo-date");
+  if (date) date.textContent = relTime(note.updatedAt || note.createdAt, true);
+  const sel = selection.has(key);
+  card.classList.toggle("selected", sel);
+  const pick = card.querySelector(".memo-pick");
+  if (pick) pick.checked = sel;
+}
+
 function renderBoard() {
   const items = visibleItems();
   const notes = $("#notes");
@@ -343,6 +370,7 @@ function renderBoard() {
   if (!items.length) {
     notes.replaceChildren();
     empty.hidden = false;
+    cardCache.clear(); // 空表示中はキャッシュも空に保つ（退避ノードを残さない／再表示時は作り直す）
     const totalAll = Object.values(allNotes).reduce((s, a) => s + a.length, 0);
     if (query) {
       $("#emptyTitle").textContent = "見つからなかったわ";
@@ -363,7 +391,25 @@ function renderBoard() {
     return;
   }
   empty.hidden = true;
-  notes.replaceChildren(...items.map((x) => buildMemo(x.domain, x.note)));
+
+  // 内容が変わらないカードは作り直さず再配置で使い回す（buildMemo は新規/内容変化カードのみ呼ぶ）。
+  const ordered = [];
+  const keep = new Set();
+  for (const x of items) {
+    const key = keyOf(x.domain, x.note.id);
+    keep.add(key);
+    const sig = memoSig(x.note);
+    let entry = cardCache.get(key);
+    if (!entry || entry.sig !== sig) {
+      entry = { el: buildMemo(x.domain, x.note), sig }; // 新規・内容変化＝作り直し
+      cardCache.set(key, entry);
+    } else {
+      refreshCardLive(entry.el, x.note, key);           // 再利用＝日付/選択だけ最新化
+    }
+    ordered.push(entry.el);
+  }
+  for (const key of cardCache.keys()) if (!keep.has(key)) cardCache.delete(key); // 消えたカードを破棄
+  notes.replaceChildren(...ordered); // 既存ノードは識別子・リスナを保ったまま並べ替え
 
   // 出現アニメは初回のみ。以降の並べ替え・編集・削除では再アニメさせない。
   if (!introDone) {
