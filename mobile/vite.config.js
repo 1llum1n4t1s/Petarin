@@ -17,6 +17,7 @@ export default defineConfig({
   server: {
     host: true, // 0.0.0.0 で bind し LAN 公開（Vite が Network URL を表示する）
     port: 5180,
+    allowedHosts: true, // トンネル(*.trycloudflare.com 等)経由のアクセスを許可（dev のみ・Vite の host チェック回避）
     fs: { allow: [".."] }, // dev サーバで親リポジトリの src/shared を読めるように
   },
 });
