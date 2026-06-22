@@ -1211,6 +1211,22 @@ function setPairNote(msg, warn) {
   n.classList.toggle("warn", !!warn);
 }
 
+// ペアリングコードを QR（data URL の GIF）にして表示。スマホのカメラで読み取れる＝長いコードの手打ち/コピペが不要。
+// vendor の qrcode-generator（window.qrcode）を使う。失敗してもコード文字列は使えるので img を隠すだけ。
+function renderPairQr(text) {
+  const img = $("#pairQr");
+  try {
+    if (!window.qrcode) throw new Error("qrcode unavailable");
+    const qr = window.qrcode(0, "L"); // 0=自動バージョン / L=低誤り訂正（画面スキャン向けに密度を抑える）
+    qr.addData(text);
+    qr.make();
+    img.src = qr.createDataURL(4, 16); // cellSize=4px, margin=16px（規格推奨の 4 モジュール分の余白＝読み取り安定）
+    img.hidden = false;
+  } catch {
+    img.hidden = true;
+  }
+}
+
 async function renderPairing() {
   if (curMode() !== "cloud") return;
   const pairing = await getVaultPairing();
@@ -1222,7 +1238,8 @@ async function renderPairing() {
     : "まだどのグループにも接続していません。";
   $("#pairStatus").classList.toggle("linked", paired);
   if (paired) {
-    $("#pairCodeBox").hidden = true; // 引き継ぎコードは「表示」操作のときだけ出す
+    $("#pairCodeBox").hidden = true; // 引き継ぎコード/QR は「表示」操作のときだけ出す
+    $("#pairQr").hidden = true;
   } else {
     $("#pairJoinBox").hidden = true;
     $("#pairInput").value = "";
@@ -1236,10 +1253,11 @@ async function onPairCreate() {
     const vault = await generateVault(DEFAULT_RELAY_URL);
     await saveVaultPairing(vault.pairing);
     await renderPairing();
-    // 作成直後に引き継ぎコードを出す（他端末をこのグループへ招くため）。
+    // 作成直後に引き継ぎコード＋QR を出す（他端末をこのグループへ招くため）。
     $("#pairCode").value = exportPairingCode(vault);
+    renderPairQr($("#pairCode").value);
     $("#pairCodeBox").hidden = false;
-    setPairNote("同期グループを作成しました。下のコードを他の端末で読み込むと同じグループに入れます。");
+    setPairNote("同期グループを作成しました。スマホでこの QR を読み取るか、下のコードを貼り付けると同じグループに入れます。");
     refreshSyncReport();
   } catch (e) {
     setPairNote("作成に失敗しました: " + (e && e.message), true);
@@ -1270,6 +1288,7 @@ async function onPairReveal() {
     try {
       const vault = await importVault(pairing);
       $("#pairCode").value = exportPairingCode(vault);
+      renderPairQr($("#pairCode").value);
       box.hidden = false;
     } catch {
       setPairNote("コードの表示に失敗しました。", true);

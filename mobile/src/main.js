@@ -17,6 +17,7 @@ import { generateVault, importVault, exportPairingCode, parsePairingCode } from 
 import { startSync, stopSync, attachStorageListener, setOnChange } from "./sync-orchestrator.js";
 import { initIap, isUnlocked, purchase } from "./iap.js";
 import { App } from "@capacitor/app";
+import qrcode from "qrcode-generator";
 
 const $ = (s) => document.querySelector(s);
 const PetaMD = globalThis.PetaMD;
@@ -111,7 +112,10 @@ async function renderPairing() {
   $("#pairSetup").hidden = paired;
   $("#pairLinked").hidden = !paired;
   $("#pairStatus").textContent = paired ? "接続済み: グループ " + String(pairing.id).slice(0, 6) + "…" : "未接続";
-  if (paired) $("#pairCode").value = "";
+  if (paired) {
+    $("#pairCode").value = "";
+    $("#pairQr").hidden = true;
+  }
   setNote("");
 }
 
@@ -134,7 +138,8 @@ async function onCreate() {
     await saveSettings({ syncEnabled: true, syncMode: "cloud" });
     await renderPairing();
     $("#pairCode").value = exportPairingCode(vault);
-    setNote("グループを作成しました。上のコードを PC 拡張の「参加」に貼り付けると同期されます。");
+    renderPairQr($("#pairCode").value);
+    setNote("グループを作成しました。PC 拡張でこの QR を読み取るか、コードを貼り付けると同期されます。");
   } catch (e) {
     setNote("作成に失敗しました: " + (e && e.message), true);
   }
@@ -175,6 +180,20 @@ function setNote(msg, warn) {
   const n = $("#pairNote");
   n.textContent = msg || "";
   n.classList.toggle("warn", !!warn);
+}
+
+// ペアリングコードを QR にして表示（PC 拡張のカメラ無しでも、PC 側がこの QR を出して相互に読める）。
+function renderPairQr(text) {
+  const img = $("#pairQr");
+  try {
+    const qr = qrcode(0, "L");
+    qr.addData(text);
+    qr.make();
+    img.src = qr.createDataURL(4, 16); // 規格推奨の 4 モジュール余白で読み取り安定
+    img.hidden = false;
+  } catch {
+    img.hidden = true;
+  }
 }
 
 function el(tag, cls, text) {

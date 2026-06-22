@@ -13,6 +13,7 @@
     <link rel="stylesheet" href="../fonts/fonts.css" />
     <link rel="stylesheet" href="manage.css" />
     <script src="../shared/markdown.js"></script>
+    <script src="../vendor/qrcode.js"></script>
   </head>
   <body>
     <div class="grain" aria-hidden="true"></div>
@@ -161,7 +162,8 @@
           </div>
           <div id="pairLinked" hidden>
             <div class="sp-pair-code" id="pairCodeBox" hidden>
-              <label class="sp-pair-label">このコードを他の端末（スマホアプリ等）で読み込むと同じグループに入れます。第三者に見せないでください。</label>
+              <label class="sp-pair-label">スマホでこの QR を読み取るか、下のコードを貼り付けると同じグループに入れます。第三者に見せないでください。</label>
+              <img id="pairQr" class="sp-pair-qr" alt="ペアリングQRコード" hidden />
               <textarea id="pairCode" class="sp-pair-ta" rows="3" readonly></textarea>
               <button class="sp-btn" id="pairCopy" type="button">コードをコピー</button>
             </div>

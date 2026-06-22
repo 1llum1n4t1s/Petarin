@@ -66,6 +66,7 @@
         border: 1px solid var(--line); border-radius: 9px; padding: 9px; background: #fff; resize: vertical;
         word-break: break-all;
       }
+      .pair-qr { display: block; max-width: 100%; height: auto; margin: 2px auto 6px; padding: 8px; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
       .note { font-size: 12px; color: var(--ink-soft); line-height: 1.6; }
       .note.warn { color: var(--danger); }
       .buy-card { border: 1px dashed var(--accent); border-radius: 12px; padding: 14px; background: #fff8ea; }
@@ -108,7 +109,8 @@
               <button class="btn" id="pairJoin" type="button">このグループに参加</button>
             </div>
             <div class="wrap" id="pairLinked" hidden>
-              <label class="lbl">このコードを他の端末で読み込むと同じグループに入れます（第三者に見せない）。</label>
+              <label class="lbl">PC でこの QR を読み取るか、下のコードを貼り付けると同じグループに入れます（第三者に見せない）。</label>
+              <img id="pairQr" class="pair-qr" alt="ペアリングQR" hidden />
               <textarea id="pairCode" rows="3" readonly></textarea>
               <div class="row">
                 <button class="btn" id="pairCopy" type="button">コードをコピー</button>

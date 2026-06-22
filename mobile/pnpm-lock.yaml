@@ -23,6 +23,9 @@ importers:
       '@capacitor/preferences':
         specifier: ^6.0.1
         version: 6.0.4(@capacitor/core@6.2.1)
+      qrcode-generator:
+        specifier: ^2.0.4
+        version: 2.0.4
     devDependencies:
       '@capacitor/cli':
         specifier: ^6.1.0
@@ -621,6 +624,9 @@ packages:
   prompts@2.4.2:
     resolution: {integrity: sha512-NxNv/kLguCA7p3jE8oL2aEBsrJWgAakBpgmgK6lpPWV+WuOmY6r2/zbAVnP+T8bQlA0nzHXSJSJW0Hq7ylaD2Q==}
     engines: {node: '>= 6'}
+
+  qrcode-generator@2.0.4:
+    resolution: {integrity: sha512-mZSiP6RnbHl4xL2Ap5HfkjLnmxfKcPWpWe/c+5XxCuetEenqmNFf1FH/ftXPCtFG5/TDobjsjz6sSNL0Sr8Z9g==}
 
   readable-stream@3.6.2:
     resolution: {integrity: sha512-9u/sniCrY3D5WdsERHzHE4G2YCXqoG5FTHUiCC4SIbr6XcLZBY05ya9EKjYek9O5xOAwjGq+1JdGBAS7Q9ScoA==}
@@ -1291,6 +1297,8 @@ snapshots:
     dependencies:
       kleur: 3.0.3
       sisteransi: 1.0.5
+
+  qrcode-generator@2.0.4: {}
 
   readable-stream@3.6.2:
     dependencies:
