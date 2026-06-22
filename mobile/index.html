@@ -73,17 +73,75 @@
       .scan-sheet { width: 100%; background: #1a1410; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); border-radius: 18px 18px 0 0; }
       #scanVideo { width: 100%; max-width: 420px; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 14px; background: #000; }
       .scan-hint { color: #f7f0df; font-size: 13px; text-align: center; margin: 0; }
+      .hbtns { display: flex; gap: 8px; }
+      .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .fab { position: fixed; right: 18px; bottom: calc(20px + env(safe-area-inset-bottom)); width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--accent); color: #fff; font-size: 30px; line-height: 1; box-shadow: 0 4px 14px rgba(0,0,0,0.28); cursor: pointer; z-index: 8; }
+      .card { cursor: pointer; }
+      .ed-row { display: flex; align-items: center; justify-content: space-between; }
+      .ed-icon { width: 48px; height: 48px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); font-size: 26px; cursor: pointer; }
+      .ed-count { font-size: 12px; color: var(--ink-soft); }
+      #edText { min-height: 130px; font-family: inherit; font-size: 15px; }
+      .ed-preview { border: 1px dashed var(--line); border-radius: 10px; padding: 10px; min-height: 36px; background: var(--card); font-size: 14px; line-height: 1.6; word-break: break-word; }
+      .ed-preview:empty { display: none; }
+      .ed-preview p { margin: 0 0 6px; } .ed-preview a { color: #2f6fb0; }
+      .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+      .swatch { width: 34px; height: 34px; border-radius: 50%; border: 2px solid rgba(0,0,0,0.12); cursor: pointer; padding: 0; }
+      .swatch.sel { border-color: var(--ink); box-shadow: 0 0 0 2px var(--accent); }
+      .icon-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; max-height: 52vh; overflow: auto; }
+      .icon-cell { font-size: 22px; aspect-ratio: 1 / 1; border: none; background: transparent; border-radius: 8px; cursor: pointer; padding: 0; }
+      .icon-cell.sel { background: var(--accent); }
+      .group-item { text-align: left; }
+      .trash-meta { font-size: 12px; color: var(--ink-soft); margin-bottom: 4px; }
     </style>
   </head>
   <body>
     <header>
       <h1>ぺたりん</h1>
-      <button class="btn" id="syncBtn" type="button">⇄ 同期</button>
+      <div class="hbtns">
+        <button class="btn" id="trashBtn" type="button" aria-label="ゴミ箱">🗑</button>
+        <button class="btn" id="syncBtn" type="button">⇄ 同期</button>
+      </div>
     </header>
 
     <main>
       <div id="notes"></div>
     </main>
+
+    <button class="fab" id="addBtn" type="button" aria-label="付箋を追加">＋</button>
+
+    <!-- 付箋エディタ（新規/編集） -->
+    <div class="panel" id="editorPanel" hidden>
+      <div class="sheet">
+        <h2><span id="edTitle">新規付箋</span> <button class="btn" id="edClose" type="button" aria-label="閉じる">✕</button></h2>
+        <div class="ed-row">
+          <button class="ed-icon" id="edIcon" type="button" aria-label="絵文字を選ぶ">🎲</button>
+          <span class="ed-count" id="edCount">0 / 10000</span>
+        </div>
+        <textarea id="edText" rows="6" placeholder="Markdown で書けます"></textarea>
+        <div class="ed-preview" id="edPreview"></div>
+        <div class="swatches" id="edColors"></div>
+        <div class="row">
+          <button class="btn primary" id="edSave" type="button">保存</button>
+          <button class="btn danger" id="edDelete" type="button" hidden>削除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 絵文字ピッカー -->
+    <div class="panel" id="iconPanel" hidden>
+      <div class="sheet">
+        <h2>絵文字を選ぶ <button class="btn" id="iconClose" type="button" aria-label="閉じる">✕</button></h2>
+        <div class="icon-grid" id="iconGrid"></div>
+      </div>
+    </div>
+
+    <!-- 作成先グループ選択 -->
+    <div class="panel" id="groupPickPanel" hidden>
+      <div class="sheet">
+        <h2>どこに作る？ <button class="btn" id="groupClose" type="button" aria-label="閉じる">✕</button></h2>
+        <div class="wrap" id="groupList"></div>
+      </div>
+    </div>
 
     <!-- 同期設定 / ペアリング -->
     <div class="panel" id="syncPanel" hidden>
