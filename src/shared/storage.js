@@ -139,7 +139,8 @@ function _getAllRaw() {
 async function _writeNotes(upserts, deletes, removed, opts) {
   const ifAbsent = !!(opts && opts.ifAbsent);
   const withTombs = removed && removed.length;
-  const keys = withTombs ? [STORAGE_KEYS.notes, LOCAL_TOMBS_KEY] : STORAGE_KEYS.notes;
+  // 削除がある回は localTombs（実削除時刻）とゴミ箱（削除した付箋の退避）も同一 set で書く。
+  const keys = withTombs ? [STORAGE_KEYS.notes, LOCAL_TOMBS_KEY, TRASH_KEY] : STORAGE_KEYS.notes;
   // 楽観的並行制御。petarin:notes / localTombs は単一キーで、別コンテキスト（別タブ・manage・popup）は
   // それぞれ独立の withLock を持つため whole-key set が競合しうる。毎回最新を読んで delta を当て、set 直前に
   // もう一度読んでベースが変わっていたら（別コンテキストの削除/編集 or reconcile の pull）最新へ当て直す。
@@ -150,6 +151,16 @@ async function _writeNotes(upserts, deletes, removed, opts) {
     const raw = await chrome.storage.local.get(keys);
     const baseJSON = JSON.stringify(raw);
     const fresh = raw[STORAGE_KEYS.notes] || {};
+    // ゴミ箱退避：削除する付箋の実体を「フィルタ前の最新スナップショット」から捕捉しておく（下の deletes
+    // ループが fresh から消す前に控える）。キーは domain+SEP+id（__proto__ 等の id でも Map なら安全）。
+    const preDelete = new Map();
+    if (withTombs) {
+      for (const { domain, id } of removed) {
+        const arr = fresh[domain];
+        const n = arr && arr.find((x) => x && x.id === id);
+        if (n) preDelete.set(domain + TRASH_SEP + id, n);
+      }
+    }
     for (const { domain, id } of deletes || []) {
       if (!fresh[domain]) continue;
       const left = fresh[domain].filter((n) => n.id !== id);
@@ -181,6 +192,13 @@ async function _writeNotes(upserts, deletes, removed, opts) {
       }
       gcLocalTombs(log, now);
       out[LOCAL_TOMBS_KEY] = log;
+      // 削除した付箋の実体をゴミ箱へ退避（origin:"user"）。和集合マージで dedupe＋全体100件キャップ。
+      const adds = [];
+      for (const { domain, id } of removed) {
+        const n = preDelete.get(domain + TRASH_SEP + id);
+        if (n) adds.push(makeTrashEntry(domain, n, now, "user"));
+      }
+      out[TRASH_KEY] = mergeTrash(Array.isArray(raw[TRASH_KEY]) ? raw[TRASH_KEY] : [], adds);
     }
     // set 直前にベース（notes[+localTombs]）を再読。変わっていたら最新へ delta を当て直す（最終試行は強行）。
     const cur = JSON.stringify(await chrome.storage.local.get(keys));
@@ -212,6 +230,38 @@ export function gcLocalTombs(log, now) {
     if (!Object.keys(dom).length) delete log[d];
   }
   return log;
+}
+
+// ── ゴミ箱（削除した付箋の退避先）────────────────────────────────────
+// 通常削除（レール/ポップアップ/デスク）と同期競合での消失をここへ退避し、デスクから復元/完全削除できる。
+//   形: TrashEntry[] = [{ domain, note: Note, deletedAt, origin: "user"|"sync" }]（単一集約リスト）
+//   一意キー = (domain, note.id)。同キーは deletedAt 新しい方。全体最大 TRASH_MAX 件（deletedAt 降順）。
+// 同期対象だが「追加だけ」＝sync.js が和集合マージで配り、除去（復元/完全削除/キャップ溢れ）は伝播しない
+// （墓石層を作らず軽量に保つ）。content.js は import 不可のため同キー・同ロジックをリテラル複製する。
+export const TRASH_KEY = "petarin:trash";
+export const TRASH_MAX = 100; // 全ドメイン共通の保持件数（local 約10MB / cloud 8KB item を意識した上限）
+const TRASH_SEP = String.fromCharCode(0x1f); // (domain, id) 連結の区切り。不可視 literal を避け fromCharCode で組む
+
+export function makeTrashEntry(domain, note, deletedAt, origin) {
+  return { domain, note, deletedAt, origin: origin === "sync" ? "sync" : "user" };
+}
+
+// ゴミ箱の和集合マージ：(domain, note.id) で重複排除（deletedAt 新しい方）→ deletedAt 降順 → 先頭 TRASH_MAX 件。
+// 「追加だけ同期」の核（base/墓石なし＝除去は伝播しない）。ローカル追加にも sync の pull マージにも同じこれを使う。
+// 同値 deletedAt は (domain,id) で決定的に並べ、端末間で同じ最新 TRASH_MAX 件へ収束させる（churn 防止）。
+export function mergeTrash(a, b) {
+  const key = (e) => e.domain + TRASH_SEP + e.note.id;
+  const byKey = new Map();
+  for (const e of [...(a || []), ...(b || [])]) {
+    if (!e || !e.note || typeof e.note.id !== "string" || typeof e.domain !== "string" || !e.domain) continue;
+    const at = typeof e.deletedAt === "number" && Number.isFinite(e.deletedAt) ? e.deletedAt : 0;
+    const k = key(e);
+    const prev = byKey.get(k);
+    if (!prev || at > prev.deletedAt) byKey.set(k, { domain: e.domain, note: e.note, deletedAt: at, origin: e.origin === "sync" ? "sync" : "user" });
+  }
+  const all = [...byKey.values()];
+  all.sort((p, q) => q.deletedAt - p.deletedAt || (key(p) < key(q) ? -1 : key(p) > key(q) ? 1 : 0));
+  return all.slice(0, TRASH_MAX);
 }
 
 export function saveSettings(partial) {
@@ -288,6 +338,62 @@ export function restoreNotes(pairs) {
     // ifAbsent: set 直前の最新スナップショットに対しても「同 id が無いときだけ挿入」を再確認する。
     // 読み取り〜set の隙に reconcile が同 id を pull していたら上書きせず温存（非破壊復元の契約。Codex）。
     await _writeNotes(upserts, [], [], { ifAbsent: true });
+  });
+}
+
+// ── ゴミ箱の操作（読み取り / 復元 / 完全削除 / 空に）─────────────────────
+// すべて local 操作。除去（復元・完全削除・空に）は同期しない＝他端末のゴミ箱には残るが、manage が
+// 「notes に現存する付箋は表示しない」で隠すため UX は保たれる（追加だけ同期の割り切り）。
+export function getTrash() {
+  return chrome.storage.local.get(TRASH_KEY).then((r) => (Array.isArray(r[TRASH_KEY]) ? r[TRASH_KEY] : []));
+}
+
+// ゴミ箱から付箋を notes へ戻す（pairs: [{domain, note}]）。updatedAt=now で同期削除の墓石に LWW 勝ち
+// （undoDelete / restoreNotes と同方式）、同一 set でゴミ箱からも除去する。既に notes に同 id があれば温存（非破壊）。
+export function restoreFromTrash(pairs) {
+  return withLock(async () => {
+    const now = Date.now();
+    const rmKeys = new Set(pairs.map(({ domain, note }) => domain + TRASH_SEP + note.id));
+    const MAX = 4;
+    for (let attempt = 0; attempt < MAX; attempt++) {
+      const raw = await chrome.storage.local.get([STORAGE_KEYS.notes, TRASH_KEY]);
+      const baseJSON = JSON.stringify(raw);
+      const all = raw[STORAGE_KEYS.notes] || {};
+      for (const { domain, note } of pairs) {
+        const arr = all[domain] || (all[domain] = []);
+        if (!arr.some((n) => n.id === note.id)) arr.push({ ...note, updatedAt: now });
+      }
+      const trash = (Array.isArray(raw[TRASH_KEY]) ? raw[TRASH_KEY] : []).filter(
+        (e) => !(e && e.note && rmKeys.has(e.domain + TRASH_SEP + e.note.id))
+      );
+      // set 直前に notes/trash を再読。割り込みがあれば最新へ当て直す（最終試行は強行）。
+      const cur = JSON.stringify(await chrome.storage.local.get([STORAGE_KEYS.notes, TRASH_KEY]));
+      if (cur !== baseJSON && attempt < MAX - 1) continue;
+      await chrome.storage.local.set({ [STORAGE_KEYS.notes]: all, [TRASH_KEY]: trash });
+      break;
+    }
+  });
+}
+
+// ゴミ箱から完全削除（pairs: [{domain, id}]）。notes は触らない。
+export function purgeFromTrash(pairs) {
+  return withLock(async () => {
+    const rmKeys = new Set(pairs.map(({ domain, id }) => domain + TRASH_SEP + id));
+    const raw = await chrome.storage.local.get(TRASH_KEY);
+    const trash = (Array.isArray(raw[TRASH_KEY]) ? raw[TRASH_KEY] : []).filter(
+      (e) => !(e && e.note && rmKeys.has(e.domain + TRASH_SEP + e.note.id))
+    );
+    await chrome.storage.local.set({ [TRASH_KEY]: trash });
+  });
+}
+
+// ゴミ箱を空にする（domain 指定でそのサイト分のみ、未指定で全部）。
+export function emptyTrash(domain) {
+  return withLock(async () => {
+    if (!domain) { await chrome.storage.local.set({ [TRASH_KEY]: [] }); return; }
+    const raw = await chrome.storage.local.get(TRASH_KEY);
+    const trash = (Array.isArray(raw[TRASH_KEY]) ? raw[TRASH_KEY] : []).filter((e) => e && e.domain !== domain);
+    await chrome.storage.local.set({ [TRASH_KEY]: trash });
   });
 }
 

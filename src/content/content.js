@@ -30,6 +30,24 @@
   // { [domain]: { [id]: deletedAt } }。reconcile が tombstone を実削除時刻で刻むのに使う（Codex#5）。
   const KEY_LOCAL_TOMBS = "petarin:sync:localTombs";
   const LOCAL_TOMB_TTL = 180 * 24 * 60 * 60 * 1000;
+  // ゴミ箱（storage.js TRASH_KEY と同キー・同ロジック。import 不可ゆえリテラル複製）。
+  //   形: TrashEntry[] = [{ domain, note, deletedAt, origin }]・全体最大 TRASH_MAX 件・(domain,id) で dedupe。
+  const KEY_TRASH = "petarin:trash";
+  const TRASH_MAX = 100;
+  const TRASH_SEP = String.fromCharCode(0x1f);
+  const mergeTrash = (a, b) => {
+    const key = (e) => e.domain + TRASH_SEP + e.note.id;
+    const byKey = new Map();
+    for (const e of [...(a || []), ...(b || [])]) {
+      if (!e || !e.note || typeof e.note.id !== "string" || typeof e.domain !== "string" || !e.domain) continue;
+      const at = typeof e.deletedAt === "number" && Number.isFinite(e.deletedAt) ? e.deletedAt : 0;
+      const k = key(e), prev = byKey.get(k);
+      if (!prev || at > prev.deletedAt) byKey.set(k, { domain: e.domain, note: e.note, deletedAt: at, origin: e.origin === "sync" ? "sync" : "user" });
+    }
+    const all = [...byKey.values()];
+    all.sort((p, q) => q.deletedAt - p.deletedAt || (key(p) < key(q) ? -1 : key(p) > key(q) ? 1 : 0));
+    return all.slice(0, TRASH_MAX);
+  };
 
   const COLORS = [
     // 各色は彩度 50% ダウンの淡色（明度維持）。storage.js の COLORS と値も含め一致させること。
@@ -265,11 +283,12 @@
       // 巻き戻さない（次回 reconcile が無関係付箋に tombstone を立てる誤動作を防ぐ。Codex）。最終試行は最善努力。
       const MAX = 4;
       for (let attempt = 0; attempt < MAX; attempt++) {
-        const raw = await chrome.storage.local.get([KEY_NOTES, KEY_LOCAL_TOMBS]);
+        const raw = await chrome.storage.local.get([KEY_NOTES, KEY_LOCAL_TOMBS, KEY_TRASH]);
         const all = raw[KEY_NOTES] || {};
         const baseJSON = JSON.stringify(all);
         const before = all[domain] || [];
-        const removed = before.filter((n) => n && drop.has(n.id)).map((n) => n.id);
+        const removedNotes = before.filter((n) => n && drop.has(n.id)); // ゴミ箱退避用に実体を控える
+        const removed = removedNotes.map((n) => n.id);
         const list = before.filter((n) => n && !drop.has(n.id));
         if (list.length) all[domain] = list;
         else delete all[domain]; // 空になったドメインはキーごと掃除
@@ -288,11 +307,16 @@
           for (const id of Object.keys(dm)) if (now - (dm[id] || 0) > LOCAL_TOMB_TTL) delete dm[id];
           if (!Object.keys(dm).length) delete log[d];
         }
+        // 削除した付箋をゴミ箱へ退避（origin:"user"）。和集合マージで dedupe＋全体100件キャップ。
+        const trash = mergeTrash(
+          Array.isArray(raw[KEY_TRASH]) ? raw[KEY_TRASH] : [],
+          removedNotes.map((n) => ({ domain, note: n, deletedAt: now, origin: "user" }))
+        );
         // set 直前に notes を再読。ベースが変わっていたら最新で当て直す（最終試行は強行＝削除を取りこぼさない）。
         const cur = JSON.stringify((await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {});
         if (cur !== baseJSON && attempt < MAX - 1) continue;
         notesWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
-        await chrome.storage.local.set({ [KEY_NOTES]: all, [KEY_LOCAL_TOMBS]: log });
+        await chrome.storage.local.set({ [KEY_NOTES]: all, [KEY_LOCAL_TOMBS]: log, [KEY_TRASH]: trash });
         break;
       }
     });
