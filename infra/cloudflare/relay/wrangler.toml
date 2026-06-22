@@ -26,7 +26,7 @@ new_sqlite_classes = ["VaultDO"]
 [[d1_databases]]
 binding = "DB"
 database_name = "petarin-sync"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "903b1fb1-218e-4225-bad2-0af60f8e0846"
 
 # === カスタムドメイン(デプロイ時に確定) ===
 # relay.petarin.nephilim.jp は仮。nephilim.jp Zone(Yuro 所有)配下に通すなら有効化する。
@@ -35,17 +35,20 @@ database_id = "REPLACE_WITH_D1_DATABASE_ID"
 # custom_domain = true
 
 # === Rate Limit(ferry-relay と同じ思想。namespace_id は Petarin 用に別番号) ===
-[[unsafe.bindings]]
-name = "RATELIMIT_IP"
-type = "ratelimit"
-namespace_id = "2001"
-simple = { limit = 60, period = 60 }
-
-[[unsafe.bindings]]
-name = "RATELIMIT_VAULT"
-type = "ratelimit"
-namespace_id = "2002"
-simple = { limit = 120, period = 60 }
+# 注意: unsafe ratelimit binding は `wrangler dev` のローカル workerd が std::terminate で
+# 起動失敗するため、ローカル開発時はコメントアウトする。デプロイ前に必ず有効化すること
+# （コードは env.RATELIMIT_* 未定義でも動くが、本番では rate limit を効かせる）。
+# [[unsafe.bindings]]
+# name = "RATELIMIT_IP"
+# type = "ratelimit"
+# namespace_id = "2001"
+# simple = { limit = 60, period = 60 }
+#
+# [[unsafe.bindings]]
+# name = "RATELIMIT_VAULT"
+# type = "ratelimit"
+# namespace_id = "2002"
+# simple = { limit = 120, period = 60 }
 
 # === secret(手動投入) ===
 #   生 vaultId 直入れによる横入り防止用ソルト:
