@@ -451,8 +451,26 @@ export function gcTombstones(tomb, now, exempt) {
 //  chrome.storage I/O 層（副作用あり）
 // ════════════════════════════════════════════════════════════════
 
-const hasSync = () =>
-  typeof chrome !== "undefined" && chrome.storage && chrome.storage.sync;
+// ─── リモート transport 抽象（差し替え境界）─────────────────────────
+// chrome.storage.sync の直叩きを transport インターフェース（isAvailable / getAll / set /
+// remove）へ括り出す。既定は ChromeSyncTransport＝メソッド内で呼び出し時に chrome を解決し、
+// 現状と完全同一に振る舞う（モジュール読込時に参照をキャプチャしない＝テストの後付けモック互換）。
+// 将来 RelayTransport（Cloudflare Worker 経由の HTTP）へ setSyncTransport で差し替えるための境界。
+const chromeSyncTransport = {
+  isAvailable: () => typeof chrome !== "undefined" && chrome.storage && chrome.storage.sync,
+  getAll: () => chrome.storage.sync.get(null),
+  set: (obj) => chrome.storage.sync.set(obj),
+  remove: (keys) => chrome.storage.sync.remove(keys),
+};
+let _transport = chromeSyncTransport;
+// transport を差し替える（falsy を渡すと既定の ChromeSyncTransport へ戻る）。テスト・別実装の注入点。
+export function setSyncTransport(t) {
+  _transport = t || chromeSyncTransport;
+}
+export function getSyncTransport() {
+  return _transport;
+}
+const hasSync = () => _transport.isAvailable();
 
 async function getLocalNotes() {
   const raw = await chrome.storage.local.get(STORAGE_KEYS.notes);
@@ -480,7 +498,7 @@ async function getLocalTrash() {
 //  rawByDomain : 格納されている生 item（書き込み要否の比較を符号化形同士で行うため）
 //  corrupt     : 復号に失敗したドメイン集合（reconcile はこれらを「今回触らない」で隔離）
 async function readSync() {
-  const all = await chrome.storage.sync.get(null);
+  const all = await _transport.getAll();
   // settings item は「キーが在るか」で会計する（truthy かではない）。破損で false/0/"" 等の falsy 値に
   // なっても cloud に物理的に残り slot/バイトを占有するため、`|| null` で存在を握り潰すと会計から漏れ、
   // 上限近傍で「実 quota 超過なのに gate 通過→write_failed」になる（決定的 item_limit に倒せない。Codex）。
@@ -1099,17 +1117,17 @@ async function _reconcile(opts) {
         // ＝「item 消去済みだが墓石未保存」の復活窓を作らない（Codex#7 / S20）。満杯＋新規 meta で枠が無い回は
         // 上流で metaDeferred 扱いにして削除自体を保留する（remove-first で墓石喪失する経路は廃止。Codex・S42）。
         // よってここで removeKeys がある＝既存 meta の更新 か 新規でも枠あり＝meta-set が新規 item を足せる。
-        await chrome.storage.sync.set({ [SYNC_KEYS.meta]: metaOp });
-        await chrome.storage.sync.remove(removeKeys);
+        await _transport.set({ [SYNC_KEYS.meta]: metaOp });
+        await _transport.remove(removeKeys);
       } else {
         // 既存墓石のみの回（今回 meta を書かない）→ remove 直行（墓石は既永続化済み＝復活窓なし）。
-        await chrome.storage.sync.remove(removeKeys);
+        await _transport.remove(removeKeys);
       }
       const rest = {};
       for (const k of Object.keys(setOps)) if (k !== SYNC_KEYS.meta) rest[k] = setOps[k];
-      if (Object.keys(rest).length) await chrome.storage.sync.set(rest);
+      if (Object.keys(rest).length) await _transport.set(rest);
     } else if (hasSet) {
-      await chrome.storage.sync.set(setOps);
+      await _transport.set(setOps);
     }
     if (hasSet || removeKeys.length) {
       // 自エコー判定用に「キー→push した値(JSON)」を記録する。remove は null。
