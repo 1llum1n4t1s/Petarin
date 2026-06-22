@@ -70,6 +70,9 @@
       .note { font-size: 12px; color: var(--ink-soft); line-height: 1.6; }
       .note.warn { color: var(--danger); }
       .buy-card { border: 1px dashed var(--accent); border-radius: 12px; padding: 14px; background: #fff8ea; }
+      .scan-sheet { width: 100%; background: #1a1410; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); border-radius: 18px 18px 0 0; }
+      #scanVideo { width: 100%; max-width: 420px; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 14px; background: #000; }
+      .scan-hint { color: #f7f0df; font-size: 13px; text-align: center; margin: 0; }
     </style>
   </head>
   <body>
@@ -104,6 +107,7 @@
             <div class="pair-status" id="pairStatus">未接続</div>
             <div class="wrap" id="pairSetup">
               <button class="btn primary" id="pairCreate" type="button">新しい同期グループを作成</button>
+              <button class="btn" id="pairScan" type="button">📷 QRをスキャンして参加</button>
               <label class="lbl" for="pairInput">または PC で表示したコードを貼り付けて参加</label>
               <textarea id="pairInput" rows="3" placeholder="ここにコードを貼り付け"></textarea>
               <button class="btn" id="pairJoin" type="button">このグループに参加</button>
@@ -120,6 +124,15 @@
           </div>
           <p class="note" id="pairNote"></p>
         </div>
+      </div>
+    </div>
+
+    <!-- QR カメラスキャン（getUserMedia + jsQR・HTTPS 必須） -->
+    <div class="panel" id="scanPanel" hidden>
+      <div class="scan-sheet">
+        <video id="scanVideo" playsinline muted></video>
+        <p class="scan-hint">相手の端末（PC 拡張）の QR をこの枠に写してください</p>
+        <button class="btn" id="scanCancel" type="button">キャンセル</button>
       </div>
     </div>
 

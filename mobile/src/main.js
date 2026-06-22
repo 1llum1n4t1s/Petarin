@@ -18,6 +18,7 @@ import { startSync, stopSync, attachStorageListener, setOnChange } from "./sync-
 import { initIap, isUnlocked, purchase } from "./iap.js";
 import { App } from "@capacitor/app";
 import qrcode from "qrcode-generator";
+import jsQR from "jsqr";
 
 const $ = (s) => document.querySelector(s);
 const PetaMD = globalThis.PetaMD;
@@ -35,6 +36,8 @@ async function boot() {
   $("#syncBtn").addEventListener("click", openSync);
   $("#syncClose").addEventListener("click", () => ($("#syncPanel").hidden = true));
   $("#pairCreate").addEventListener("click", onCreate);
+  $("#pairScan").addEventListener("click", openScanner);
+  $("#scanCancel").addEventListener("click", closeScanner);
   $("#pairJoin").addEventListener("click", onJoin);
   $("#pairUnlink").addEventListener("click", onUnlink);
   $("#pairCopy").addEventListener("click", onCopy);
@@ -174,6 +177,58 @@ async function onCopy() {
   } catch {
     setNote("コピーできませんでした。手動で選択してください。", true);
   }
+}
+
+// ── QR カメラスキャン（getUserMedia + jsQR）。検出したコードで onJoin を自動実行 ──
+// Web(Safari)は HTTPS＝secure context で動く。ネイティブ(WKWebView)はカメラ権限(Info.plist の
+// NSCameraUsageDescription)が要る／必要なら barcode-scanner プラグインへ差し替える（TODO）。
+let scanStream = null;
+let scanRAF = 0;
+async function openScanner() {
+  const video = $("#scanVideo");
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+  } catch {
+    setNote("カメラを起動できませんでした（HTTPS とカメラ権限を確認してください）。", true);
+    return;
+  }
+  video.srcObject = scanStream;
+  await video.play().catch(() => {});
+  $("#scanPanel").hidden = false;
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const tick = () => {
+    if (video.readyState >= 2 && video.videoWidth) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const res = jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
+      if (res && res.data) {
+        onScanned(res.data);
+        return; // ループ停止（onScanned が closeScanner する）
+      }
+    }
+    scanRAF = requestAnimationFrame(tick);
+  };
+  scanRAF = requestAnimationFrame(tick);
+}
+function closeScanner() {
+  if (scanRAF) cancelAnimationFrame(scanRAF);
+  scanRAF = 0;
+  if (scanStream) {
+    scanStream.getTracks().forEach((t) => t.stop());
+    scanStream = null;
+  }
+  const v = $("#scanVideo");
+  try { v.pause(); } catch { /* noop */ }
+  v.srcObject = null;
+  $("#scanPanel").hidden = true;
+}
+async function onScanned(text) {
+  closeScanner();
+  $("#pairInput").value = text;
+  await onJoin(); // 既存の参加処理（parsePairingCode→importVault 検証→保存）を再利用
 }
 
 function setNote(msg, warn) {

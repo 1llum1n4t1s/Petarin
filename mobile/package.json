@@ -19,6 +19,7 @@
     "@capacitor/core": "^6.1.0",
     "@capacitor/ios": "^6.1.0",
     "@capacitor/preferences": "^6.0.1",
+    "jsqr": "^1.4.0",
     "qrcode-generator": "^2.0.4"
   },
   "devDependencies": {
