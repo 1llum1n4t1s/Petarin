@@ -1,0 +1,7 @@
+node_modules/
+dist/
+# Capacitor のネイティブプロジェクトは `cap add` で生成する（CI でも生成）。コミットしない。
+android/
+ios/
+*.log
+.DS_Store

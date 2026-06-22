@@ -1,0 +1,54 @@
+# ぺたりん モバイル: Android ビルド（Capacitor）。
+# web を Vite でビルド → cap add android（毎回生成・android/ は gitignore）→ cap sync → Gradle で debug APK。
+# 署名（release）は未設定＝当面 debug APK を artifact 化。release 署名は keystore を Secrets に入れてから足す。
+name: mobile-android
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "mobile-v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install deps
+        run: pnpm install --ignore-workspace --config.dangerouslyAllowAllBuilds=true
+
+      - name: Build web (Vite)
+        run: pnpm build
+
+      - name: Add Android platform
+        run: pnpm exec cap add android
+
+      - name: Capacitor sync
+        run: pnpm exec cap sync android
+
+      - name: Gradle assembleDebug
+        working-directory: mobile/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: petarin-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

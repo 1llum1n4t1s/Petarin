@@ -1,0 +1,11 @@
+{
+  "appId": "jp.nephilim.petarin",
+  "appName": "ぺたりん",
+  "webDir": "dist",
+  "ios": {
+    "contentInset": "always"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}
