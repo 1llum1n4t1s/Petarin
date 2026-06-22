@@ -283,7 +283,9 @@ body {
   background: rgba(255,255,255,0.4); border-radius: 999px; padding: 2px 8px;
   max-width: 60%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.memo-date { font-size: 10px; opacity: 0.6; }
+/* 日付は CJK（「たった今」等・空白なし）。flex で潰れると 1 文字ごとに折り返して縦書きになるため
+   nowrap＋shrink 禁止で 1 行を死守し、潰れ分は overflow:hidden のドメインチップに吸わせる。 */
+.memo-date { font-size: 10px; opacity: 0.6; white-space: nowrap; flex-shrink: 0; }
 /* 格納時アイコン（絵文字）のバッジ。ドメインチップと並ぶ丸い小窓に収める */
 .memo-icon {
   flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%;
