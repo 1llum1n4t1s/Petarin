@@ -24,9 +24,9 @@ export function importVerifyKey(spki: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.importKey("spki", spki, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
 }
 
-/** 署名対象の正規文字列: vaultId\nts\nmethod\npath\nbodyHashHex(端末側と一致させること)。 */
-export function signString(vaultId: string, ts: string, method: string, path: string, bodyHashHex: string): string {
-  return [vaultId, ts, method, path, bodyHashHex].join("\n");
+/** 署名対象の正規文字列: vaultId\nts\nmethod\npath\nquery\nbodyHashHex(端末側と一致させること)。query は HTTP の "?d=..." 等・WS は ""。 */
+export function signString(vaultId: string, ts: string, method: string, path: string, query: string, bodyHashHex: string): string {
+  return [vaultId, ts, method, path, query, bodyHashHex].join("\n");
 }
 
 export function verifySig(key: CryptoKey, data: string, sig: Uint8Array): Promise<boolean> {

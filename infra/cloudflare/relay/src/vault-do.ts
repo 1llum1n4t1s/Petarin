@@ -64,10 +64,10 @@ export class VaultDO {
 
     // 公開鍵: 登録済みならそれで検証。未登録で pubkey 提示があれば first-write-wins で登録(= vault 作成)。
     let storedPub = await this.state.storage.get<string>("pubkey");
+    const isFirstRegistration = !storedPub;
     if (!storedPub) {
       if (!pubB64) return { ok: false, status: 401, msg: "Vault not registered" };
-      storedPub = pubB64;
-      await this.state.storage.put("pubkey", storedPub);
+      storedPub = pubB64; // 永続化は署名検証成功後(下)。検証前に保存すると不正鍵で vault が恒久ロックされる。
     }
 
     let key: CryptoKey;
@@ -79,7 +79,10 @@ export class VaultDO {
 
     const method = fromQuery ? "GET" : req.method;
     const bodyHash = await sha256Hex(bodyBytes);
-    const data = signString(vaultId, ts, method, url.pathname, bodyHash);
+    // HTTP はクエリも署名対象(?d=... の改竄＝別ドメインのアイテム削除を防ぐ)。WS のクエリは
+    // 認証パラメータ自体(sig を含む)なので署名対象にできない＝pathname のみ。
+    const query = fromQuery ? "" : url.search;
+    const data = signString(vaultId, ts, method, url.pathname, query, bodyHash);
     let ok = false;
     try {
       ok = await verifySig(key, data, b64urlToBytes(sigB64));
@@ -87,6 +90,11 @@ export class VaultDO {
       ok = false;
     }
     if (!ok) return { ok: false, status: 401, msg: "Bad signature" };
+
+    // 初回登録は「正当な署名を伴う最初のリクエスト」でのみ公開鍵を確定する(first-write-wins)。
+    // 検証前に保存すると、vaultId を知った第三者や壊れた初回リクエストが不正鍵を焼き付けて
+    // 以降の正当クライアントを全て Bad signature でブリックできてしまう(Codex/CodeRabbit 指摘)。
+    if (isFirstRegistration) await this.state.storage.put("pubkey", storedPub);
 
     // vault 単位レート制限(認証後)。
     if (this.env.RATELIMIT_VAULT) {
@@ -117,9 +125,12 @@ export class VaultDO {
     const { d, c, n } = body;
     if (!d || !c || !n) return new Response("Missing fields", { status: 400 });
 
-    // per-vault の seq を単調採番(この DO は vault 単位＝単一スレッドなので競合しない)。
+    // per-vault の seq を単調採番。get→put を連続実行して原子的に確保してから D1 へ書く。
+    // D1 の await を跨ぐ間に来た別リクエストが同じ seq を読むと重複し catchup が seq を飛ばす。
+    // CF DO の input gate は storage 操作の前後でのみ閉じるので、get と put の間に他 await を挟まない。
     let seq = (await this.state.storage.get<number>("seq")) || 0;
     seq += 1;
+    await this.state.storage.put("seq", seq);
     const vid = this.state.id.toString(); // ハッシュ化済み vault 識別子
     const updatedAt = Date.now();
 
@@ -132,7 +143,6 @@ export class VaultDO {
     )
       .bind(vid, d, c, n, seq, updatedAt)
       .run();
-    await this.state.storage.put("seq", seq);
 
     // 変更ピンを他端末へ broadcast(本体は載せない＝送信WS無料・受信20:1)。push 元が WS を
     // 張っていても自分の ping を受けるが、クライアント側の自エコー抑止(wasJustPushed)で弾く契約。
@@ -196,10 +206,11 @@ export class VaultDO {
     const d = url.searchParams.get("d");
     if (!d) return new Response("Missing d", { status: 400 });
     const vid = this.state.id.toString();
-    await this.env.DB.prepare(`DELETE FROM notes WHERE vault_id = ?1 AND domain_hash = ?2`).bind(vid, d).run();
+    // seq を先に原子的に確保してから D1 を消す(handlePush と同じ＝concurrent request の seq 重複防止)。
     let seq = (await this.state.storage.get<number>("seq")) || 0;
     seq += 1;
     await this.state.storage.put("seq", seq);
+    await this.env.DB.prepare(`DELETE FROM notes WHERE vault_id = ?1 AND domain_hash = ?2`).bind(vid, d).run();
     const msg = JSON.stringify({ t: "changed", d, seq });
     for (const ws of this.state.getWebSockets()) {
       if (ws.readyState === WebSocket.OPEN) {

@@ -45,10 +45,15 @@ function withCors(res: Response): Response {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
 }
 
+// Upgrade トークンは大文字小文字非依存(RFC 7230 §3.2)。プロキシ/テストツール差異に備え toLowerCase で判定。
+function isWebSocketUpgrade(req: Request): boolean {
+  return (req.headers.get("Upgrade") ?? "").toLowerCase() === "websocket";
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-    const isWs = req.headers.get("Upgrade") === "websocket";
+    const isWs = isWebSocketUpgrade(req);
     const res = await handle(req, env);
     // WS upgrade(101)は webSocket を保持するため再構築しない(CORS も不要)。それ以外は CORS を付ける。
     return isWs && res.status === 101 ? res : withCors(res);
@@ -59,8 +64,11 @@ async function handle(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   if (url.pathname === "/health") return new Response("OK");
 
+  // SALT 未注入は識別子ハードニングが無効化した弱状態。秘密注入漏れで黙って動かさず fail-fast する。
+  if (!env.SALT) return new Response("Server misconfigured", { status: 500 });
+
   // vaultId: HTTP はヘッダ、WS はブラウザがヘッダを付けられないのでクエリで受ける。
-  const isWs = req.headers.get("Upgrade") === "websocket";
+  const isWs = isWebSocketUpgrade(req);
   const vaultId = isWs ? url.searchParams.get("vault") : req.headers.get("X-Vault-Id");
   if (!vaultId) return new Response("Missing vault", { status: 400 });
 
