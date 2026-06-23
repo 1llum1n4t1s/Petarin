@@ -39,8 +39,11 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # 供給網リスク低減: 全ビルド許可せず mobile/pnpm-workspace.yaml の allowBuilds(esbuild のみ)で許可する。
+      # --ignore-workspace を付けると pnpm-workspace.yaml=allowBuilds が読まれず ignored builds になるので付けない
+      #（mobile/pnpm-workspace.yaml があるため上位の repo ルート workspace には巻き込まれない）。
       - name: Install deps
-        run: pnpm install --ignore-workspace --config.dangerouslyAllowAllBuilds=true
+        run: pnpm install
 
       - name: Build web (Vite)
         run: pnpm build

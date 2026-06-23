@@ -17,7 +17,9 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-latest
+    # macos-latest はイメージ更新で Xcode が変わり「Xcode 26+ 必須」を非決定的にするため固定する。
+    # Cap8 要件の Xcode が無ければこの job は失敗＝要件未達が可視化される（必要なら setup-xcode で pin）。
+    runs-on: macos-15
     defaults:
       run:
         working-directory: mobile
@@ -34,8 +36,11 @@ jobs:
       - name: Enable corepack (pnpm)
         run: corepack enable
 
+      # 供給網リスク低減: 全ビルド許可せず mobile/pnpm-workspace.yaml の allowBuilds(esbuild のみ)で許可する。
+      # --ignore-workspace を付けると pnpm-workspace.yaml=allowBuilds が読まれず ignored builds になるので付けない
+      #（mobile/pnpm-workspace.yaml があるため上位の repo ルート workspace には巻き込まれない）。
       - name: Install deps
-        run: pnpm install --ignore-workspace --config.dangerouslyAllowAllBuilds=true
+        run: pnpm install
 
       - name: Build web (Vite)
         run: pnpm build

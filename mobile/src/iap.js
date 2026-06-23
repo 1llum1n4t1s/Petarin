@@ -50,7 +50,9 @@ async function plugin() {
 // ストアに「この買い切りを現在所有しているか」を問い合わせる（true/false）。例外は呼び出し側で握る。
 async function queryOwned() {
   const { NativePurchases, PURCHASE_TYPE } = await plugin();
-  const sup = await NativePurchases.isBillingSupported().catch(() => ({ isBillingSupported: false }));
+  // isBillingSupported の throw（接続一時エラー等）は握り潰さず呼び出し側へ伝播させる。initIap は
+  // それを catch して Preferences キャッシュを維持＝オフライン/一時障害で購入者をロックアウトしない。
+  const sup = await NativePurchases.isBillingSupported();
   if (!sup.isBillingSupported) return false;
   const { purchases } = await NativePurchases.getPurchases({
     productType: PURCHASE_TYPE.INAPP,
@@ -59,8 +61,14 @@ async function queryOwned() {
   const mine = (purchases || []).filter((p) => p.productIdentifier === PRODUCT_ID);
   if (!mine.length) return false;
   if (Capacitor.getPlatform() === "android") {
-    // Android は PURCHASED(="1") かつ acknowledged のものだけ有効（PENDING や未承認は除外）
-    return mine.some((p) => (p.purchaseState === "1" || p.purchaseState === "PURCHASED") && p.isAcknowledged !== false);
+    // Android は PURCHASED かつ acknowledged のものだけ有効（PENDING・未承認は除外）。
+    // purchaseState は数値 1 でも文字列 "1" でも来うる。isAcknowledged は厳密に true を要求する
+    //（undefined を通すと Google Play の承認要件違反＝3日で自動払い戻しされる購入を所有扱いにしてしまう）。
+    return mine.some(
+      (p) =>
+        (p.purchaseState === 1 || p.purchaseState === "1" || p.purchaseState === "PURCHASED") &&
+        p.isAcknowledged === true
+    );
   }
   // iOS: currentEntitlements に non-consumable が在る＝所有
   return true;
@@ -105,14 +113,15 @@ export function isUnlocked() {
 export async function purchase() {
   if (isNative()) {
     const { NativePurchases, PURCHASE_TYPE } = await plugin();
-    const tx = await NativePurchases.purchaseProduct({
+    await NativePurchases.purchaseProduct({
       productIdentifier: PRODUCT_ID,
       productType: PURCHASE_TYPE.INAPP, // Android 用（iOS は無視）。買い切り。autoAcknowledge は既定 true。
       quantity: 1,
     });
-    // 例外を投げなければ購入成立。念のため productIdentifier 一致を確認し、ストア所有照会で最終確定する。
-    const ok = !!tx && tx.productIdentifier === PRODUCT_ID;
-    _unlocked = ok ? true : await queryOwned().catch(() => false);
+    // productIdentifier 一致だけでは解錠しない。iOS の Ask to Buy(deferred) 等で purchaseProduct が
+    // 例外を投げずに保留トランザクションを返すことがあり、未承認のまま解禁してしまうため。必ずストア所有照会
+    //（queryOwned＝Android は acknowledged 厳密確認・iOS は currentEntitlements）で確定してから解錠する。
+    _unlocked = await queryOwned().catch(() => false);
     if (_unlocked) {
       try {
         await Preferences.set({ key: UNLOCK_CACHE_KEY, value: "1" });
