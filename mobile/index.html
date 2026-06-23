@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>ぺたりん</title>
+    <style>
+      :root {
+        --paper: #f7f0df; --card: #fffdf6; --ink: #3a322a; --ink-soft: #8a7d68;
+        --line: #e3d7bf; --accent: #e8a13c; --danger: #c8553d;
+        --y: #fff3b0; --g: #d8f0c8; --b: #cfe3f7; --p: #f0d4ec; --o: #ffe0c2;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--paper); color: var(--ink);
+        font-family: "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+        padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+      }
+      header {
+        position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between;
+        padding: 14px 16px; background: var(--paper); border-bottom: 1px solid var(--line);
+      }
+      header h1 { font-size: 18px; margin: 0; }
+      .btn {
+        border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 10px;
+        padding: 9px 14px; font-size: 14px; font-weight: 700; cursor: pointer;
+      }
+      .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .btn.danger { color: var(--danger); border-color: #e7c3bd; }
+      main { padding: 12px 14px 32px; }
+      .dom { margin-bottom: 18px; }
+      .dom-name { font-size: 12px; color: var(--ink-soft); font-weight: 700; margin: 0 0 8px; }
+      .card {
+        background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px;
+        margin-bottom: 8px; display: flex; gap: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      }
+      .card.color-yellow { background: var(--y); } .card.color-green { background: var(--g); }
+      .card.color-blue { background: var(--b); } .card.color-pink { background: var(--p); }
+      .card.color-orange { background: var(--o); }
+      .card-icon { font-size: 20px; flex-shrink: 0; }
+      .card-body { min-width: 0; font-size: 15px; line-height: 1.6; word-break: break-word; }
+      .card-body p { margin: 0 0 6px; } .card-body a { color: #2f6fb0; }
+      .empty { color: var(--ink-soft); line-height: 1.7; font-size: 14px; }
+
+      .panel[hidden], [hidden] { display: none !important; }
+      .panel {
+        position: fixed; inset: 0; z-index: 20; background: rgba(58,50,42,0.4);
+        display: flex; align-items: flex-end;
+      }
+      .sheet {
+        width: 100%; max-height: 92vh; overflow: auto; background: var(--paper);
+        border-radius: 18px 18px 0 0; padding: 18px 16px calc(24px + env(safe-area-inset-bottom));
+      }
+      .sheet h2 { font-size: 18px; margin: 0 0 12px; display: flex; justify-content: space-between; align-items: center; }
+      .modes { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: 12px; padding: 8px; }
+      .mode { display: flex; gap: 10px; align-items: flex-start; padding: 10px 8px; border-radius: 9px; }
+      .mode input { width: 18px; height: 18px; margin-top: 1px; accent-color: var(--accent); }
+      .mode small { display: block; color: var(--ink-soft); font-weight: 400; font-size: 12px; }
+      .mode b { font-size: 15px; }
+      .wrap { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+      .pair-status { font-weight: 700; color: var(--ink-soft); font-size: 13px; }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; }
+      .lbl { font-size: 12px; color: var(--ink-soft); }
+      textarea {
+        width: 100%; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5;
+        border: 1px solid var(--line); border-radius: 9px; padding: 9px; background: #fff; resize: vertical;
+        word-break: break-all;
+      }
+      .pair-qr { display: block; max-width: 100%; height: auto; margin: 2px auto 6px; padding: 8px; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
+      .note { font-size: 12px; color: var(--ink-soft); line-height: 1.6; }
+      .note.warn { color: var(--danger); }
+      .buy-card { border: 1px dashed var(--accent); border-radius: 12px; padding: 14px; background: #fff8ea; }
+      .scan-sheet { width: 100%; background: #1a1410; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); border-radius: 18px 18px 0 0; }
+      #scanVideo { width: 100%; max-width: 420px; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 14px; background: #000; }
+      .scan-hint { color: #f7f0df; font-size: 13px; text-align: center; margin: 0; }
+      .hbtns { display: flex; gap: 8px; }
+      .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .fab { position: fixed; right: 18px; bottom: calc(20px + env(safe-area-inset-bottom)); width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--accent); color: #fff; font-size: 30px; line-height: 1; box-shadow: 0 4px 14px rgba(0,0,0,0.28); cursor: pointer; z-index: 8; }
+      .card { cursor: pointer; }
+      .ed-row { display: flex; align-items: center; justify-content: space-between; }
+      .ed-icon { width: 48px; height: 48px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); font-size: 26px; cursor: pointer; }
+      .ed-count { font-size: 12px; color: var(--ink-soft); }
+      #edText { min-height: 130px; font-family: inherit; font-size: 15px; }
+      .ed-preview { border: 1px dashed var(--line); border-radius: 10px; padding: 10px; min-height: 36px; background: var(--card); font-size: 14px; line-height: 1.6; word-break: break-word; }
+      .ed-preview:empty { display: none; }
+      .ed-preview p { margin: 0 0 6px; } .ed-preview a { color: #2f6fb0; }
+      .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+      .swatch { width: 34px; height: 34px; border-radius: 50%; border: 2px solid rgba(0,0,0,0.12); cursor: pointer; padding: 0; }
+      .swatch.sel { border-color: var(--ink); box-shadow: 0 0 0 2px var(--accent); }
+      .icon-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; max-height: 52vh; overflow: auto; }
+      .icon-cell { font-size: 22px; aspect-ratio: 1 / 1; border: none; background: transparent; border-radius: 8px; cursor: pointer; padding: 0; }
+      .icon-cell.sel { background: var(--accent); }
+      .group-item { text-align: left; }
+      .trash-meta { font-size: 12px; color: var(--ink-soft); margin-bottom: 4px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>ぺたりん</h1>
+      <div class="hbtns">
+        <button class="btn" id="trashBtn" type="button" aria-label="ゴミ箱">🗑</button>
+        <button class="btn" id="syncBtn" type="button">⇄ 同期</button>
+      </div>
+    </header>
+
+    <main>
+      <div id="notes"></div>
+    </main>
+
+    <button class="fab" id="addBtn" type="button" aria-label="付箋を追加">＋</button>
+
+    <!-- 付箋エディタ（新規/編集） -->
+    <div class="panel" id="editorPanel" hidden>
+      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="edTitle">
+        <h2><span id="edTitle">新規付箋</span> <button class="btn" id="edClose" type="button" aria-label="閉じる">✕</button></h2>
+        <div class="ed-row">
+          <button class="ed-icon" id="edIcon" type="button" aria-label="絵文字を選ぶ">🎲</button>
+          <span class="ed-count" id="edCount">0 / 10000</span>
+        </div>
+        <textarea id="edText" rows="6" placeholder="Markdown で書けます"></textarea>
+        <div class="ed-preview" id="edPreview"></div>
+        <div class="swatches" id="edColors"></div>
+        <div class="row">
+          <button class="btn primary" id="edSave" type="button">保存</button>
+          <button class="btn danger" id="edDelete" type="button" hidden>削除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 絵文字ピッカー -->
+    <div class="panel" id="iconPanel" hidden>
+      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="iconPanelTitle">
+        <h2 id="iconPanelTitle">絵文字を選ぶ <button class="btn" id="iconClose" type="button" aria-label="閉じる">✕</button></h2>
+        <div class="icon-grid" id="iconGrid"></div>
+      </div>
+    </div>
+
+    <!-- 作成先グループ選択 -->
+    <div class="panel" id="groupPickPanel" hidden>
+      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="groupPickPanelTitle">
+        <h2 id="groupPickPanelTitle">どこに作る？ <button class="btn" id="groupClose" type="button" aria-label="閉じる">✕</button></h2>
+        <div class="wrap" id="groupList"></div>
+      </div>
+    </div>
+
+    <!-- 同期設定 / ペアリング -->
+    <div class="panel" id="syncPanel" hidden>
+      <div class="sheet" role="dialog" aria-modal="true">
+        <h2>同期 <button class="btn" id="syncClose" type="button" aria-label="閉じる">✕</button></h2>
+
+        <div class="modes">
+          <label class="mode"><input type="radio" name="m-mode" value="off" /><span><b>同期しない</b><small>端末内のみ（既定）</small></span></label>
+          <label class="mode"><input type="radio" name="m-mode" value="cloud" /><span><b>クラウド同期</b><small>PC・他の端末とリアルタイム共有・暗号化（買い切り）</small></span></label>
+        </div>
+
+        <div class="wrap" id="cloudWrap" hidden>
+          <!-- 未購入: 購入導線 -->
+          <div class="buy-card" id="buyWrap" hidden>
+            <p class="lbl">クラウド同期は買い切り（¥500）で解禁できます。一度購入すれば追加課金はありません。</p>
+            <button class="btn primary" id="buyBtn" type="button">同期機能を購入（¥500）</button>
+          </div>
+
+          <!-- 購入済み: ペアリング -->
+          <div class="wrap" id="pairWrap" hidden>
+            <div class="pair-status" id="pairStatus">未接続</div>
+            <div class="wrap" id="pairSetup">
+              <button class="btn primary" id="pairCreate" type="button">新しい同期グループを作成</button>
+              <button class="btn" id="pairScan" type="button">📷 QRをスキャンして参加</button>
+              <label class="lbl" for="pairInput">または PC で表示したコードを貼り付けて参加</label>
+              <textarea id="pairInput" rows="3" placeholder="ここにコードを貼り付け"></textarea>
+              <button class="btn" id="pairJoin" type="button">このグループに参加</button>
+            </div>
+            <div class="wrap" id="pairLinked" hidden>
+              <label class="lbl">PC でこの QR を読み取るか、下のコードを貼り付けると同じグループに入れます（第三者に見せない）。</label>
+              <img id="pairQr" class="pair-qr" alt="ペアリングQR" hidden />
+              <textarea id="pairCode" rows="3" readonly></textarea>
+              <div class="row">
+                <button class="btn" id="pairCopy" type="button">コードをコピー</button>
+                <button class="btn danger" id="pairUnlink" type="button">接続を解除</button>
+              </div>
+            </div>
+          </div>
+          <p class="note" id="pairNote"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- QR カメラスキャン（getUserMedia + jsQR・HTTPS 必須） -->
+    <div class="panel" id="scanPanel" hidden>
+      <div class="scan-sheet">
+        <video id="scanVideo" playsinline muted></video>
+        <p class="scan-hint">相手の端末（PC 拡張）の QR をこの枠に写してください</p>
+        <button class="btn" id="scanCancel" type="button">キャンセル</button>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

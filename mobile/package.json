@@ -1,0 +1,30 @@
+{
+  "name": "petarin-mobile",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "ぺたりん モバイル（Capacitor）。拡張の同期エンジンを再利用し、クラウド同期(買い切り)で PC とリアルタイム共有する。",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "sync": "cap sync",
+    "add:android": "cap add android",
+    "add:ios": "cap add ios",
+    "open:android": "cap open android",
+    "open:ios": "cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.0",
+    "@capacitor/app": "^6.0.1",
+    "@capacitor/core": "^6.1.0",
+    "@capacitor/ios": "^6.1.0",
+    "@capacitor/preferences": "^6.0.1",
+    "jsqr": "^1.4.0",
+    "qrcode-generator": "^2.0.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.0",
+    "@vitejs/plugin-basic-ssl": "1.2.0",
+    "vite": "^5.4.0"
+  }
+}

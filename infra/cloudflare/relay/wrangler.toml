@@ -1,0 +1,62 @@
+name = "petarin-relay"
+main = "src/index.ts"
+compatibility_date = "2026-05-26"
+
+# Workers Paid プラン($5/月・Ferry / RealTimeTranslator と共有)必須(Durable Objects 利用のため)。
+# ぺたりんのリレーは notify-then-pull(暗号文の store-and-forward + N端末 fan-out)。ferry-relay の
+# 「2 peer 生パススルー」とは別物(あちらは同時オンライン前提のファイル転送用)。
+# ハイバネート WebSocket でアイドル中はメモリ 0 / duration 課金 0(CF 公式保証)。
+
+# 本番 go-live: Custom Domain(relay.petarin.nephilim.jp)へ寄せ、workers_dev=false で workers.dev の口を閉じる。
+# (リレーは vault 署名認証必須＝無認証は 401 でデータ露出なしだが、攻撃面を custom domain だけに絞る。)
+# ローカルで実機検証したい回だけ一時的に true に戻してよい。
+workers_dev = false
+preview_urls = false
+
+# === Durable Object: vault(同期グループ)単位の fan-out ハブ + 暗号文ストア窓口 + seq 採番 ===
+[[durable_objects.bindings]]
+name = "VAULT"
+class_name = "VaultDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["VaultDO"]
+
+# === D1: 暗号文 blob ストア(petarin-sync) ===
+# 作成: `pnpm dlx wrangler d1 create petarin-sync` → 出力された database_id を貼る。
+# スキーマ適用: `pnpm dlx wrangler d1 migrations apply petarin-sync --local`(/--remote)。
+[[d1_databases]]
+binding = "DB"
+database_name = "petarin-sync"
+database_id = "903b1fb1-218e-4225-bad2-0af60f8e0846"
+
+# === カスタムドメイン ===
+# nephilim.jp Zone(Cloudflare・active)配下に relay.petarin.nephilim.jp を通す。
+# wrangler deploy が Zone へ DNS + 証明書を自動作成する。本番はこのドメインを使い workers.dev は閉じる。
+[[routes]]
+pattern = "relay.petarin.nephilim.jp"
+custom_domain = true
+
+# === Rate Limit(ferry-relay と同じ思想。namespace_id は Petarin 用に別番号) ===
+# 注意: unsafe ratelimit binding は `wrangler dev` のローカル workerd が std::terminate で
+# 起動失敗する。ローカルで dev サーバを起動する回だけ一時コメントアウトすること（本番デプロイでは有効）。
+# コードは env.RATELIMIT_* 未定義でも動く（index.ts / vault-do.ts が存在チェック）。
+[[unsafe.bindings]]
+name = "RATELIMIT_IP"
+type = "ratelimit"
+namespace_id = "2001"
+simple = { limit = 60, period = 60 }
+
+[[unsafe.bindings]]
+name = "RATELIMIT_VAULT"
+type = "ratelimit"
+namespace_id = "2002"
+simple = { limit = 120, period = 60 }
+
+# === secret(手動投入) ===
+#   生 vaultId 直入れによる横入り防止用ソルト:
+#   openssl rand -hex 32 | pnpm dlx wrangler secret put SALT
+
+[observability]
+enabled = true
+head_sampling_rate = 1

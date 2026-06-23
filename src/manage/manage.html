@@ -13,6 +13,7 @@
     <link rel="stylesheet" href="../fonts/fonts.css" />
     <link rel="stylesheet" href="manage.css" />
     <script src="../shared/markdown.js"></script>
+    <script src="../vendor/qrcode.js"></script>
   </head>
   <body>
     <div class="grain" aria-hidden="true"></div>
@@ -121,22 +122,58 @@
           <button class="sp-close" id="syncClose" type="button" aria-label="閉じる">✕</button>
         </div>
 
-        <label class="sp-toggle">
-          <input type="checkbox" id="syncEnabled" />
-          <span class="sp-track" aria-hidden="true"><span class="sp-knob"></span></span>
-          <span class="sp-toggle-label">同期を有効にする</span>
-        </label>
+        <fieldset class="sp-modes">
+          <legend>同期方式（端末ごとに選べます）</legend>
+          <label class="sp-mode"><input type="radio" name="syncMode3" value="off" /><span class="sp-mode-t">同期しない<small>すべて端末内ローカル保存・外部送信なし（既定）</small></span></label>
+          <label class="sp-mode"><input type="radio" name="syncMode3" value="chrome" /><span class="sp-mode-t">ブラウザ標準同期<small>無料・同じブラウザの自分の端末間（Google／Firefox 経由）</small></span></label>
+          <label class="sp-mode"><input type="radio" name="syncMode3" value="cloud" /><span class="sp-mode-t">クラウド同期<small>リアルタイム・スマホとも・エンドツーエンド暗号化</small></span></label>
+        </fieldset>
 
-        <p class="sp-consent">
-          同期をONにすると、付箋データ（「見た目の設定」をONにした場合はその設定も）があなたの
+        <p class="sp-consent" id="consentChrome" hidden>
+          ブラウザ標準同期では、付箋データ（「見た目の設定」をONにした場合はその設定も）があなたの
           <b>Google／Firefox アカウントのブラウザ標準同期</b>
-          を通じて、あなたの他の端末と共有されます。
+          を通じて、同じブラウザのあなたの他の端末と共有されます。
           <b>ぺたりん開発者のサーバーには送信されず、開発者はアクセスできません。</b>
-          一度も ON にしていなければ、すべて端末内ローカル保存のまま外部送信は一切ありません。
           OFF にすると<b>この端末では以降の同期（送信）を停止</b>しますが、
-          過去に ON にして同期済みのデータは他の端末から使えるようブラウザの同期ストレージに残ります（この操作では削除しません）。
-          同期の有効化はこの端末だけに適用されます（他の端末を勝手に有効化しません）。
+          過去に同期済みのデータは他の端末から使えるようブラウザの同期ストレージに残ります（この操作では削除しません）。
+          設定はこの端末だけに適用されます（他の端末を勝手に有効化しません）。
         </p>
+
+        <p class="sp-consent" id="consentCloud" hidden>
+          クラウド同期を選ぶと、付箋データはぺたりんの中継サーバー（Cloudflare）を経由し、同じ同期グループの端末間で
+          ほぼリアルタイムに共有されます。<b>本文もサイト名もこの端末で暗号化・ハッシュ化してから送る</b>ため、
+          <b>中継サーバーも開発者も中身もどのサイトかも読めません</b>（エンドツーエンド暗号化）。
+          鍵はこの端末内だけに保存し、ペアリングコードでのみ他の端末へ渡します。
+          ブラウザをまたいだ共有（Chrome↔スマホ等）もできます。
+        </p>
+
+        <div class="sp-pair" id="cloudPair" hidden>
+          <div class="sp-pair-status" id="pairStatus"></div>
+          <div id="pairSetup">
+            <div class="sp-pair-actions">
+              <button class="sp-btn primary" id="pairCreate" type="button">新しい同期グループを作成</button>
+              <button class="sp-btn" id="pairJoinToggle" type="button">既存のグループに参加</button>
+            </div>
+            <div class="sp-pair-join" id="pairJoinBox" hidden>
+              <label class="sp-pair-label" for="pairInput">別の端末で表示したペアリングコードを貼り付け</label>
+              <textarea id="pairInput" class="sp-pair-ta" rows="3" placeholder="ここにコードを貼り付け"></textarea>
+              <button class="sp-btn primary" id="pairJoin" type="button">このグループに参加</button>
+            </div>
+          </div>
+          <div id="pairLinked" hidden>
+            <div class="sp-pair-code" id="pairCodeBox" hidden>
+              <label class="sp-pair-label">スマホでこの QR を読み取るか、下のコードを貼り付けると同じグループに入れます。第三者に見せないでください。</label>
+              <img id="pairQr" class="sp-pair-qr" alt="ペアリングQRコード" hidden />
+              <textarea id="pairCode" class="sp-pair-ta" rows="3" readonly></textarea>
+              <button class="sp-btn" id="pairCopy" type="button">コードをコピー</button>
+            </div>
+            <div class="sp-pair-actions">
+              <button class="sp-btn" id="pairReveal" type="button">引き継ぎコードを表示</button>
+              <button class="sp-btn danger" id="pairUnlink" type="button">この端末の接続を解除</button>
+            </div>
+          </div>
+          <p class="sp-note" id="pairNote"></p>
+        </div>
 
         <div class="sp-body" id="syncBody" hidden>
           <fieldset class="sp-scope">
@@ -146,7 +183,7 @@
             <label class="sp-opt"><input type="radio" name="syncScope" value="all" /> すべてのサイトの付箋（容量に収まる範囲で）</label>
           </fieldset>
 
-          <div class="sp-gauge">
+          <div class="sp-gauge" id="syncGauge">
             <div class="sp-gauge-bar"><span id="syncGaugeFill"></span></div>
             <div class="sp-gauge-text" id="syncGaugeText">0 / 100 KB</div>
           </div>

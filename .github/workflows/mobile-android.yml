@@ -1,0 +1,71 @@
+# ぺたりん モバイル: Android ビルド（Capacitor）。
+# web を Vite でビルド → cap add android（毎回生成・android/ は gitignore）→ cap sync → Gradle で debug APK。
+# 署名（release）は未設定＝当面 debug APK を artifact 化。release 署名は keystore を Secrets に入れてから足す。
+# Actions はサプライチェーン対策で full commit SHA にピン留め（publish.yml と同方針・Dependabot で更新する運用）。
+name: mobile-android
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "mobile-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.0
+        with:
+          persist-credentials: false # git push しない読み取り専用ビルド＝認証情報を .git/config に残さない
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.0.0
+        with:
+          node-version: 22
+          package-manager-cache: false # PR 由来の cache poisoning が release に伝播しないよう明示無効化
+
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      - uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287 # v5.3.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install deps
+        run: pnpm install --ignore-workspace --config.dangerouslyAllowAllBuilds=true
+
+      - name: Build web (Vite)
+        run: pnpm build
+
+      - name: Add Android platform
+        run: pnpm exec cap add android
+
+      - name: Capacitor sync
+        run: pnpm exec cap sync android
+
+      - name: Add CAMERA permission to AndroidManifest (QR スキャナの getUserMedia 用)
+        working-directory: mobile/android
+        run: |
+          # 生 getUserMedia でカメラを使うため CAMERA 権限を注入する（Capacitor は自動付与しない）。
+          # 無いとネイティブビルドの QR スキャンが実行時にパーミッションエラーで失敗する。
+          manifest=app/src/main/AndroidManifest.xml
+          grep -q 'android.permission.CAMERA' "$manifest" || \
+            sed -i 's#</manifest>#    <uses-permission android:name="android.permission.CAMERA" />\n</manifest>#' "$manifest"
+          echo "--- AndroidManifest.xml の権限 ---"; grep -n 'uses-permission' "$manifest" || true
+
+      - name: Gradle assembleDebug
+        working-directory: mobile/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: petarin-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

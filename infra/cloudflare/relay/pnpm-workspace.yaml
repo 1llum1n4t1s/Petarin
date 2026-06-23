@@ -1,0 +1,6 @@
+# relay は wrangler(内部で esbuild / workerd を使う)をビルドする。pnpm のビルド承認を明示許可する。
+# (sharp はルートの icon 生成用で relay には無いので含めない。`allowBuilds:` は pnpm の有効キーでは
+#  ないため削除し、有効な onlyBuiltDependencies だけを確定値で残す。)
+onlyBuiltDependencies:
+  - esbuild
+  - workerd
