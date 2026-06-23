@@ -111,7 +111,7 @@ async function connectRelaySocket() {
   const ts = String(Date.now());
   let sig;
   try {
-    sig = await signRequest(vault.signPrivKey, vault.vaultId, ts, "GET", "/sync", new Uint8Array());
+    sig = await signRequest(vault.signPrivKey, vault.vaultId, ts, "GET", "/sync", "", new Uint8Array());
   } catch (e) {
     console.warn("[petarin] WS 署名失敗:", e);
     return;

@@ -24,7 +24,8 @@ export function createRelayTransport(vault) {
   async function req(method, pathname, query, bodyObj) {
     const ts = String(Date.now());
     const body = bodyObj != null ? ENC.encode(JSON.stringify(bodyObj)) : new Uint8Array();
-    const sig = await signRequest(vault.signPrivKey, vault.vaultId, ts, method, pathname, body);
+    const q = query ? "?" + query : "";
+    const sig = await signRequest(vault.signPrivKey, vault.vaultId, ts, method, pathname, q, body);
     const headers = {
       "X-Vault-Id": vault.vaultId,
       "X-Vault-Ts": ts,
@@ -36,8 +37,16 @@ export function createRelayTransport(vault) {
       headers["Content-Type"] = "application/json";
       init.body = body;
     }
-    const url = vault.relayUrl.replace(/\/+$/, "") + pathname + (query ? "?" + query : "");
-    return fetch(url, init);
+    const url = vault.relayUrl.replace(/\/+$/, "") + pathname + q;
+    // 外部 I/O は無期限待ちを避ける（遅延/ハングで reconcile・MV3 SW が長時間ブロックされないように）。
+    // 15s でアボート→AbortError は呼び出し側（getAll/set/remove）の catch・reconcile 失敗ログへ流れる。
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 15000);
+    try {
+      return await fetch(url, { ...init, signal: ac.signal });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   return {
@@ -51,14 +60,19 @@ export function createRelayTransport(vault) {
       const { items, seq } = await res.json();
       if (typeof seq === "number") lastSeq = seq;
       const out = {};
+      let decryptFailed = 0;
       for (const it of items || []) {
         try {
           const { k, v } = await decryptItem(vault.aesKey, it.c, it.n);
           out[k] = v;
         } catch {
-          // 復号失敗（別鍵/破損）は取り込まない＝「全削除」と誤認させない。当該 item はスキップ。
+          decryptFailed++;
         }
       }
+      // 同一 vault の item は全て同じ aesKey で暗号化されるので、復号失敗＝破損/鍵不一致の異常。
+      // 黙ってスキップすると sync.js が「remote に無い＝削除された」と誤認し local 付箋を消す。
+      // 不完全なミラーを返さず getAll 全体を失敗させ、reconcile を中断して local を温存する（次回再試行）。
+      if (decryptFailed) throw new Error("relay dump: " + decryptFailed + " item(s) failed to decrypt");
       return out;
     },
 

@@ -28,6 +28,7 @@ import {
 import { isValidDomain } from "../shared/sync.js";
 import { DEFAULT_RELAY_URL } from "../shared/relay-transport.js";
 import { generateVault, importVault, exportPairingCode, parsePairingCode } from "../shared/vault.js";
+import { isGroupKey, decodeGroupName } from "../shared/groups.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -350,7 +351,7 @@ function buildIndexRow(g) {
     return row;
   }
 
-  const label = g.domain.replace(/^www\./, "");
+  const label = decodeGroupName(g.domain);
   favi.textContent = (label[0] || "?").toUpperCase();
   const hue = hashHue(g.domain);
   favi.style.background = `linear-gradient(150deg, hsl(${hue} 62% 60%), hsl(${(hue + 26) % 360} 58% 48%))`;
@@ -412,13 +413,13 @@ function renderBoard() {
   const openBtn = $("#openDomain");
   $("#backAll").hidden = !activeDomain; // 狭幅で索引が隠れても「すべて」に戻れる導線
   if (activeDomain) {
-    const label = activeDomain.replace(/^www\./, "");
+    const label = decodeGroupName(activeDomain);
     const hue = hashHue(activeDomain);
     favi.textContent = (label[0] || "?").toUpperCase();
     favi.style.background = `linear-gradient(150deg, hsl(${hue} 62% 60%), hsl(${(hue + 26) % 360} 58% 48%))`;
     title.textContent = label;
     title.title = activeDomain;
-    openBtn.hidden = false;
+    openBtn.hidden = isGroupKey(activeDomain); // group: キーは https URL を持たないので「開く」を隠す
   } else {
     favi.textContent = "★";
     favi.style.background = "";
@@ -559,7 +560,7 @@ function buildTrashCard(entry) {
   }
   const dom = document.createElement("span");
   dom.className = "memo-domain";
-  dom.textContent = domain.replace(/^www\./, "");
+  dom.textContent = decodeGroupName(domain);
   dom.title = domain;
   foot.append(dom);
   const when = document.createElement("span");
@@ -673,7 +674,7 @@ function buildMemo(domain, note) {
   if (!activeDomain) {
     const dom = document.createElement("span");
     dom.className = "memo-domain";
-    dom.textContent = domain.replace(/^www\./, "");
+    dom.textContent = decodeGroupName(domain);
     dom.title = domain;
     foot.append(dom);
   }
@@ -1348,7 +1349,7 @@ function renderSyncDomains(report) {
     }
     const name = document.createElement("span");
     name.className = "sp-dom-name";
-    name.textContent = d.replace(/^www\./, "");
+    name.textContent = decodeGroupName(d);
     name.title = d;
     const count = document.createElement("span");
     count.className = "sp-dom-count";

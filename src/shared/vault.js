@@ -76,10 +76,11 @@ export async function decryptItem(aesKey, c, n) {
 }
 
 // ── リクエスト署名（ECDSA P-256 SHA-256, raw r‖s）。relay auth.ts と一致させる ──
-//   署名対象: vaultId\nts\nmethod\npath\nsha256hex(body)
-export async function signRequest(signPrivKey, vaultId, ts, method, path, bodyBytes) {
+//   署名対象: vaultId\nts\nmethod\npath\nquery\nsha256hex(body)
+//   query は HTTP の検索文字列（"?d=..." 等＝クエリ改竄＝別ドメイン削除を防ぐ）。WS は認証パラメータ自体なので ""。
+export async function signRequest(signPrivKey, vaultId, ts, method, path, query, bodyBytes) {
   const bodyHash = await sha256Hex(bodyBytes);
-  const data = [vaultId, ts, method, path, bodyHash].join("\n");
+  const data = [vaultId, ts, method, path, query, bodyHash].join("\n");
   const sig = await subtle().sign({ name: "ECDSA", hash: "SHA-256" }, signPrivKey, ENC.encode(data));
   return bytesToB64url(new Uint8Array(sig));
 }

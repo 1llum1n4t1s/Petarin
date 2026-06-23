@@ -497,8 +497,8 @@ async function getLocalTrash() {
 //  byDomain    : 復号した Note[]（マージ入力）
 //  rawByDomain : 格納されている生 item（書き込み要否の比較を符号化形同士で行うため）
 //  corrupt     : 復号に失敗したドメイン集合（reconcile はこれらを「今回触らない」で隔離）
-async function readSync() {
-  const all = await _transport.getAll();
+async function readSync(transport) {
+  const all = await transport.getAll();
   // settings item は「キーが在るか」で会計する（truthy かではない）。破損で false/0/"" 等の falsy 値に
   // なっても cloud に物理的に残り slot/バイトを占有するため、`|| null` で存在を握り潰すと会計から漏れ、
   // 上限近傍で「実 quota 超過なのに gate 通過→write_failed」になる（決定的 item_limit に倒せない。Codex）。
@@ -657,9 +657,12 @@ export function reconcile(opts = {}) {
 }
 
 async function _reconcile(opts) {
+  // 実行中に setSyncTransport() で差し替わっても read と write が別バックエンドに割れないよう、
+  // この reconcile の冒頭で transport を 1 つ確定し、以降ローカル参照で使い切る（cloud↔chrome 切替の race 防止）。
+  const transport = getSyncTransport();
   const settings = await getSettings();
   // 既定OFF: 同期無効なら sync API を一切触らず即終了（＝現状と同一挙動）
-  if (!settings.syncEnabled || !hasSync()) {
+  if (!settings.syncEnabled || !transport.isAvailable()) {
     return { enabled: false, domains: [], settingsSynced: false, usedBytes: 0, quota: SYNC_LIMITS.QUOTA_BYTES };
   }
 
@@ -676,7 +679,7 @@ async function _reconcile(opts) {
   const [localNotes, shadow, sync, localTombs, localTrash] = await Promise.all([
     getLocalNotes(),
     getShadow(),
-    readSync(),
+    readSync(transport),
     getLocalTombs(),
     getLocalTrash(),
   ]);
@@ -1117,17 +1120,17 @@ async function _reconcile(opts) {
         // ＝「item 消去済みだが墓石未保存」の復活窓を作らない（Codex#7 / S20）。満杯＋新規 meta で枠が無い回は
         // 上流で metaDeferred 扱いにして削除自体を保留する（remove-first で墓石喪失する経路は廃止。Codex・S42）。
         // よってここで removeKeys がある＝既存 meta の更新 か 新規でも枠あり＝meta-set が新規 item を足せる。
-        await _transport.set({ [SYNC_KEYS.meta]: metaOp });
-        await _transport.remove(removeKeys);
+        await transport.set({ [SYNC_KEYS.meta]: metaOp });
+        await transport.remove(removeKeys);
       } else {
         // 既存墓石のみの回（今回 meta を書かない）→ remove 直行（墓石は既永続化済み＝復活窓なし）。
-        await _transport.remove(removeKeys);
+        await transport.remove(removeKeys);
       }
       const rest = {};
       for (const k of Object.keys(setOps)) if (k !== SYNC_KEYS.meta) rest[k] = setOps[k];
-      if (Object.keys(rest).length) await _transport.set(rest);
+      if (Object.keys(rest).length) await transport.set(rest);
     } else if (hasSet) {
-      await _transport.set(setOps);
+      await transport.set(setOps);
     }
     if (hasSet || removeKeys.length) {
       // 自エコー判定用に「キー→push した値(JSON)」を記録する。remove は null。
