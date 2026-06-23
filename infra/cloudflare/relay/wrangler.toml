@@ -7,10 +7,10 @@ compatibility_date = "2026-05-26"
 # 「2 peer 生パススルー」とは別物(あちらは同時オンライン前提のファイル転送用)。
 # ハイバネート WebSocket でアイドル中はメモリ 0 / duration 課金 0(CF 公式保証)。
 
-# 開発中は workers.dev を一時的に開けて実機検証する(リレーは vault 署名認証必須＝無認証は 401
-# でデータ露出なし)。本番 go-live 時は ferry-relay と同様 Custom Domain(relay.petarin.nephilim.jp 等)
-# へ寄せ、workers_dev=false に戻して口を絞る。
-workers_dev = true
+# 本番 go-live: Custom Domain(relay.petarin.nephilim.jp)へ寄せ、workers_dev=false で workers.dev の口を閉じる。
+# (リレーは vault 署名認証必須＝無認証は 401 でデータ露出なしだが、攻撃面を custom domain だけに絞る。)
+# ローカルで実機検証したい回だけ一時的に true に戻してよい。
+workers_dev = false
 preview_urls = false
 
 # === Durable Object: vault(同期グループ)単位の fan-out ハブ + 暗号文ストア窓口 + seq 採番 ===
@@ -30,27 +30,28 @@ binding = "DB"
 database_name = "petarin-sync"
 database_id = "903b1fb1-218e-4225-bad2-0af60f8e0846"
 
-# === カスタムドメイン(デプロイ時に確定) ===
-# relay.petarin.nephilim.jp は仮。nephilim.jp Zone(Yuro 所有)配下に通すなら有効化する。
-# [[routes]]
-# pattern = "relay.petarin.nephilim.jp"
-# custom_domain = true
+# === カスタムドメイン ===
+# nephilim.jp Zone(Cloudflare・active)配下に relay.petarin.nephilim.jp を通す。
+# wrangler deploy が Zone へ DNS + 証明書を自動作成する。本番はこのドメインを使い workers.dev は閉じる。
+[[routes]]
+pattern = "relay.petarin.nephilim.jp"
+custom_domain = true
 
 # === Rate Limit(ferry-relay と同じ思想。namespace_id は Petarin 用に別番号) ===
 # 注意: unsafe ratelimit binding は `wrangler dev` のローカル workerd が std::terminate で
-# 起動失敗するため、ローカル開発時はコメントアウトする。デプロイ前に必ず有効化すること
-# （コードは env.RATELIMIT_* 未定義でも動くが、本番では rate limit を効かせる）。
-# [[unsafe.bindings]]
-# name = "RATELIMIT_IP"
-# type = "ratelimit"
-# namespace_id = "2001"
-# simple = { limit = 60, period = 60 }
-#
-# [[unsafe.bindings]]
-# name = "RATELIMIT_VAULT"
-# type = "ratelimit"
-# namespace_id = "2002"
-# simple = { limit = 120, period = 60 }
+# 起動失敗する。ローカルで dev サーバを起動する回だけ一時コメントアウトすること（本番デプロイでは有効）。
+# コードは env.RATELIMIT_* 未定義でも動く（index.ts / vault-do.ts が存在チェック）。
+[[unsafe.bindings]]
+name = "RATELIMIT_IP"
+type = "ratelimit"
+namespace_id = "2001"
+simple = { limit = 60, period = 60 }
+
+[[unsafe.bindings]]
+name = "RATELIMIT_VAULT"
+type = "ratelimit"
+namespace_id = "2002"
+simple = { limit = 120, period = 60 }
 
 # === secret(手動投入) ===
 #   生 vaultId 直入れによる横入り防止用ソルト:
