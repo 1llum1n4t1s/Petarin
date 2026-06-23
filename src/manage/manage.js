@@ -1154,8 +1154,12 @@ async function onModeChange(mode) {
     // この端末が出した sync 投影（shadow）を撤去（プライバシー配慮・再接続時の誤判定防止）。
     try { await chrome.runtime.sendMessage({ type: "petarin:purgeSync" }); } catch {}
   } else if (mode === "chrome") {
+    // 別バックエンド(cloud)の shadow を引きずって誤削除しないよう、モード確定前に投影をクリアし、
+    // 新バックエンドでは base=空から和集合マージさせる（shadow にあるが新 remote に無い＝削除と誤判定しない）。
+    try { await chrome.runtime.sendMessage({ type: "petarin:purgeSync" }); } catch {}
     await saveSyncCfg({ syncEnabled: true, syncMode: "chrome" });
   } else if (mode === "cloud") {
+    try { await chrome.runtime.sendMessage({ type: "petarin:purgeSync" }); } catch {}
     await saveSyncCfg({ syncEnabled: true, syncMode: "cloud" });
   }
   renderSyncPanel();
