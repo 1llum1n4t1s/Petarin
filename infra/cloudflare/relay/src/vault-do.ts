@@ -171,8 +171,11 @@ export class VaultDO {
     )
       .bind(vid, since)
       .all<{ d: string; seq: number }>();
-    const max = results.length ? results[results.length - 1].seq : since;
-    return Response.json({ changes: results, seq: max });
+    // 削除は行を物理削除する(handleDelete)ため seq>since のクエリに乗らない。返す seq を DO の現在
+    // seq まで前進させ、「削除だけの回」でもクライアントの since が進む(同じ since での無駄問い合わせ防止)。
+    // 削除自体の伝播はエンジンの墓石(meta item の push＝changes に乗る)が担うので取りこぼさない。
+    const currentSeq = (await this.state.storage.get<number>("seq")) || 0;
+    return Response.json({ changes: results, seq: Math.max(currentSeq, since) });
   }
 
   // 全 item を 1 回で返す(客側 RelayTransport.getAll = chrome.storage.sync.get(null) 相当)。

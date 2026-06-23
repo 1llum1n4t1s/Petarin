@@ -104,7 +104,14 @@ export function createChromeStorageShim(backend) {
 
 // インメモリ・バックエンド（テスト用 / Capacitor 未導入の環境用フォールバック）。
 export function createMemoryBackend(seed) {
-  const map = new Map(seed ? Object.entries(seed) : []);
+  // backend は文字列値の KV（Capacitor Preferences と同契約）。seed に生のオブジェクト/配列を
+  // 渡されても readRaw の JSON.parse が壊れないよう、非文字列は JSON 文字列化して格納する。
+  const map = new Map();
+  if (seed) {
+    for (const [k, v] of Object.entries(seed)) {
+      map.set(k, typeof v === "string" ? v : JSON.stringify(v));
+    }
+  }
   return {
     getItem: async (k) => (map.has(k) ? map.get(k) : null),
     setItem: async (k, v) => void map.set(k, v),

@@ -148,8 +148,12 @@ async function connectRelaySocket() {
   };
   ws.onclose = () => {
     stopHeartbeat();
-    if (_ws === ws) _ws = null;
-    if (isCloudActive()) scheduleReconnect();
+    // 意図的 close(closeRelaySocket が _ws=null 後に閉じる)では再接続しない。自然 drop
+    // (_ws===ws のまま)のときだけ null 化＋再接続をスケジュール（off/解除後の無駄再接続を防ぐ）。
+    if (_ws === ws) {
+      _ws = null;
+      if (isCloudActive()) scheduleReconnect();
+    }
   };
   ws.onerror = () => {
     try {

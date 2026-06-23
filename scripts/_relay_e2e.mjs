@@ -96,5 +96,23 @@ ok("petarin:sync:meta" in all2, "無関係 item は残る");
 const bad = await fetch(RELAY + "/dump", { headers: { "X-Vault-Id": vault.vaultId } });
 ok(bad.status === 401, "署名なしリクエストは 401");
 
+// 5. catchup: 削除だけの回でも since が前進する。物理削除(handleDelete)は seq>since の結果に乗らないが、
+//    返す seq は DO の現在 seq まで進む。Gemini #3457570086 の修正検証＝同じ since での無駄問い合わせを防ぐ。
+//    （削除自体の伝播は墓石=meta item の push が担うので取りこぼさない別経路。）
+async function catchup(since) {
+  const cts = String(Date.now());
+  const csig = await signRequest(vault.signPrivKey, vault.vaultId, cts, "GET", "/catchup", new Uint8Array());
+  const r = await fetch(RELAY + "/catchup?since=" + since, {
+    headers: { "X-Vault-Id": vault.vaultId, "X-Vault-Ts": cts, "X-Vault-Sig": csig, "X-Vault-Pubkey": vault.pubB64 },
+  });
+  return r.json();
+}
+await t.set({ "petarin:tmp": { x: 1 } });
+const seqBeforeDel = t.getLastSeq();
+await t.remove(["petarin:tmp"]); // 物理削除＝seq は進むが seq>since の結果には乗らない
+const cu = await catchup(seqBeforeDel);
+ok(cu && Array.isArray(cu.changes), "catchup 応答（changes 配列）が返る");
+ok(cu.seq > seqBeforeDel, "catchup: 削除だけでも seq が前進（無駄問い合わせ防止）", `since=${seqBeforeDel} → seq=${cu && cu.seq}`);
+
 console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);
 if (FAIL) process.exit(1);

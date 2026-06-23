@@ -140,8 +140,12 @@ async function connectSocket() {
   };
   ws.onclose = () => {
     stopHeartbeat();
-    if (_ws === ws) _ws = null;
-    if (isCloudActive()) scheduleReconnect();
+    // 意図的 close(closeSocket が _ws=null 後に閉じる)では再接続しない。自然 drop
+    // (_ws===ws のまま)のときだけ null 化＋再接続をスケジュール（背面化中の無駄再接続を防ぐ）。
+    if (_ws === ws) {
+      _ws = null;
+      if (isCloudActive()) scheduleReconnect();
+    }
   };
   ws.onerror = () => {
     try {
