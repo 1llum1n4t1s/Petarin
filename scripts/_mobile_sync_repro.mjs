@@ -4,14 +4,21 @@
 //   同時に、拡張側でも未検証だった「実エンジン＋実 relay の cloud 往復」を closing する。
 //
 // 実行: RELAY_URL=https://petarin-relay.1llum1n4t1.workers.dev node scripts/_mobile_sync_repro.mjs
-//   （RELAY_URL 省略時は同 URL を既定使用。Node22 の WebCrypto / fetch を使う。）
+//   （RELAY_URL は必須＝誤って本番へ書き込まないため明示オプトイン。ローカルは RELAY_URL=http://127.0.0.1:8787。
+//    Node22 の WebCrypto / fetch を使う。）
 //
 // 構成: device A（メモリ backend #1）が note を push → device B（別メモリ backend #2・同 vault＝同グループ）が
 //   pull して note を復元できることを確認する＝N端末 store-and-forward の最小往復。
 
 import { createChromeStorageShim, createMemoryBackend } from "../mobile/src/storage-shim.js";
 
-const RELAY = process.env.RELAY_URL || "https://petarin-relay.1llum1n4t1.workers.dev";
+const RELAY = process.env.RELAY_URL;
+if (!RELAY) {
+  throw new Error(
+    "RELAY_URL を明示してください（本番 relay への誤書き込み防止）。" +
+      "例: RELAY_URL=https://petarin-relay.1llum1n4t1.workers.dev node scripts/_mobile_sync_repro.mjs"
+  );
+}
 const HUGE = { totalBudget: Number.MAX_SAFE_INTEGER, perItemBudget: Number.MAX_SAFE_INTEGER };
 let PASS = 0,
   FAIL = 0;

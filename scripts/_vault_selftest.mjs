@@ -46,13 +46,13 @@ const h3 = await keyHash(v.hmacKey, "reddit.com");
 ok(h1 === h2 && /^[0-9a-f]{64}$/.test(h1), "keyHash は端末間一致・64hex・決定的");
 ok(h1 !== h3, "異なるキーは異なるハッシュ");
 
-// 4. 署名が relay 検証（ECDSA P-256, vaultId\\nts\\nmethod\\npath\\nbodyHash）を通る
+// 4. 署名が relay 検証（ECDSA P-256, vaultId\\nts\\nmethod\\npath\\nquery\\nbodyHash）を通る
 const ts = String(Date.now());
 const bodyObj = { d: h1, c, n };
 const body = new TextEncoder().encode(JSON.stringify(bodyObj));
-const sig = await signRequest(v.signPrivKey, v.vaultId, ts, "PUT", "/push", body);
+const sig = await signRequest(v.signPrivKey, v.vaultId, ts, "PUT", "/push", "", body);
 const pub = await crypto.subtle.importKey("spki", b64urlToBytes(v.pairing.pk), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-const data = [v.vaultId, ts, "PUT", "/push", await sha256Hex(body)].join("\n");
+const data = [v.vaultId, ts, "PUT", "/push", "", await sha256Hex(body)].join("\n");
 const good = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pub, b64urlToBytes(sig), new TextEncoder().encode(data));
 ok(good, "署名が relay 検証を通る（契約一致）");
 const tampered = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pub, b64urlToBytes(sig), new TextEncoder().encode(data + "x"));

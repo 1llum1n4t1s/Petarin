@@ -29,44 +29,10 @@ export function pickIcon(usedIcons) {
   return from[Math.floor(Math.random() * from.length)];
 }
 
-export const GROUP_PREFIX = "group:";
+// グループキーの符号化/デコードは拡張デスク(manage.js)と共有するため src/shared/groups.js に集約した。
+// ここはモバイル側の再エクスポート＋既定グループだけを持つ（実体は groups.js が単一の真実の源）。
+export { GROUP_PREFIX, isGroupKey, encodeGroupKey, decodeGroupName } from "../../src/shared/groups.js";
+import { encodeGroupKey } from "../../src/shared/groups.js";
+
 export const DEFAULT_GROUP_NAME = "マイメモ";
-
-const ENC = new TextEncoder();
-const DEC = new TextDecoder();
-function b64url(bytes) {
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-function unb64url(s) {
-  const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4);
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-export function isGroupKey(key) {
-  return typeof key === "string" && key.startsWith(GROUP_PREFIX);
-}
-
-// グループ名 → 安全な domain キー。NFC 正規化で「見た目同じ別キー」を防ぐ（合成濁点・互換文字）。
-export function encodeGroupKey(name) {
-  const norm = String(name || "").normalize("NFC").trim();
-  if (!norm) throw new Error("group name is empty");
-  return GROUP_PREFIX + b64url(ENC.encode(norm));
-}
-
-// domain キー → 表示名。group: なら base64url をデコード、拡張由来ホスト名は www. を除いてそのまま。
-export function decodeGroupName(key) {
-  if (!isGroupKey(key)) return String(key || "").replace(/^www\./, "");
-  try {
-    const name = DEC.decode(unb64url(key.slice(GROUP_PREFIX.length)));
-    return name || "（無題）";
-  } catch {
-    return "（無題のグループ）";
-  }
-}
-
 export const DEFAULT_GROUP_KEY = encodeGroupKey(DEFAULT_GROUP_NAME);

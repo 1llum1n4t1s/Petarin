@@ -111,7 +111,7 @@
 
     <!-- 付箋エディタ（新規/編集） -->
     <div class="panel" id="editorPanel" hidden>
-      <div class="sheet">
+      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="edTitle">
         <h2><span id="edTitle">新規付箋</span> <button class="btn" id="edClose" type="button" aria-label="閉じる">✕</button></h2>
         <div class="ed-row">
           <button class="ed-icon" id="edIcon" type="button" aria-label="絵文字を選ぶ">🎲</button>
@@ -129,16 +129,16 @@
 
     <!-- 絵文字ピッカー -->
     <div class="panel" id="iconPanel" hidden>
-      <div class="sheet">
-        <h2>絵文字を選ぶ <button class="btn" id="iconClose" type="button" aria-label="閉じる">✕</button></h2>
+      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="iconPanelTitle">
+        <h2 id="iconPanelTitle">絵文字を選ぶ <button class="btn" id="iconClose" type="button" aria-label="閉じる">✕</button></h2>
         <div class="icon-grid" id="iconGrid"></div>
       </div>
     </div>
 
     <!-- 作成先グループ選択 -->
     <div class="panel" id="groupPickPanel" hidden>
-      <div class="sheet">
-        <h2>どこに作る？ <button class="btn" id="groupClose" type="button" aria-label="閉じる">✕</button></h2>
+      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="groupPickPanelTitle">
+        <h2 id="groupPickPanelTitle">どこに作る？ <button class="btn" id="groupClose" type="button" aria-label="閉じる">✕</button></h2>
         <div class="wrap" id="groupList"></div>
       </div>
     </div>

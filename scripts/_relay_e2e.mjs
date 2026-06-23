@@ -56,7 +56,7 @@ ok(all["petarin:sync:meta"] && all["petarin:sync:meta"].v === 1, "meta item も 
 
 // 2. WS realtime: 受信側を張って push → 変更ピンを受信
 const ts = String(Date.now());
-const sig = await signRequest(vault.signPrivKey, vault.vaultId, ts, "GET", "/sync", new Uint8Array());
+const sig = await signRequest(vault.signPrivKey, vault.vaultId, ts, "GET", "/sync", "", new Uint8Array());
 const wsUrl =
   RELAY.replace(/^http/, "ws") +
   "/sync?vault=" + encodeURIComponent(vault.vaultId) +
@@ -101,10 +101,11 @@ ok(bad.status === 401, "署名なしリクエストは 401");
 //    （削除自体の伝播は墓石=meta item の push が担うので取りこぼさない別経路。）
 async function catchup(since) {
   const cts = String(Date.now());
-  const csig = await signRequest(vault.signPrivKey, vault.vaultId, cts, "GET", "/catchup", new Uint8Array());
+  const csig = await signRequest(vault.signPrivKey, vault.vaultId, cts, "GET", "/catchup", "?since=" + since, new Uint8Array());
   const r = await fetch(RELAY + "/catchup?since=" + since, {
     headers: { "X-Vault-Id": vault.vaultId, "X-Vault-Ts": cts, "X-Vault-Sig": csig, "X-Vault-Pubkey": vault.pubB64 },
   });
+  if (!r.ok) throw new Error("/catchup failed: " + r.status); // 非JSON/エラーで未処理例外にせず明示的に落とす
   return r.json();
 }
 await t.set({ "petarin:tmp": { x: 1 } });

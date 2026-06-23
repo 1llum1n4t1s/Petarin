@@ -70,7 +70,12 @@ async function applyTransport() {
 // ── reconcile デバウンス ───────────────────────────────────────
 let _timer = 0;
 let _reconciling = false;
+let _reconcilePending = false; // 実行中に来た再同期要求を取りこぼさず、完了後に 1 回だけ追走させる
 function scheduleReconcile(delay = 900) {
+  if (_reconciling) {
+    _reconcilePending = true; // 実行中はタイマーを張らず pending を立てる（finally で追走）
+    return;
+  }
   clearTimeout(_timer);
   _timer = setTimeout(runReconcile, delay);
 }
@@ -86,6 +91,10 @@ async function runReconcile() {
     console.warn("[petarin] reconcile 失敗:", e);
   } finally {
     _reconciling = false;
+    if (_reconcilePending) {
+      _reconcilePending = false;
+      scheduleReconcile(0); // 実行中に来た要求を 1 回追走（取りこぼし防止）
+    }
   }
 }
 async function snapshotNotes() {
@@ -95,19 +104,24 @@ async function snapshotNotes() {
 
 // ── realtime WebSocket（拡張 background と同じ契約: "ping"/"pong"・change-ping）──
 let _ws = null;
+let _wsVaultStamp = ""; // 現在の WS が張られている vault の stamp（切替検知用）
 let _wsAttempt = 0;
 let _wsReconnect = 0;
 let _heartbeat = 0;
 
 async function connectSocket() {
   if (!isCloudActive()) return;
-  if (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)) return;
-  const vault = await loadVault();
+  const vault = await loadVault(); // 先に最新 vault を読んで _vaultStamp を更新する
   if (!vault) return;
+  // 既存接続が同じ vault なら継続。vault が変わっていれば旧接続を畳んで張り直す（旧 vault に居残らない）。
+  if (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)) {
+    if (_wsVaultStamp === _vaultStamp) return;
+    closeSocket();
+  }
   const ts = String(Date.now());
   let sig;
   try {
-    sig = await signRequest(vault.signPrivKey, vault.vaultId, ts, "GET", "/sync", new Uint8Array());
+    sig = await signRequest(vault.signPrivKey, vault.vaultId, ts, "GET", "/sync", "", new Uint8Array());
   } catch {
     return;
   }
@@ -124,6 +138,7 @@ async function connectSocket() {
     return;
   }
   _ws = ws;
+  _wsVaultStamp = _vaultStamp; // この接続が属する vault を記録（切替時に張り直すため）
   ws.onopen = () => {
     _wsAttempt = 0;
     startHeartbeat();
@@ -188,6 +203,7 @@ function closeSocket() {
       /* noop */
     }
     _ws = null;
+    _wsVaultStamp = "";
   }
 }
 

@@ -29,7 +29,7 @@ const key = encodeGroupKey("仕事 / 買い物");
 ok(isGroupKey(key), "group: prefix が付く");
 ok(decodeGroupName(key) === "仕事 / 買い物", "グループ名がデコードで往復一致（スラッシュ含む）");
 ok(isValidDomain(key) === true, "group キーが isValidDomain を通る（クラウド同期安全）");
-ok(isValidDomain("仕事") === true || true, "（参考）日本語生キーも isValidDomain は通るが https 連結事故あり→prefix 方式採用");
+ok(isValidDomain("仕事") === true, "（参考）日本語生キーも isValidDomain は通る（が https 連結事故あり→prefix 方式採用）");
 
 // 作成（saveEditor の新規経路＝restoreNotes 挿入）
 const icon = pickIcon(new Set());

@@ -356,8 +356,11 @@ async function renderPairing() {
   $("#pairLinked").hidden = !paired;
   $("#pairStatus").textContent = paired ? "接続済み: グループ " + String(pairing.id).slice(0, 6) + "…" : "未接続";
   if (paired) {
-    $("#pairCode").value = "";
-    $("#pairQr").hidden = true;
+    // ペアリング済みでも保存済み pairing からコード/QR を再生成して表示する
+    // （別端末を追加で招待でき、onCopy が空文字をコピーする不具合も防ぐ）。
+    const code = exportPairingCode({ pairing });
+    $("#pairCode").value = code;
+    renderPairQr(code);
   }
   setNote("");
 }
@@ -378,7 +381,8 @@ async function onCreate() {
   try {
     const vault = await generateVault(DEFAULT_RELAY_URL);
     await saveVaultPairing(vault.pairing);
-    await saveSettings({ syncEnabled: true, syncMode: "cloud" });
+    // mobile はドメイン選択 UI が無いので scope=all を明示（既定 "selected"＋空 syncDomains だと同期対象ゼロ）。
+    await saveSettings({ syncEnabled: true, syncMode: "cloud", syncScope: "all" });
     await renderPairing();
     $("#pairCode").value = exportPairingCode(vault);
     renderPairQr($("#pairCode").value);
@@ -396,7 +400,8 @@ async function onJoin() {
     const pairing = parsePairingCode(code);
     await importVault(pairing);
     await saveVaultPairing(pairing);
-    await saveSettings({ syncEnabled: true, syncMode: "cloud" });
+    // mobile はドメイン選択 UI が無いので scope=all を明示（既定 "selected"＋空 syncDomains だと同期対象ゼロ）。
+    await saveSettings({ syncEnabled: true, syncMode: "cloud", syncScope: "all" });
     await renderPairing();
     setNote("グループに参加しました。付箋が順次同期されます。");
   } catch {
@@ -406,6 +411,8 @@ async function onJoin() {
 
 async function onUnlink() {
   await clearVaultPairing();
+  // vault 喪失で同期は実質停止するので、設定上も OFF にして「同期ON・未接続」の矛盾表示を防ぐ。
+  await saveSettings({ syncEnabled: false });
   await renderPairing();
   setNote("接続を解除しました。");
 }
