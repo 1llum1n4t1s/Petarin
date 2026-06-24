@@ -32,13 +32,18 @@ jobs:
       - name: Enable corepack (pnpm)
         run: corepack enable
 
+      # Capacitor 8 のテンプレは capacitor.build.gradle で JavaVersion.VERSION_21＝JDK 21 必須
+      # （AGP 8.13 / Gradle 8.14.3）。17 だと Java 21 ターゲットでコンパイルエラーになる。
       - uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287 # v5.3.0
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
+      # 供給網リスク低減: 全ビルド許可せず mobile/pnpm-workspace.yaml の allowBuilds(esbuild のみ)で許可する。
+      # --ignore-workspace を付けると pnpm-workspace.yaml=allowBuilds が読まれず ignored builds になるので付けない
+      #（mobile/pnpm-workspace.yaml があるため上位の repo ルート workspace には巻き込まれない）。
       - name: Install deps
-        run: pnpm install --ignore-workspace --config.dangerouslyAllowAllBuilds=true
+        run: pnpm install --frozen-lockfile # lockfile を固定＝CI で依存解決の非決定性/drift を防ぐ
 
       - name: Build web (Vite)
         run: pnpm build
@@ -49,14 +54,18 @@ jobs:
       - name: Capacitor sync
         run: pnpm exec cap sync android
 
-      - name: Add CAMERA permission to AndroidManifest (QR スキャナの getUserMedia 用)
+      - name: AndroidManifest へ権限注入 (CAMERA=QRスキャナ / BILLING=アプリ内課金)
         working-directory: mobile/android
         run: |
-          # 生 getUserMedia でカメラを使うため CAMERA 権限を注入する（Capacitor は自動付与しない）。
-          # 無いとネイティブビルドの QR スキャンが実行時にパーミッションエラーで失敗する。
+          # CAMERA: 生 getUserMedia でカメラを使うため注入（Capacitor は自動付与しない）。無いと QR スキャンが
+          #         実行時にパーミッションエラーで失敗する。
+          # BILLING: @capgo/native-purchases の課金に com.android.vending.BILLING が要る。Play Billing ライブラリが
+          #          merge するはずだが、library 依存に頼らず明示注入して確実化（manifest merge は重複を 1 つに畳む）。
           manifest=app/src/main/AndroidManifest.xml
           grep -q 'android.permission.CAMERA' "$manifest" || \
             sed -i 's#</manifest>#    <uses-permission android:name="android.permission.CAMERA" />\n</manifest>#' "$manifest"
+          grep -q 'com.android.vending.BILLING' "$manifest" || \
+            sed -i 's#</manifest>#    <uses-permission android:name="com.android.vending.BILLING" />\n</manifest>#' "$manifest"
           echo "--- AndroidManifest.xml の権限 ---"; grep -n 'uses-permission' "$manifest" || true
 
       - name: Gradle assembleDebug

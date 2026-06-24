@@ -1,0 +1,73 @@
+# ぺたりん モバイル: iOS ビルド検証（Capacitor 8・Swift Package Manager）。
+# web を Vite でビルド → cap add ios（毎回生成・ios/ は gitignore）→ Info.plist に NSCameraUsageDescription を
+# 注入（QR スキャナの getUserMedia 用・Android の CAMERA 注入と対称）→ 署名なしで simulator 向けにコンパイル検証。
+# 署名・実機 .ipa・App Store 申請は Apple Developer 証明書（macOS/署名）が要るので別途。ここはコンパイルが通るかの検証。
+# Capacitor 8 は Xcode 26+ を要求＝runner の Xcode 次第（未達ならこの job は環境要件待ちとして赤くなる）。
+# Actions はサプライチェーン対策で full commit SHA にピン留め（publish.yml / mobile-android.yml と同方針・Dependabot 更新）。
+name: mobile-ios
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "mobile-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # macos-latest はイメージ更新で Xcode が変わり「Xcode 26+ 必須」を非決定的にするため固定する。
+    # Cap8 要件の Xcode が無ければこの job は失敗＝要件未達が可視化される（必要なら setup-xcode で pin）。
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.0
+        with:
+          persist-credentials: false # 読み取り専用ビルド＝認証情報を .git/config に残さない
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.0.0
+        with:
+          node-version: 22
+          package-manager-cache: false # PR 由来の cache poisoning を release に伝播させない
+
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      # 供給網リスク低減: 全ビルド許可せず mobile/pnpm-workspace.yaml の allowBuilds(esbuild のみ)で許可する。
+      # --ignore-workspace を付けると pnpm-workspace.yaml=allowBuilds が読まれず ignored builds になるので付けない
+      #（mobile/pnpm-workspace.yaml があるため上位の repo ルート workspace には巻き込まれない）。
+      - name: Install deps
+        run: pnpm install --frozen-lockfile # lockfile を固定＝CI で依存解決の非決定性/drift を防ぐ
+
+      - name: Build web (Vite)
+        run: pnpm build
+
+      - name: Add iOS platform
+        run: pnpm exec cap add ios
+
+      - name: Capacitor sync
+        run: pnpm exec cap sync ios
+
+      - name: Info.plist へ NSCameraUsageDescription 注入 (QR スキャナの getUserMedia 用)
+        working-directory: mobile/ios
+        run: |
+          # iOS 14.3+ の WKWebView は getUserMedia 対応だが、Info.plist のカメラ用途説明が無いと実行時に拒否される。
+          # Android の CAMERA 注入と対称に「生成物に依存せず再現可能」に注入する（Delete→Add で冪等）。
+          plist=App/App/Info.plist
+          /usr/libexec/PlistBuddy -c "Delete :NSCameraUsageDescription" "$plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'QRコードを読み取ってグループに参加するためにカメラを使用します'" "$plist"
+          echo "--- Info.plist のカメラ用途 ---"; /usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" "$plist"
+
+      - name: Xcode で署名なしコンパイル検証 (simulator)
+        working-directory: mobile/ios/App
+        run: |
+          # 署名・provisioning は Apple Developer 証明書が要るので CI ではコンパイル検証のみ（simulator SDK）。
+          # 実機 .ipa / App Store 申請は別（証明書を Secrets に入れてから署名ビルドを足す）。
+          # In-App Purchase(StoreKit2) は entitlement 不要＝App Store Connect の product 登録で機能する。
+          set -o pipefail
+          xcodebuild -project App.xcodeproj -scheme App -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build | tail -40

@@ -368,11 +368,12 @@ async function renderPairing() {
 async function onBuy() {
   setNote("購入処理中…");
   try {
-    await purchase();
+    const ok = await purchase();
+    if (!ok) return setNote("購入が確認できませんでした。", true); // 未解錠で「解禁」と誤表示しない
     await renderPairing();
     setNote("クラウド同期を解禁しました。グループを作成するか、PC で表示したコードで参加してください。");
   } catch {
-    setNote("購入に失敗しました。", true);
+    setNote("購入に失敗しました（キャンセルまたはエラー）。", true);
   }
 }
 
@@ -427,8 +428,10 @@ async function onCopy() {
 }
 
 // ── QR カメラスキャン（getUserMedia + jsQR）。検出したコードで onJoin を自動実行 ──
-// Web(Safari)は HTTPS＝secure context で動く。ネイティブ(WKWebView)はカメラ権限(Info.plist の
-// NSCameraUsageDescription)が要る／必要なら barcode-scanner プラグインへ差し替える（TODO）。
+// Web(Safari)は HTTPS＝secure context で動く。iOS の WKWebView は 14.3+ で getUserMedia 対応＝
+// Info.plist の NSCameraUsageDescription があれば自前アプリの WebView でカメラが使える（CI で注入・
+// deployment target 15.0）。Android は AndroidManifest の CAMERA 権限が要る（CI で注入）。
+// ※ WebKit bug #208667 は「Chrome/Firefox 等サードパーティ WKWebView ブラウザ」の話で自前アプリには当たらない。
 let scanStream = null;
 let scanRAF = 0;
 async function openScanner() {
