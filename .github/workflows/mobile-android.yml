@@ -43,7 +43,7 @@ jobs:
       # --ignore-workspace を付けると pnpm-workspace.yaml=allowBuilds が読まれず ignored builds になるので付けない
       #（mobile/pnpm-workspace.yaml があるため上位の repo ルート workspace には巻き込まれない）。
       - name: Install deps
-        run: pnpm install
+        run: pnpm install --frozen-lockfile # lockfile を固定＝CI で依存解決の非決定性/drift を防ぐ
 
       - name: Build web (Vite)
         run: pnpm build
