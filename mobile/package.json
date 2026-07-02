@@ -14,16 +14,17 @@
     "open:ios": "cap open ios"
   },
   "dependencies": {
-    "@capacitor/android": "^6.1.0",
-    "@capacitor/app": "^6.0.1",
-    "@capacitor/core": "^6.1.0",
-    "@capacitor/ios": "^6.1.0",
-    "@capacitor/preferences": "^6.0.1",
+    "@capacitor/android": "^8.4.1",
+    "@capacitor/app": "^8.1.0",
+    "@capacitor/core": "^8.4.1",
+    "@capacitor/ios": "^8.4.1",
+    "@capacitor/preferences": "^8.0.1",
+    "@capgo/native-purchases": "^8.4.6",
     "jsqr": "^1.4.0",
     "qrcode-generator": "^2.0.4"
   },
   "devDependencies": {
-    "@capacitor/cli": "^6.1.0",
+    "@capacitor/cli": "^8.4.1",
     "@vitejs/plugin-basic-ssl": "1.2.0",
     "vite": "^5.4.0"
   }

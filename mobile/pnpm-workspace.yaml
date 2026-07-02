@@ -1,0 +1,6 @@
+# pnpm のビルドスクリプト許可（供給網リスク低減＝`dangerouslyAllowAllBuilds` で全許可せず、postinstall
+# ビルドが要る依存だけ true にする）。pnpm v11 は allowBuilds で許可/拒否を明示し、未列挙はデフォルト拒否
+# ＝未レビュー扱い（strictDepBuilds）。esbuild は vite が使うネイティブ binary を postinstall で配置＝ビルド必須。
+# @capacitor/* / @capgo はネイティブプラグインだが Node 側 postinstall は持たない（gradle/SPM 側でビルド）＝許可不要。
+allowBuilds:
+  esbuild: true
