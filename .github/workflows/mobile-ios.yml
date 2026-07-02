@@ -79,10 +79,11 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build | tail -40
 
   # ── TestFlight 配信（workflow_dispatch で testflight=true のときだけ）──────────────────────
-  # 証明書 p12 は使わず、App Store Connect API キーによる cloud signing（xcodebuild
-  # -allowProvisioningUpdates + -authenticationKey*）で Apple Distribution 証明書と
-  # provisioning profile を Xcode に自動管理させる＝Secrets は ASC_KEY_ID / ASC_ISSUER_ID /
-  # ASC_PRIVATE_KEY_P8 の 3 つだけで完結する。アップロードも同じ API キー（altool）。
+  # 署名は manual signing（Apple Distribution 証明書 p12 + App Store プロファイル）。
+  # cloud signing（-allowProvisioningUpdates だけで完結する方式）は API キーのロールが
+  # クラウド管理証明書に届かず "Cloud signing permission error" になったため、ASC API で
+  # 発行した証明書/プロファイル（Secret リポ apple_signing/petarin/ に保管・発行手順は
+  # secrets.json の petarin_ios_dist 参照）を Secrets 経由で注入する。アップロードは API キー（altool）。
   # 前提: App Store Connect にアプリレコード（jp.nephilim.petarin）が作成済みであること。
   testflight:
     if: github.event_name == 'workflow_dispatch' && inputs.testflight
@@ -126,39 +127,47 @@ jobs:
           /usr/libexec/PlistBuddy -c "Delete :ITSAppUsesNonExemptEncryption" "$plist" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$plist"
 
-      - name: ASC API キーを配置
+      - name: 署名素材を配置（p12 → 一時キーチェーン・プロファイル・ASC API キー）
         env:
+          IOS_DIST_P12_BASE64: ${{ secrets.IOS_DIST_P12_BASE64 }}
+          IOS_DIST_P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
           ASC_PRIVATE_KEY_P8: ${{ secrets.ASC_PRIVATE_KEY_P8 }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
         run: |
-          # xcodebuild 用（任意パス）と altool 用（規定の探索パス）の両方に置く
-          mkdir -p "$RUNNER_TEMP/asc" "$HOME/.appstoreconnect/private_keys"
-          printf '%s' "$ASC_PRIVATE_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey.p8"
+          # 一時キーチェーンに Apple Distribution 証明書を import（runner は使い捨てだが作法として専用キーチェーン）
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASS=$(uuidgen)
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          echo "$IOS_DIST_P12_BASE64" | base64 -d > "$RUNNER_TEMP/dist.p12"
+          security import "$RUNNER_TEMP/dist.p12" -k "$KEYCHAIN" -P "$IOS_DIST_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASS" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          # プロビジョニングプロファイルを規定パスへ（UUID 名で配置）
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 -d > "$HOME/Library/MobileDevice/Provisioning Profiles/2583001d-a6c8-40b3-8fe7-b26505c06506.mobileprovision"
+          # altool（アップロード）用の ASC API キー
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
           printf '%s' "$ASC_PRIVATE_KEY_P8" > "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
 
-      - name: Archive（cloud signing・App Store 配布向け）
+      - name: Archive（manual signing・App Store 配布向け）
         working-directory: mobile/ios/App
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -o pipefail
           # ビルド番号は run_number で単調増加させる（TestFlight は同一ビルド番号の再アップロードを拒否する）
           xcodebuild -project App.xcodeproj -scheme App -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/App.xcarchive" archive \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM=SL228Y8UUR \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="Petarin AppStore" \
             CURRENT_PROJECT_VERSION=${{ github.run_number }} | tail -40
 
       - name: Export .ipa
         working-directory: mobile/ios/App
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -o pipefail
           cat > "$RUNNER_TEMP/exportOptions.plist" <<'EOF'
@@ -168,7 +177,12 @@ jobs:
           <dict>
             <key>method</key><string>app-store-connect</string>
             <key>teamID</key><string>SL228Y8UUR</string>
-            <key>signingStyle</key><string>automatic</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>jp.nephilim.petarin</key><string>Petarin AppStore</string>
+            </dict>
             <key>uploadSymbols</key><true/>
           </dict>
           </plist>
@@ -176,11 +190,7 @@ jobs:
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/App.xcarchive" \
             -exportPath "$RUNNER_TEMP/export" \
-            -exportOptionsPlist "$RUNNER_TEMP/exportOptions.plist" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" | tail -20
+            -exportOptionsPlist "$RUNNER_TEMP/exportOptions.plist" | tail -20
           ls -la "$RUNNER_TEMP/export"
 
       - name: TestFlight へアップロード
