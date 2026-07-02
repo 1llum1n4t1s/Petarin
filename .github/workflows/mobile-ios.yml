@@ -127,6 +127,16 @@ jobs:
           /usr/libexec/PlistBuddy -c "Delete :ITSAppUsesNonExemptEncryption" "$plist" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$plist"
 
+      - name: 最新 Xcode を選択（App Store Connect は iOS 26 SDK=Xcode 26+ を要求）
+        run: |
+          # runner 既定の Xcode（16.4=iOS 18.5 SDK）だと altool が 409 SDK version issue で弾く。
+          # イメージ同梱の最新 Xcode を明示選択する（無ければここで一覧が出て要件未達が可視化される）。
+          ls -d /Applications/Xcode*.app
+          LATEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "selected: $LATEST"
+          sudo xcode-select -s "$LATEST/Contents/Developer"
+          xcodebuild -version
+
       - name: 署名素材を配置（p12 → 一時キーチェーン・プロファイル・ASC API キー）
         env:
           IOS_DIST_P12_BASE64: ${{ secrets.IOS_DIST_P12_BASE64 }}
