@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # ぺたりん — 開発者向けメモ
 
-ドメイン単位の WEB ページ付箋 Chrome 拡張（MV3）。利用者向けの説明は [`README.md`](README.md)。
+ドメイン単位の WEB ページ付箋 Chrome 拡張（MV3）＋ 同期エンジンを共有するモバイルアプリ（`mobile/`・Capacitor）＋ クラウド同期リレー（`infra/cloudflare/relay/`・Cloudflare Workers）。利用者向けの説明は [`README.md`](README.md)。
 
 ## アーキテクチャ
 
@@ -15,18 +15,25 @@ icons/                   icon.svg を単一ソースに icon-16/48/128.png を�
 src/
   shared/
     storage.js           付箋・設定の単一の真実の源（popup/manage/background が import）。COLORS/FONTS/FONT_SIZES/設定既定もここ。書き込みは withLock で直列化
-    sync.js              複数PC同期エンジン（任意・既定OFF）。local が真実、chrome.storage.sync は任意ミラー
+    sync.js              複数PC同期エンジン（任意・既定OFF）。local が真実、ミラー先は transport 抽象（setSyncTransport）＝chrome.storage.sync か relay
+    vault.js             クラウド同期の vault（同期グループ）鍵と暗号プリミティブ（ECDSA P-256 署名・AES-GCM 本文暗号化・HMAC キーハッシュ。WebCrypto＝ブラウザ/Node22/Workers 共通）
+    relay-transport.js   sync.js の transport を relay に実装＝リレーを「暗号化された chrome.storage.sync ミラー」に見せる（マージ頭脳は無改造）
+    groups.js            グループキー（`group:`+base64url）の符号化/復号。モバイルのスタンドアローン「グループ」と拡張デスクの表示を 1 箇所に集約
     markdown.js          依存なしの安全な Markdown→DOM レンダラ（globalThis.PetaMD.render）。innerHTML 不使用＝XSS 不能。content(classic) と popup/manage(module) の両方から使う
-  background/background.js インストール時に既定設定を用意 ＋ 同期ハブ（onChanged を見て push/pull を reconcile でデバウンス）
+  background/background.js インストール時に既定設定を用意 ＋ 同期ハブ（onChanged を見て push/pull を reconcile でデバウンス）。排他3モード（off/chrome/cloud）の transport 切替と relay WS（変更ピン受信）保持
   content/
     content.js           ページに付箋レールを描画（Shadow DOM 隔離・ドラッグ・開閉・編集/プレビュー・色・絵文字・削除・フォント/サイズ/行番号/文字数）
     rail.css             レールの見た目（fetch して shadow root に注入。web_accessible_resources）
   popup/                 ツールバーのポップアップ（このドメインの簡易設定＝端/半透明/表示/書体/サイズ/行番号・検索・付箋一覧・「付箋デスク」への入口）
-  manage/                付箋デスク（options_ui＝別タブ。全ドメインの付箋を管理＋複数PC同期の設定パネル）
+  manage/                付箋デスク（options_ui＝別タブ。全ドメインの付箋を管理＋同期パネル＝排他3モード選択・ペアリング QR/コード発行/参加）
+  vendor/qrcode.js       ペアリング QR 生成（manage.html が読む vendored ライブラリ）
   fonts/                 同梱フォント（OFL-1.1・12書体woff2）＋ fonts.css（@font-face・popup/manage 用）＋ LICENSE/NOTICE。content は FontFace API で遅延ロード
+mobile/                  モバイルアプリ（Capacitor 8 + Vite）。同期エンジンは @shared エイリアスで拡張と単一ソース共有（詳細は mobile/README.md）
+infra/cloudflare/relay/  クラウド同期リレー（Workers + Durable Object + D1・standalone pnpm）。notify-then-pull＝暗号文 store-and-forward + WS fan-out
 scripts/
   generate-icons.js      正規のアイコン生成（sharp, icon.svg → png）
   _raster_icons.py       cairo の無い環境向けフォールバック（Pillow で同デザインを描画）
+  _sync_repro.mjs        同期エンジン回帰テスト（下記テスト節）。ほか _vault_selftest / _relay_e2e / _mobile_crud_repro / _mobile_sync_repro
 docs/preview-rail.html   開発プレビュー（chrome API をモックしレールを実ページ風に確認。scripts/_preview_server.py で配信）
 ```
 
@@ -34,10 +41,11 @@ docs/preview-rail.html   開発プレビュー（chrome API をモックしレ�
 
 ## データ仕様（chrome.storage.local）
 
-- `petarin:settings` = `{ side, collapsedTranslucent, translucentOpacity, showOnPage, creatorRatio, font, fontSize, lineNumbers, defaultColor, syncEnabled, syncSettings, syncScope, syncDomains }`
+- `petarin:settings` = `{ side, collapsedTranslucent, translucentOpacity, showOnPage, creatorRatio, font, fontSize, lineNumbers, defaultColor, syncEnabled, syncMode, syncSettings, syncScope, syncDomains }`
   - `font` は `FONTS` の id（既定 `system`＝端末標準スタック・未知は system）。`fontSize` は px（既定 11・`FONT_SIZES` の離散値）。`lineNumbers` は編集時の行ガター表示（既定 false）。`defaultColor` は「最後に選んだ色」＝次の新規作成の初期色（`COLORS` の id・既定 `yellow`）。
   - これら 4 つは「見た目設定」として同期可能＝`SYNCABLE_SETTINGS` に含む。`sync.js` の `isValidSettingValue` で型・範囲・メンバー検証を通す（未検証だと採用されない）。font/fontSize/lineNumbers/defaultColor 自体は `persistDefaultColor` 等で該当フィールドのみ重ね書きし、同期フラグを巻き戻さない。
-  - 末尾 4 つ（syncEnabled/syncSettings/syncScope/syncDomains）は複数PC同期の制御（既定 OFF）。同期制御自体は「端末ごと」の設定で sync しない（`SYNCABLE_SETTINGS` から除外）。
+  - 同期制御（syncEnabled/syncMode/syncSettings/syncScope/syncDomains）は「端末ごと」の設定で sync しない（`SYNCABLE_SETTINGS` から除外）。`syncMode` は同期 ON 時の経路（排他）＝`"chrome"`（ブラウザ標準同期）| `"cloud"`（relay）。OFF は `syncEnabled=false`。
+- `petarin:sync:vault` = クラウド同期の vault（ペアリング鍵一式・**local 専用＝never sync**・紛失は復旧不可）。`petarin:sync:localTombs` も local 専用（§複数PC同期）。
 - `petarin:notes` = `{ [domain]: Note[] }`
   - `Note = { id, text, color, icon, posRatio, createdAt, updatedAt }`
   - `posRatio` は配置サイドの主軸方向の位置（0〜1）。クロス軸は常に端に吸着＝軸ロック。
@@ -63,7 +71,7 @@ docs/preview-rail.html   開発プレビュー（chrome API をモックしレ�
 
 ## 複数PC同期（案B・任意・既定 OFF）
 
-`shared/sync.js` が担う opt-in 同期。`chrome.storage.local` を常に真実の源とし、`chrome.storage.sync` は任意のミラー（既定 OFF＝外部送信ゼロで現状と完全に同一挙動）。`background.js` が `onChanged` を見て push/pull を `reconcile()` でデバウンス実行する。
+`shared/sync.js` が担う opt-in 同期。`chrome.storage.local` を常に真実の源とし、ミラー先は transport 抽象（`setSyncTransport`）経由＝既定は `chrome.storage.sync`、cloud モードでは relay（§クラウド同期）。既定 OFF＝外部送信ゼロで現状と完全に同一挙動。`background.js` が `onChanged` を見て push/pull を `reconcile()` でデバウンス実行する。以下の容量・墓石ロジックは transport が何であれ共通（cloud は容量 gating を巨大 budget で実質無効化するだけ）。
 
 - ドメイン単位の 3-way マージ（shadow/base + local + remote）。Note は `updatedAt` の LWW。削除検出の本体は shadow(base) チャネル（`mergeDomainNotes` の deletedLocally/Remotely）で、tombstone は「shadow を失った再取り込み／独立コピー端末」のための backstop（固定 TTL=180 日の純時間ベース GC）。
 - 墓石の deletedAt は **実削除時刻** を刻む。削除時に local 専用キー `petarin:sync:localTombs`（`{ [domain]: { [id]: deletedAt } }`・同期しない）へ実時刻を記録し（`storage.js` の削除系＝`_commitWithTombs`／`content.js` の `removeNotesPersist` が notes と同一 set で書く）、reconcile は read-only で読んで `mergeDomainNotes(...,domTombs)` に渡す（`tomb[tk]=domTombs[id]||now`）。これが無いと「オフライン削除→再接続前に他端末が編集」で再接続時刻の墓石が編集に勝ち編集を握り潰す（delete-wins 誤解決。Codex#5）。同期 OFF で shadow(base) を破棄した後のローカル削除も `mergeDomainNotes` の `loggedDelete`（localTombs に在りローカル不在）で検出し、再 ON 時に stale な remote を pull で復活させない（Codex#2・S37）。今回初確立の墓石は実削除時刻が TTL 超でも同回 `gcTombstones` で即 GC せず永続化する（監査 I4）。`undoDelete`／バックアップ import（`manage.js`）は復元時に `updatedAt=now` へ更新し墓石に勝たせる（import は外部入力なのでドメインを `isValidDomain` で検証してから取り込む）。旧データ(icon 無し)の補完は端末間で収束する決定的選択（id 安定ハッシュ）にして churn を防ぐ。回帰は S29/S31/S32。`nextShadowNotes` は cloud の remote で pre-seed し、スコープ外・容量退避・復号失敗で今回 push しないドメインも base=remote を保つ（base を失うと再スコープ時にゾンビ復活する）。`local` を全消しする `purgeSyncProjection()` は shadow だけ消し sync キーは残す（他端末の削除と誤認させない）。
@@ -71,7 +79,24 @@ docs/preview-rail.html   開発プレビュー（chrome API をモックしレ�
 - push 失敗は握り潰さず `report.error` に載せ reject させない。失敗時は shadow を前進させず（次回 reconcile で再 push 担保）、失敗ドメインは同期パネルで「送信失敗」と可視化する。
 - **ゴミ箱（`petarin:trash`）も「追加だけ」同期する**（§データ仕様参照）。reconcile は local＋今回の消失退避＋remote を `mergeTrash`（純関数・和集合・`(domain,id)` dedupe・`deletedAt` LWW・全体100件）で突き合わせ、local へ書き戻し（消失退避と notes 削除は同一 set で原子的）、`SYNC_KEYS.trash` 単一 item として cloud へ送る。**shadow/墓石を持たない**＝除去は伝播しない。cloud item は per-item 予算超で最古から間引いて収め（local は全件保持）、`syncScope==="selected"` は選択ドメインのゴミ箱だけ送る。容量会計は trash item も「cloud に残る item」として算入（settings/meta と同様に willWrite 時は符号化サイズ・据え置き時は生サイズ）。`decodeTrashItem` は破損時 `[]`（union-only でローカルを消さないので空扱いで安全＝domain item の corrupt 隔離より緩くてよい）。回帰は S66〜S71。
 - 設計の経緯: tombstone GC は当初 lastSeen ベース（活動中全端末が観測済みで刈る）を試みたが、スコープ外端末の誤観測・単一端末の即GC・stale 境界での編集握り潰し等のゾンビ/データロス経路を生むため、純時間 TTL へ作り直した（`scripts/_sync_repro.mjs` の S5〜S9 が各経路の回帰テスト）。
-- 同期 ON/OFF・対象スコープは `manage/` の同期パネルで設定。Chrome/Edge/Firefox はそれぞれ別サイロ（ブラウザ跨ぎ同期は不可）。リリース前にプライバシーポリシー／ストア掲載文の同期文言（Google・Microsoft・Firefox）を整えること。**同期 ON では現役付箋だけでなくゴミ箱内の削除済み付箋本文も cloud（ブラウザ同期ストレージ）へ送られる**ため、同期文言はその旨も含めて改訂すること。
+- 同期 ON/OFF・モード・対象スコープは `manage/` の同期パネルで設定。chrome モードは Chrome/Edge/Firefox それぞれ別サイロ（ブラウザ跨ぎ同期は不可）＝ブラウザ跨ぎ・モバイル連携はクラウドモードで。**同期 ON では現役付箋だけでなくゴミ箱内の削除済み付箋本文も同期先（ブラウザ同期ストレージ or relay）へ送られる**（プライバシーポリシーに明記済み。文言を触るときは維持すること）。
+
+## クラウド同期（relay・排他3モード）
+
+同期は **off / chrome / cloud の排他3モード**（`syncEnabled`+`syncMode` の二段・同時有効は 1 つ）。cloud は Cloudflare 上の自前リレー（`infra/cloudflare/relay/`）を使い、**E2E 暗号化＝サーバーは中身もサイトも知らない**。
+
+- **notify-then-pull**: 編集→暗号文本体を HTTP push→薄い変更ピン `{t:changed,d,seq}` だけ WS→vault 単位の Durable Object（`VaultDO`）が全端末へ broadcast→受信側は該当ドメインだけ pull→既存 `mergeDomainNotes` で反映。アイドルは Hibernatable WebSocket（`state.acceptWebSocket()` 必須・`ws.accept()` 厳禁）で duration 課金ゼロ。
+- **自己完結ペアリング鍵（アカウント不要）**: vault = ECDSA P-256 鍵ペア＋AES 鍵。QR／引き継ぎコードで端末間に秘密鍵を渡す。relay は公開鍵を first-write-wins 登録し署名検証（`src/index.ts`→`auth.ts`）。本文は vaultKey 由来 AES-GCM で暗号化、ドメイン名も HMAC ハッシュ化（`vault.js`）。鍵は `petarin:sync:vault`（local 専用）＝紛失は復旧不可。
+- **`relay-transport.js` はリレーを「暗号化 chrome.storage.sync ミラー」に見せる**＝sync.js のマージ頭脳（3-way/墓石/LWW）は無改造。容量会計は chrome.storage.sync 固有なので、cloud では background が `reconcile(opts)` に巨大 budget を渡して実質無効化する。既定リレーは `DEFAULT_RELAY_URL`（relay.petarin.nephilim.jp）。
+- **background の cloud 実装**: WS 保持・再接続・keepalive alarm・変更ピン受信→該当ドメインだけ `_reconcile`・前面復帰 catchup（MV3 SW は寝るので `/catchup` 必須）。relay push は必ず自エコー防止（`wasJustPushed`）を通す。
+- **server 側**（`infra/cloudflare/relay/`・standalone pnpm・拡張パッケージ非同梱）: `src/index.ts`（薄い router・vaultId を SALT ハッシュ→DO）/ `src/vault-do.ts`（WS ハイバネ + push/pull/catchup + seq 採番 + broadcast）/ D1 `petarin-sync`（暗号文 blob）。デプロイは `wrangler deploy`（Workers Paid・`workers_dev=false`＝Custom Domain のみ）。詳細は同ディレクトリの README。
+
+## モバイル（mobile/・Capacitor 8）
+
+拡張の同期エンジン（storage.js/sync.js/vault.js/relay-transport.js/markdown.js）を **コピーせず単一ソース共有**（vite の `@shared` → `../src/shared`）するスマホアプリ。クラウド同期は買い切り IAP（`src/iap.js`・`@capgo/native-purchases`）で解禁。無課金はスタンドアローン付箋（「グループ」= `group:`+base64url キー＝`groups.js`。sync 安全な domain キーに符号化済みなので後から課金しても無改修で同期に乗る）。
+
+- `src/storage-shim.js` が `chrome.storage.local`/`onChanged` を再現（backend は Capacitor Preferences）、`src/sync-orchestrator.js` が拡張 background.js のモバイル版（reconcile スケジューリング＋realtime WS）。
+- 開発は `pnpm -C mobile dev`（ブラウザ・IAP は dev 解錠フラグ）。ネイティブは CI で生成（`android/`/`ios/` は gitignore）。ビルド要件・CI・ストア申請の残 TODO は [`mobile/README.md`](mobile/README.md)。
 
 ## 開発フロー / ビルド / パッケージング
 
@@ -80,13 +105,19 @@ pnpm install                 # sharp は pnpm-workspace.yaml の onlyBuiltDepend
 pnpm run generate-icons      # icon.svg → icon-16/48/128.png（sharp。cairo 無し環境は uv run python scripts/_raster_icons.py）
 pnpm run generate-screenshots # webstore 掲載画像を puppeteer-core で生成（webstore/generate-screenshots.js）
 pnpm run build               # generate-icons + generate-screenshots を一括実行
-node scripts/_sync_repro.mjs # 同期エンジンの回帰テスト（依存なし・現在 195 PASS / 0 FAIL）
+node scripts/_sync_repro.mjs # 同期エンジンの回帰テスト（依存なし・現在 223 PASS / 0 FAIL）
 ./zip.ps1                    # Windows: petarin-chrome.zip を作成（./zip.sh は mac/linux）
 ```
 
-- **テスト**: 自動テストは同期エンジンの回帰スイート `node scripts/_sync_repro.mjs` のみ（依存なし・S1〜S65 の決定的シナリオ）。**`shared/sync.js` / `shared/storage.js` の同期・設定まわりを触ったら必ず実行**する（墓石/容量/設定マージはエッジの巣）。単一シナリオを見たいときは出力を `S65` 等で grep。lint や UI の自動テストは無い。
+- **テスト**（すべて依存なしの決定的スクリプト・Node22。lint や UI の自動テストは無い）:
+  - `node scripts/_sync_repro.mjs` — 同期エンジン回帰スイート（S1〜S74）。**`shared/sync.js` / `shared/storage.js` の同期・設定まわりを触ったら必ず実行**（墓石/容量/設定マージはエッジの巣）。単一シナリオは出力を `S65` 等で grep。
+  - `node scripts/_vault_selftest.mjs` — vault.js の暗号プリミティブと署名契約（auth.ts 相当を通るか）の自己検証。`vault.js` を触ったら実行。
+  - `node scripts/_mobile_crud_repro.mjs` — モバイル無課金 CRUD のデータ経路 e2e（シム上・グループキーの isValidDomain 通過も検証）。
+  - `RELAY_URL=http://127.0.0.1:8787 node scripts/_relay_e2e.mjs` — relay のローカル e2e（先に `infra/cloudflare/relay` で `wrangler dev` を起動。CF アカウントには触らない）。
+  - `RELAY_URL=... node scripts/_mobile_sync_repro.mjs` — 実 relay 相手の 2 端末往復 e2e（RELAY_URL 必須＝誤本番書き込み防止のオプトイン）。
 - **Firefox 配信は別マニフェスト**: `manifest.firefox.json` を [`.github/workflows/publish.yml`](.github/workflows/publish.yml) が `manifest.json` として配置し `web-ext` で署名する（Chrome は `manifest.json`）。**`content_scripts` の js 追加・`web_accessible_resources` の追加は両マニフェストに入れる**（片方だけだと Firefox で content script 依存（例: `shared/markdown.js`）や同梱フォントが読めない）。`firefox-build/` は生成物（gitignore）。
 - **ローカルプレビュー**（chrome API をモックしてレールを実ページ風に確認）: `uv run python scripts/_preview_server.py` → http://127.0.0.1:8777/docs/preview-rail.html 。Claude Preview を使う場合は `.claude/launch.json` の `static` 構成（同サーバを port 8777 で起動）。`docs/preview-popup.html` は popup を同様にモック確認（HTML は手書きミラーなので UI/設定変更時は追従が要る）。
 - **実機確認（unpacked）**: `chrome://extensions`（または `edge://extensions`）で「デベロッパーモード」ON →「パッケージ化されていない拡張機能を読み込む」でリポジトリルート（`manifest.json` のある場所）を選択。コード変更後は拡張カードの 🔄 で再読込。
+- **モバイル CI**: [`mobile-android.yml`](.github/workflows/mobile-android.yml) / [`mobile-ios.yml`](.github/workflows/mobile-ios.yml) は `mobile-v*` タグ push か手動 `workflow_dispatch` のみで起動（PR push では走らない）。`android/`/`ios/` は CI で `cap add` 生成し権限（CAMERA/BILLING・NSCameraUsageDescription）を注入する。
 
-バージョン更新はゆろさんの明示指示時のみ（`/vava`）。`manifest.json` / `manifest.firefox.json` / `package.json` の version は普段は維持する。
+バージョン更新はゆろさんの明示指示時のみ（`/vava`）。`manifest.json` / `manifest.firefox.json` / `package.json` / `mobile/package.json` の version は普段は維持する。
