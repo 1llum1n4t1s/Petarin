@@ -1,1 +1,9 @@
 #include "Generated.xcconfig"
+
+// Runner targetだけへApp Store配布用のmanual signingを適用する。
+// xcodebuildのグローバル引数にするとSwift Packageのresource bundleにも
+// provisioning profileが伝播し、archiveが失敗する。
+CODE_SIGN_STYLE = Manual
+DEVELOPMENT_TEAM = SL228Y8UUR
+CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution
+PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*] = Petarin AppStore
