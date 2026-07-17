@@ -6,6 +6,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import 'app_controller.dart';
 import 'core/models.dart';
+import 'ui/ad_banner.dart';
 import 'ui/note_editor.dart';
 import 'ui/sync_sheet.dart';
 
@@ -183,6 +184,12 @@ class _HomePageState extends State<HomePage> {
               ),
               color: _showTrash ? _accent : null,
             ),
+            if (controller.ads.privacyOptionsRequired)
+              IconButton(
+                tooltip: '広告プライバシー設定',
+                onPressed: controller.ads.showPrivacyOptionsForm,
+                icon: const Icon(Icons.privacy_tip_outlined),
+              ),
             IconButton(
               tooltip: '同期とペアリング',
               onPressed: () => _openSync(context),
@@ -211,6 +218,9 @@ class _HomePageState extends State<HomePage> {
                 onPressed: () => _startNewNote(context),
                 child: const Icon(Icons.add_rounded, size: 31),
               ),
+        bottomNavigationBar: controller.unlocked
+            ? null
+            : AdBanner(ads: controller.ads),
       );
     },
   );

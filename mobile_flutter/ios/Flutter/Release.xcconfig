@@ -1,5 +1,7 @@
 #include "Generated.xcconfig"
 
+ADMOB_IOS_APP_ID = ca-app-pub-3499889243860253~7320583204
+
 // Runner targetだけへApp Store配布用のmanual signingを適用する。
 // xcodebuildのグローバル引数にするとSwift Packageのresource bundleにも
 // provisioning profileが伝播し、archiveが失敗する。

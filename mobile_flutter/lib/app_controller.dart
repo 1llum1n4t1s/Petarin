@@ -8,22 +8,25 @@ import 'core/storage.dart';
 import 'core/sync_engine.dart';
 import 'core/vault.dart';
 import 'services/iap_service.dart';
+import 'services/ad_service.dart';
 import 'services/realtime_sync.dart';
 
 class AppController extends ChangeNotifier {
-  AppController._(this.keyValueStore)
+  AppController._(this.keyValueStore, {AdService? adService})
     : store = PetarinStore(keyValueStore),
-      iap = IapService(keyValueStore);
+      iap = IapService(keyValueStore),
+      ads = adService ?? AdService();
 
   factory AppController.create() => AppController._(PreferencesKeyValueStore());
 
   @visibleForTesting
   factory AppController.forTesting(KeyValueStore store) =>
-      AppController._(store);
+      AppController._(store, adService: AdService.disabled());
 
   final KeyValueStore keyValueStore;
   final PetarinStore store;
   final IapService iap;
+  final AdService ads;
   SyncEngine? _syncEngine;
   RealtimeSync? _realtime;
   Timer? _syncTimer;
@@ -56,7 +59,9 @@ class AppController extends ChangeNotifier {
   Future<void> initialize() async {
     await store.initialize();
     iap.addListener(_onIapChanged);
+    ads.addListener(_onAdsChanged);
     await iap.initialize();
+    if (!iap.unlocked) await ads.initialize();
     await _configureSync();
     if (syncEnabled) await runSync();
     _initialized = true;
@@ -158,6 +163,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> onResume() async {
+    if (_initialized && !iap.unlocked) await ads.initialize();
     await _configureSync();
     if (syncEnabled) await runSync();
   }
@@ -217,15 +223,24 @@ class AppController extends ChangeNotifier {
   }
 
   void _onIapChanged() {
+    if (iap.unlocked) {
+      ads.disableAds();
+    } else if (_initialized) {
+      unawaited(ads.initialize());
+    }
     if (_initialized && iap.unlocked && syncEnabled && _syncEngine == null) {
       unawaited(_configureSync().then((_) => runSync()));
     }
     notifyListeners();
   }
 
+  void _onAdsChanged() => notifyListeners();
+
   @override
   void dispose() {
+    ads.removeListener(_onAdsChanged);
     iap.removeListener(_onIapChanged);
+    ads.dispose();
     iap.dispose();
     _syncTimer?.cancel();
     unawaited(_realtime?.stop());

@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>PCや別端末とのペアリングQRコードを読み取るためにカメラを使用します。</string>
+	<key>GADApplicationIdentifier</key>
+	<string>$(ADMOB_IOS_APP_ID)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>UIApplicationSceneManifest</key>
