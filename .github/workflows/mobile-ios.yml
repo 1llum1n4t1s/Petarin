@@ -89,7 +89,9 @@ jobs:
           flutter pub get --enforce-lockfile
           flutter analyze
           flutter test
-          flutter build ios --release --no-codesign
+          # TestFlight では公式テスト広告を使い、実広告への誤操作を防ぐ。
+          flutter build ios --release --no-codesign \
+            --dart-define=ADMOB_IOS_BANNER_ID=ca-app-pub-3940256099942544/2435281174
 
       - name: 署名素材を配置（p12・プロファイル・ASC APIキー）
         env:
