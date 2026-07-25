@@ -310,7 +310,7 @@ BigInt _bytesToBigInt(List<int> bytes) {
 }
 
 const String _pairingJson =
-    '{"v":1,"id":"PYq45Y0dD5y3_K4H3ZRUpw","url":"https://relay.petarin.nephilim.jp","k":"fPMBFUmSD8R4vz70n6HPJi9Ui29uqg34ooDKXGIMqD4","sk":{"key_ops":["sign"],"ext":true,"kty":"EC","x":"jZuL6HXEOnPb7_bDySlrJMTAvYe0oGOt0ZRixpICVM4","y":"9EzhlIFWnPbTEq8Q_5FJOeKVuueMZCeiTm-JpCti1g0","crv":"P-256","d":"R2oXB0SUVUw9X_dMLNMnu483OJmdU3hG7XVwqDpb6iQ"},"pk":"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEjZuL6HXEOnPb7_bDySlrJMTAvYe0oGOt0ZRixpICVM70TOGUgVac9tMSrxD_kUk54pW654xkJ6JOb4mkK2LWDQ"}';
+    '{"v":1,"id":"PYq45Y0dD5y3_K4H3ZRUpw","url":"https://fudaba.kagayoi.com","k":"fPMBFUmSD8R4vz70n6HPJi9Ui29uqg34ooDKXGIMqD4","sk":{"key_ops":["sign"],"ext":true,"kty":"EC","x":"jZuL6HXEOnPb7_bDySlrJMTAvYe0oGOt0ZRixpICVM4","y":"9EzhlIFWnPbTEq8Q_5FJOeKVuueMZCeiTm-JpCti1g0","crv":"P-256","d":"R2oXB0SUVUw9X_dMLNMnu483OJmdU3hG7XVwqDpb6iQ"},"pk":"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEjZuL6HXEOnPb7_bDySlrJMTAvYe0oGOt0ZRixpICVM70TOGUgVac9tMSrxD_kUk54pW654xkJ6JOb4mkK2LWDQ"}';
 
 const String _fixtureCiphertext =
     'K4rja7bi5fRRSo4a_LK0N-deIZ2pBHAk3BrMlXdXsuiKG1THsvGYHY4EQoZpAlNUjss2dJalCcSsZdz-ZyOjH4vrLgefwP1y14ZZKSWFWx_Of8BO7u6vSquPc679LeJFsYBqbWo3XtqHKLryV7iDwDFsdJcotUqxut--Jy-jCZjiIuWI0vXMLhPXr_g';

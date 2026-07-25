@@ -18,7 +18,7 @@ const String syncSettingsKey = 'petarin:sync:settings';
 const String syncMetaKey = 'petarin:sync:meta';
 const String syncNotePrefix = 'petarin:sync:n:';
 const String syncTrashKey = 'petarin:sync:trash';
-const String defaultRelayUrl = 'https://relay.petarin.nephilim.jp';
+const String defaultRelayUrl = 'https://fudaba.kagayoi.com';
 
 const Set<String> fontIds = <String>{
   'system',
