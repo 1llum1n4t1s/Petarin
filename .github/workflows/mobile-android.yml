@@ -24,7 +24,7 @@ jobs:
         with:
           persist-credentials: false # git push しない読み取り専用ビルド＝認証情報を .git/config に残さない
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.0.0
         with:
           node-version: 22
           package-manager-cache: false # PR 由来の cache poisoning が release に伝播しないよう明示無効化
