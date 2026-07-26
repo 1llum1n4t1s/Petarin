@@ -1,6 +1,6 @@
-# ぺたりん モバイル（Capacitor）
+# ぺたりん Android（Capacitor）
 
-PC 拡張の同期エンジンをそのまま再利用し、**クラウド同期（買い切り ¥500）**で PC とリアルタイム共有するスマホアプリ。Windows で開発し、ビルドは GitHub Actions（Android=ubuntu / iOS=macOS runner）。
+PC 拡張の同期エンジンをそのまま再利用し、**クラウド同期（買い切り ¥500）**で PC とリアルタイム共有する Android アプリ。iOS の正式実装は Flutter / Dart へ移行し、[`../mobile_flutter/`](../mobile_flutter/) で管理する。
 
 > これは開発者向けメモ。利用者向けの説明はストア掲載文／ルートの [`README.md`](../README.md) を参照。
 
@@ -26,27 +26,49 @@ pnpm -C mobile build                # dist/ に web をビルド
 
 ブラウザ確認では IAP は dev 解錠（`localStorage['petarin:dev:unlocked']='1'`）。クラウド同期を試すには、PC 拡張で作成した「引き継ぎコード」をアプリの参加欄に貼る（逆も可）。同期検証は依存なしで `node ../scripts/_mobile_sync_repro.mjs`（実 relay 相手に 9 PASS）。
 
-## ネイティブ・プロジェクト生成（`cap add`）
+## Android プロジェクト生成（`cap add`）
 
-`android/` `ios/` は生成物（gitignore）。CI でも生成する。
+`android/` は生成物（gitignore）。CI でも生成する。
 
 ```bash
 pnpm -C mobile build
 pnpm -C mobile exec cap add android   # Windows 可
-pnpm -C mobile exec cap add ios       # macOS のみ（Xcode 必要）
-pnpm -C mobile exec cap sync
+pnpm -C mobile exec cap sync android
 ```
 
 ## ビルド（CI）
 
-Capacitor 8（Android: minSdk24 / compileSdk36 / Gradle 8.14.3 / **JDK21**、iOS: deployment target 15 / **Xcode26+** / SPM）。
+Capacitor 8（Android: minSdk24 / compileSdk36 / Gradle 8.14.3 / **JDK21**）。
 
-- Android: [`.github/workflows/mobile-android.yml`](../.github/workflows/mobile-android.yml)（ubuntu・JDK21）。`cap add android`→CAMERA/BILLING 権限を AndroidManifest へ注入→`assembleDebug`→APK artifact。署名は未設定＝当面 debug APK（release 署名は keystore を Secrets 投入後に追加）。
-- iOS: [`.github/workflows/mobile-ios.yml`](../.github/workflows/mobile-ios.yml)（macOS runner・SPM）。`cap add ios`→Info.plist へ NSCameraUsageDescription 注入→署名なし simulator コンパイル検証。実機 .ipa／署名／申請は Apple Developer 証明書を Secrets 投入後に追加。
+- Android: [`.github/workflows/mobile-android.yml`](../.github/workflows/mobile-android.yml)（ubuntu・JDK21）。2 ジョブ構成。
+  - `build`（常時）… `cap add android`→CAMERA/BILLING 権限を AndroidManifest へ注入→`assembleDebug`→APK artifact。
+  - `release`（`mobile-v*` タグ push、または `workflow_dispatch` で `release=true`）… 上記に加えて `build.gradle` へ versionCode（`github.run_number`）・versionName（`mobile/package.json` が正本）・署名設定を注入→`bundleRelease`→`jarsigner -verify` で署名検証→**署名済み AAB** を artifact 化。`play_upload=true` なら [`scripts/play-upload.mjs`](../scripts/play-upload.mjs) が Google Play 内部テストトラックへ配信する。
+- iOS: [`../mobile_flutter/`](../mobile_flutter/) の Flutter 実装。[`.github/workflows/mobile-ios.yml`](../.github/workflows/mobile-ios.yml) が解析・テスト・simulator ビルド・TestFlight 配信を担当する。
+
+## Apple 側の準備状況（2026-07-02 整備済み）
+
+- Bundle ID `jp.nephilim.petarin`（IAP capability 付き）／アプリレコード「ぺたりん」（App ID 6786674191・SKU petarin-001）作成済み。
+- IAP `jp.nephilim.petarin.sync`＝non-consumable ¥500・日本語ローカリゼーション・全地域・審査用スクショ登録済み（**READY_TO_SUBMIT**＝TestFlight サンドボックスで購入テスト可）。審査用スクショはプレースホルダ＝**本審査提出前に実機スクショへ差し替えること**。
+- TestFlight 内部テストグループ「内部テスト」（全ビルド自動配信）＋内部テスター yuro.7878@gmail.com 招待済み。
+
+## Google Play 側の準備状況（2026-07-26 時点）
+
+- **アップロード鍵は作成済み**＝`Secret/android_signing/petarin-upload.p12`（PKCS12・RSA4096・SHA-256・有効期限 2053-12-10・alias `petarin-upload`）。メタ情報とパスワードは `secrets.json` の `android_signing`。GitHub Secrets へは `ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `GOOGLE_PLAY_SA_JSON` を投入済み。
+- Play App Signing 前提のため、この鍵は**アップロード鍵**であって配布署名鍵ではない（配布鍵は Google 管理＝紛失しても Play Console から差し替え可能）。
+- サービスアカウントのトークン取得は疎通確認済み。ただし `edits.insert` は現在 `404 Package not found` ＝**アプリが Play Console に未作成**。
+
+### 初回リリースの手順（Play API はアプリに 1 つもリリースが無いと使えない）
+
+1. Play Console で `jp.nephilim.petarin` のアプリを作成する。
+2. 「ユーザーと権限」でサービスアカウント（`secrets.json` の `google_play.service_account_email`）に**リリース権限**を付与する。
+3. `workflow_dispatch` で `release=true` を実行し、artifact `petarin-release-aab` をダウンロードする。
+4. その AAB を Play Console の**内部テスト**へ手動アップロードし、テスターを登録する。
+5. 2 回目以降は `release=true` + `play_upload=true` で CI から自動配信できる。
 
 ## 残 TODO
-
-- ストア側 product 登録: App Store Connect / Google Play で `jp.nephilim.petarin.sync` を non-consumable（¥500）登録（ストア側手作業）。
-- ネイティブ実機の目視確認（iPhone/Android で付箋 CRUD・ペアリング・カメラ QR・購入フロー）。
-- iOS 署名証明書（App Store Connect API key / provisioning）を Secrets 投入して署名ビルド／ストア申請（`/vava` 連携）。
+- ネイティブ実機の目視確認（iPhone/Android で付箋 CRUD・ペアリング・カメラ QR・購入フロー）。iOS Flutter 版は TestFlight 経由で旧 Capacitor 版からのデータ移行も確認。
+- IAP 審査用スクショを実機の課金画面スクショへ差し替え（App Store 本審査前）。
+- App Store 本申請（掲載文・スクリーンショット・プライバシー表示・`/vava` 連携）。
+- Play Console でのアプリ作成・SA 権限付与・初回 AAB 手動アップロード（上記「初回リリースの手順」）。
+- Play 側 product 登録: `jp.nephilim.petarin.sync` を non-consumable（¥500）で登録（App Store 側は登録済み）。
 - 課金 enforcement の強化（当面はクライアント側のストア所有判定＝`iap.js`、後段で relay 側 enforcement へ）。

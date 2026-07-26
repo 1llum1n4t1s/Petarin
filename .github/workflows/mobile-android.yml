@@ -1,11 +1,21 @@
 # ぺたりん モバイル: Android ビルド（Capacitor）。
-# web を Vite でビルド → cap add android（毎回生成・android/ は gitignore）→ cap sync → Gradle で debug APK。
-# 署名（release）は未設定＝当面 debug APK を artifact 化。release 署名は keystore を Secrets に入れてから足す。
+# web を Vite でビルド → cap add android（毎回生成・android/ は gitignore）→ cap sync → Gradle。
+# build ジョブは常時走る debug APK の検証。release ジョブは upload keystore で署名した AAB を作り、
+# 任意で Google Play の内部テストトラックへ配信する（mobile-ios.yml の TestFlight ジョブと同じ構え）。
 # Actions はサプライチェーン対策で full commit SHA にピン留め（publish.yml と同方針・Dependabot で更新する運用）。
 name: mobile-android
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "署名済み AAB をビルドして artifact 化する"
+        type: boolean
+        default: false
+      play_upload:
+        description: "Google Play 内部テストへ配信する（初回リリースだけは Play Console から手動アップロードが必要）"
+        type: boolean
+        default: false
   push:
     tags:
       - "mobile-v*"
@@ -78,3 +88,124 @@ jobs:
           name: petarin-debug-apk
           path: mobile/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+  # 署名済み AAB（Play 配信フォーマット）。タグ push か、workflow_dispatch で release=true のときだけ走る。
+  release:
+    if: github.event_name == 'push' || inputs.release
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web (Vite)
+        run: pnpm build
+
+      - name: Add Android platform
+        run: pnpm exec cap add android
+
+      - name: Capacitor sync
+        run: pnpm exec cap sync android
+
+      - name: AndroidManifest へ権限注入 (CAMERA=QRスキャナ / BILLING=アプリ内課金)
+        working-directory: mobile/android
+        run: |
+          manifest=app/src/main/AndroidManifest.xml
+          grep -q 'android.permission.CAMERA' "$manifest" || \
+            sed -i 's#</manifest>#    <uses-permission android:name="android.permission.CAMERA" />\n</manifest>#' "$manifest"
+          grep -q 'com.android.vending.BILLING' "$manifest" || \
+            sed -i 's#</manifest>#    <uses-permission android:name="com.android.vending.BILLING" />\n</manifest>#' "$manifest"
+          grep -n 'uses-permission' "$manifest"
+
+      # cap add が生成する app/build.gradle は versionCode 1 / versionName "1.0" 固定かつ署名設定なし。
+      # Play は versionCode の重複を拒否するので run_number を採番し、versionName は package.json を正本にする。
+      # 秘密値は gradle ファイルへ書かず System.getenv 経由で読ませる（生成物や artifact に鍵情報を残さない）。
+      - name: build.gradle へ version と署名設定を注入
+        working-directory: mobile/android
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -eu
+          gradle=app/build.gradle
+          version_name=$(node -p "require('../package.json').version")
+          echo "versionCode=$VERSION_CODE / versionName=$version_name"
+
+          sed -i "s/^        versionCode 1$/        versionCode ${VERSION_CODE}/" "$gradle"
+          sed -i "s/^        versionName \"1.0\"$/        versionName \"${version_name}\"/" "$gradle"
+          sed -i 's#^    buildTypes {$#    signingConfigs {\n        release {\n            storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))\n            storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")\n            keyAlias System.getenv("ANDROID_KEY_ALIAS")\n            keyPassword System.getenv("ANDROID_KEYSTORE_PASSWORD")\n        }\n    }\n    buildTypes {#' "$gradle"
+          sed -i 's#^            minifyEnabled false$#            signingConfig signingConfigs.release\n            minifyEnabled false#' "$gradle"
+
+          # Capacitor がテンプレを変えたら sed が黙って空振りするので、注入結果を検証して落とす。
+          grep -q "versionCode ${VERSION_CODE}" "$gradle" || { echo "versionCode の注入に失敗"; exit 1; }
+          grep -q "versionName \"${version_name}\"" "$gradle" || { echo "versionName の注入に失敗"; exit 1; }
+          grep -q 'signingConfig signingConfigs.release' "$gradle" || { echo "署名設定の紐付けに失敗"; exit 1; }
+          sed -n '1,40p' "$gradle"
+
+      - name: keystore を配置
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -eu
+          test -n "$ANDROID_KEYSTORE_BASE64" || { echo "ANDROID_KEYSTORE_BASE64 が未設定"; exit 1; }
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.p12"
+          echo "keystore: $(stat -c%s "$RUNNER_TEMP/upload.p12") bytes"
+
+      - name: Gradle bundleRelease（署名済み AAB）
+        working-directory: mobile/android
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/upload.p12
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: ./gradlew bundleRelease --no-daemon
+
+      - name: 署名を検証
+        working-directory: mobile/android
+        run: |
+          set -eu
+          aab=$(ls app/build/outputs/bundle/release/*.aab | head -1)
+          echo "AAB: $aab ($(stat -c%s "$aab") bytes)"
+          # jarsigner は JDK 同梱＝追加依存なしで署名の有無と証明書を確認できる。
+          jarsigner -verify -verbose:summary "$aab" | tail -5
+          keytool -printcert -jarfile "$aab" | grep -E 'Owner|SHA256:' | head -4
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: petarin-release-aab
+          path: mobile/android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+
+      # Play Developer API はアプリに 1 つもリリースが無いと Package not found を返す＝
+      # 初回だけは上の artifact を Play Console から手動アップロードし、2 回目以降ここを true にする。
+      - name: Google Play 内部テストへ配信
+        if: github.event_name == 'workflow_dispatch' && inputs.play_upload
+        working-directory: .
+        env:
+          GOOGLE_PLAY_SA_JSON: ${{ secrets.GOOGLE_PLAY_SA_JSON }}
+          PLAY_PACKAGE_NAME: jp.nephilim.petarin
+          PLAY_TRACK: internal
+          PLAY_RELEASE_NAME: ${{ github.ref_type == 'tag' && github.ref_name || format('build-{0}', github.run_number) }}
+          PLAY_RELEASE_NOTES: ${{ github.ref_type == 'tag' && github.ref_name || format('内部テストビルド {0}', github.run_number) }}
+        run: |
+          set -eu
+          export PLAY_AAB_PATH=$(ls mobile/android/app/build/outputs/bundle/release/*.aab | head -1)
+          node scripts/play-upload.mjs
