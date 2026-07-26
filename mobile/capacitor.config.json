@@ -1,9 +1,10 @@
 {
-  "appId": "jp.nephilim.petarin",
+  "appId": "com.kagayoi.petarin",
   "appName": "ぺたりん",
   "webDir": "dist",
   "ios": {
-    "contentInset": "always"
+    "contentInset": "never",
+    "backgroundColor": "#f7f0df"
   },
   "android": {
     "allowMixedContent": false

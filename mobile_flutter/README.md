@@ -1,6 +1,6 @@
 # ぺたりん iOS（Flutter）
 
-iOS 版の正式実装。Flutter / Dart で UI、ローカル保存、E2E 暗号化クラウド同期、QR ペアリング、買い切り IAP をネイティブに実装する。Bundle ID は既存版と同じ `jp.nephilim.petarin`。
+iOS 版の正式実装。Flutter / Dart で UI、ローカル保存、E2E 暗号化クラウド同期、QR ペアリング、買い切り IAP をネイティブに実装する。Bundle ID は `com.kagayoi.petarin`。
 
 Android は当面 [`../mobile/`](../mobile/) の Capacitor 実装を継続する。
 
@@ -36,8 +36,8 @@ iOS ビルドには macOS と Xcode が必要。CI は [`.github/workflows/mobil
 
 ## App Store 側
 
-- Bundle ID: `jp.nephilim.petarin`
-- 買い切り IAP: `jp.nephilim.petarin.sync`
+- Bundle ID: `com.kagayoi.petarin`（nephilim.jp 消滅にともない `jp.nephilim.petarin` から移行。**Apple は Bundle ID をリネームできない**ので、アプリレコード・IAP・provisioning profile・TestFlight・AdMob アプリは新 ID で作り直しが要る。詳細は [`../mobile/README.md`](../mobile/README.md) の「Apple 側の準備状況」）
+- 買い切り IAP: `com.kagayoi.petarin.sync`
 - iOS deployment target: 15.0
 - カメラ用途: ペアリング QR 読み取り
 

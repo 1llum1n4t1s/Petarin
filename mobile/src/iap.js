@@ -4,7 +4,7 @@
 // ストア依存を 1 ファイルに閉じ、UI とオーケストレータは isUnlocked()/purchase()/restore() だけ見る。
 //
 // ネイティブ配線: @capgo/native-purchases（StoreKit 2 / Google Play Billing 直叩き・外部 SaaS 不要）。
-//   - product id: "jp.nephilim.petarin.sync"（App Store / Play で同一 non-consumable を登録）。
+//   - product id: "com.kagayoi.petarin.sync"（App Store / Play で同一 non-consumable を登録）。
 //   - 起動時にストアへ所有照会（getPurchases）→ 結果を Preferences にキャッシュ（オフライン起動の即時表示用）。
 //   - レシート検証は当面クライアント側（ストア API の所有判定）に委ね、後段で sekisho（サブスク基盤）へ寄せて
 //     relay 側 enforcement（購入者のみ relay 受理）へ強化する余地を残す。
@@ -21,7 +21,7 @@
 import { Capacitor } from "@capacitor/core";
 import { Preferences } from "@capacitor/preferences";
 
-export const PRODUCT_ID = "jp.nephilim.petarin.sync";
+export const PRODUCT_ID = "com.kagayoi.petarin.sync";
 const UNLOCK_CACHE_KEY = "petarin:iap:unlocked"; // ストア照会結果のキャッシュ（真実の源はストア）
 
 const IS_DEV = typeof import.meta !== "undefined" && !!import.meta.env?.DEV;

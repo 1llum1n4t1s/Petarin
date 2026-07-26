@@ -17,6 +17,10 @@ import UIKit
 
   /// 同じ Bundle ID で配布済みの Capacitor 版から、Flutter 版へローカルデータを一度だけ引き継ぐ。
   /// Capacitor Preferences は `CapacitorStorage.` 接頭辞、SharedPreferencesAsync は素のキーを使う。
+  ///
+  /// 注意: `UserDefaults.standard` は Bundle ID ごとのサンドボックスを見る。nephilim.jp 消滅にともなう
+  /// `jp.nephilim.petarin` → `com.kagayoi.petarin` の ID 変更で旧アプリのコンテナへは到達できなくなったため、
+  /// 新 ID のビルドではこの移行は空振りする（害は無いので、旧 ID ビルドからの更新経路のために残す）。
   private func migrateCapacitorPreferencesIfNeeded() {
     let defaults = UserDefaults.standard
     let marker = "petarin:flutter:migrated:v1"

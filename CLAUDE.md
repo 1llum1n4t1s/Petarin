@@ -94,7 +94,7 @@ docs/preview-rail.html   開発プレビュー（chrome API をモックしレ�
 
 ## モバイル（Android: Capacitor 8 / iOS: Flutter）
 
-Android は拡張の同期エンジン（storage.js/sync.js/vault.js/relay-transport.js/markdown.js）を **コピーせず単一ソース共有**（vite の `@shared` → `../src/shared`）する。iOS は `mobile_flutter/` の Flutter 正式実装で、同じ保存キー・compact schema・暗号契約・relay API を Dart で互換実装する。クラウド同期は買い切り IAP（product `jp.nephilim.petarin.sync`）で解禁。無課金はスタンドアローン付箋（「グループ」= `group:`+base64url キー）として利用できる。
+Android は拡張の同期エンジン（storage.js/sync.js/vault.js/relay-transport.js/markdown.js）を **コピーせず単一ソース共有**（vite の `@shared` → `../src/shared`）する。iOS は `mobile_flutter/` の Flutter 正式実装で、同じ保存キー・compact schema・暗号契約・relay API を Dart で互換実装する。クラウド同期は買い切り IAP（product `com.kagayoi.petarin.sync`）で解禁。無課金はスタンドアローン付箋（「グループ」= `group:`+base64url キー）として利用できる。
 
 - Android は `src/storage-shim.js` が `chrome.storage.local`/`onChanged` を再現（backend は Capacitor Preferences）、`src/sync-orchestrator.js` が拡張 background.js のモバイル版（reconcile スケジューリング＋realtime WS）。開発は `pnpm -C mobile dev`。
 - iOS は `mobile_flutter/lib/core/` が SharedPreferences 保存、3-way/LWW/墓石同期、P-256/AES-GCM/HMAC を担い、`services/` が StoreKit IAP と realtime WS を担う。同じ Bundle ID の旧 Capacitor 版から `AppDelegate.swift` が初回起動時にデータを保持移行する。開発・テストは [`mobile_flutter/README.md`](mobile_flutter/README.md)。
@@ -123,3 +123,13 @@ node scripts/_sync_repro.mjs # 同期エンジンの回帰テスト（依存な�
   - Android の `versionCode` は `github.run_number` で採番し、`versionName` は `mobile/package.json` を正本に `cap add` 生成物へ注入する（テンプレ固定値 `1` / `"1.0"` を上書き。sed が空振りしたら検証 grep で落とす）。Play 配信は [`scripts/play-upload.mjs`](scripts/play-upload.mjs)＝依存ゼロで Play Developer API v3 を直叩き（サードパーティ Action を増やさない方針）。詳細と初回リリース手順は [`mobile/README.md`](mobile/README.md)。
 
 バージョン更新はゆろさんの明示指示時のみ（`/vava`）。`manifest.json` / `manifest.firefox.json` / `package.json` / `mobile/package.json` / `mobile_flutter/pubspec.yaml` の version は普段は維持する。
+
+## ドメイン移行（2026-07 開始・期限 2027/05/31）
+
+屋号を **Kagayoi** に統一したため、配信ドメインを `nephilim.jp` から `kagayoi.com` へ移行中。方針の全体像はユーザーグローバルの `CLAUDE.md` §屋号とドメイン を参照する。
+
+- **旧ドメイン `nephilim.jp` はレジストラで廃止申請済みで 2027/05/31 に失効する**（延長しない）。それまでに出荷済みバイナリを新ドメインへ移行しきる。
+- 旧ホストの Worker route / custom domain は**期限まで消さない**。消すと出荷済みアプリの自動更新が止まる。
+- `nephilim.jp` の Redirect Rules は `/` だけを 301 する。`releases.*.json` / `*.nupkg` / `*-Setup.exe` は転送せず R2 が配信を続ける。
+- 同期リレーは `fudaba.kagayoi.com`（札場）。旧 `relay.petarin.nephilim.jp` は custom domain に併記して残してある。出荷済みのスマホアプリは旧ホストを見に行くため消さないこと。
+- **`jp.nephilim.petarin` と `jp.nephilim.petarin.sync` は改名しない**。iOS/Android のバンドル ID と買い切り IAP のプロダクト ID で、App Store / Play に登録済み。変えると購入済みユーザーの権利が切れる。旧称を含むが据え置く。

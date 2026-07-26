@@ -201,7 +201,7 @@ jobs:
         working-directory: .
         env:
           GOOGLE_PLAY_SA_JSON: ${{ secrets.GOOGLE_PLAY_SA_JSON }}
-          PLAY_PACKAGE_NAME: jp.nephilim.petarin
+          PLAY_PACKAGE_NAME: com.kagayoi.petarin
           PLAY_TRACK: internal
           PLAY_RELEASE_NAME: ${{ github.ref_type == 'tag' && github.ref_name || format('build-{0}', github.run_number) }}
           PLAY_RELEASE_NOTES: ${{ github.ref_type == 'tag' && github.ref_name || format('内部テストビルド {0}', github.run_number) }}

@@ -3,7 +3,7 @@
 //    chrome.storage シム＋実 relay-transport の上で無改造で動かせるか」を実 relay 相手に確かめる。
 //   同時に、拡張側でも未検証だった「実エンジン＋実 relay の cloud 往復」を closing する。
 //
-// 実行: RELAY_URL=https://petarin-relay.1llum1n4t1.workers.dev node scripts/_mobile_sync_repro.mjs
+// 実行: RELAY_URL=https://petarin-relay.kagayoi.workers.dev node scripts/_mobile_sync_repro.mjs
 //   （RELAY_URL は必須＝誤って本番へ書き込まないため明示オプトイン。ローカルは RELAY_URL=http://127.0.0.1:8787。
 //    Node22 の WebCrypto / fetch を使う。）
 //
@@ -16,7 +16,7 @@ const RELAY = process.env.RELAY_URL;
 if (!RELAY) {
   throw new Error(
     "RELAY_URL を明示してください（本番 relay への誤書き込み防止）。" +
-      "例: RELAY_URL=https://petarin-relay.1llum1n4t1.workers.dev node scripts/_mobile_sync_repro.mjs"
+      "例: RELAY_URL=https://petarin-relay.kagayoi.workers.dev node scripts/_mobile_sync_repro.mjs"
   );
 }
 const HUGE = { totalBudget: Number.MAX_SAFE_INTEGER, perItemBudget: Number.MAX_SAFE_INTEGER };

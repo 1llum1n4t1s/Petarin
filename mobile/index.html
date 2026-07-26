@@ -14,11 +14,13 @@
       body {
         margin: 0; background: var(--paper); color: var(--ink);
         font-family: "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
-        padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
       }
+      /* safe area は body ではなく header/main 側で確保する（body padding-top だと sticky header が
+         スクロール時にノッチ/Dynamic Island 領域へ潜り、下からコンテンツが透ける） */
       header {
         position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between;
-        padding: 14px 16px; background: var(--paper); border-bottom: 1px solid var(--line);
+        padding: calc(14px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right)) 14px calc(20px + env(safe-area-inset-left));
+        background: var(--paper); border-bottom: 1px solid var(--line);
       }
       header h1 { font-size: 18px; margin: 0; }
       .btn {
@@ -27,7 +29,7 @@
       }
       .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
       .btn.danger { color: var(--danger); border-color: #e7c3bd; }
-      main { padding: 12px 14px 32px; }
+      main { padding: 14px calc(24px + env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) calc(24px + env(safe-area-inset-left)); }
       .dom { margin-bottom: 18px; }
       .dom-name { font-size: 12px; color: var(--ink-soft); font-weight: 700; margin: 0 0 8px; }
       .card {
@@ -75,7 +77,7 @@
       .scan-hint { color: #f7f0df; font-size: 13px; text-align: center; margin: 0; }
       .hbtns { display: flex; gap: 8px; }
       .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-      .fab { position: fixed; right: 18px; bottom: calc(20px + env(safe-area-inset-bottom)); width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--accent); color: #fff; font-size: 30px; line-height: 1; box-shadow: 0 4px 14px rgba(0,0,0,0.28); cursor: pointer; z-index: 8; }
+      .fab { position: fixed; right: calc(20px + env(safe-area-inset-right)); bottom: calc(20px + env(safe-area-inset-bottom)); width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--accent); color: #fff; font-size: 30px; line-height: 1; box-shadow: 0 4px 14px rgba(0,0,0,0.28); cursor: pointer; z-index: 8; }
       .card { cursor: pointer; }
       .ed-row { display: flex; align-items: center; justify-content: space-between; }
       .ed-icon { width: 48px; height: 48px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); font-size: 26px; cursor: pointer; }

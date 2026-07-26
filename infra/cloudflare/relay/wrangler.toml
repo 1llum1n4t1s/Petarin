@@ -60,8 +60,3 @@ simple = { limit = 120, period = 60 }
 [observability]
 enabled = true
 head_sampling_rate = 1
-
-# 旧ドメイン（2027/05/31 の nephilim.jp 廃止まで併走）
-[[routes]]
-pattern = "relay.petarin.nephilim.jp"
-custom_domain = true

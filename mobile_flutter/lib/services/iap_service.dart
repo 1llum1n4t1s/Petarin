@@ -5,7 +5,7 @@ import 'package:in_app_purchase/in_app_purchase.dart';
 
 import '../core/storage.dart';
 
-const String syncProductId = 'jp.nephilim.petarin.sync';
+const String syncProductId = 'com.kagayoi.petarin.sync';
 const String _unlockCacheKey = 'petarin:iap:unlocked';
 
 class IapService extends ChangeNotifier {
