@@ -8,4 +8,4 @@ ADMOB_IOS_APP_ID = ca-app-pub-3499889243860253~7320583204
 CODE_SIGN_STYLE = Manual
 DEVELOPMENT_TEAM = SL228Y8UUR
 CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution
-PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*] = Petarin AppStore
+PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*] = Petarin AppStore Kagayoi
