@@ -97,7 +97,8 @@ docs/preview-rail.html   開発プレビュー（chrome API をモックしレ�
 Android は拡張の同期エンジン（storage.js/sync.js/vault.js/relay-transport.js/markdown.js）を **コピーせず単一ソース共有**（vite の `@shared` → `../src/shared`）する。iOS は `mobile_flutter/` の Flutter 正式実装で、同じ保存キー・compact schema・暗号契約・relay API を Dart で互換実装する。クラウド同期は買い切り IAP（product `com.kagayoi.petarin.sync`）で解禁。無課金はスタンドアローン付箋（「グループ」= `group:`+base64url キー）として利用できる。
 
 - Android は `src/storage-shim.js` が `chrome.storage.local`/`onChanged` を再現（backend は Capacitor Preferences）、`src/sync-orchestrator.js` が拡張 background.js のモバイル版（reconcile スケジューリング＋realtime WS）。開発は `pnpm -C mobile dev`。
-- iOS は `mobile_flutter/lib/core/` が SharedPreferences 保存、3-way/LWW/墓石同期、P-256/AES-GCM/HMAC を担い、`services/` が StoreKit IAP と realtime WS を担う。同じ Bundle ID の旧 Capacitor 版から `AppDelegate.swift` が初回起動時にデータを保持移行する。開発・テストは [`mobile_flutter/README.md`](mobile_flutter/README.md)。
+- iOS は `mobile_flutter/lib/core/` が SharedPreferences 保存、3-way/LWW/墓石同期、P-256/AES-GCM/HMAC を担い、`services/` が StoreKit IAP と realtime WS を担う。`AppDelegate.swift` は旧 Capacitor 版からの初回データ移行を持つが、**Bundle ID を `com.kagayoi.petarin` へ変えた後は空振りする**（`UserDefaults.standard` は Bundle ID ごとのサンドボックス＝旧アプリのコンテナへ到達できない）。害が無いので旧 ID ビルドからの更新経路のために残してある。開発・テストは [`mobile_flutter/README.md`](mobile_flutter/README.md)。
+- 付箋エディタ（`lib/ui/note_editor.dart`）は **一覧 → タップ → プレビュー → 「編集」→ 保存 → 一覧** の一方向フロー。編集⇄表示のトグルは持たず、既存付箋は必ずプレビューから入り、新規作成だけ最初から編集にする。Android(Capacitor) 側はトグルを持たず textarea の下にライブプレビューを常時出す別方式。
 
 ## 開発フロー / ビルド / パッケージング
 
@@ -110,12 +111,20 @@ node scripts/_sync_repro.mjs # 同期エンジンの回帰テスト（依存な�
 ./zip.ps1                    # Windows: petarin-chrome.zip を作成（./zip.sh は mac/linux）
 ```
 
-- **テスト**（すべて依存なしの決定的スクリプト・Node22。lint や UI の自動テストは無い）:
+- **テスト（拡張・共有エンジン）**（すべて依存なしの決定的スクリプト・Node22。lint や UI の自動テストは無い）:
   - `node scripts/_sync_repro.mjs` — 同期エンジン回帰スイート（S1〜S74）。**`shared/sync.js` / `shared/storage.js` の同期・設定まわりを触ったら必ず実行**（墓石/容量/設定マージはエッジの巣）。単一シナリオは出力を `S65` 等で grep。
   - `node scripts/_vault_selftest.mjs` — vault.js の暗号プリミティブと署名契約（auth.ts 相当を通るか）の自己検証。`vault.js` を触ったら実行。
   - `node scripts/_mobile_crud_repro.mjs` — モバイル無課金 CRUD のデータ経路 e2e（シム上・グループキーの isValidDomain 通過も検証）。
   - `RELAY_URL=http://127.0.0.1:8787 node scripts/_relay_e2e.mjs` — relay のローカル e2e（先に `infra/cloudflare/relay` で `wrangler dev` を起動。CF アカウントには触らない）。
   - `RELAY_URL=... node scripts/_mobile_sync_repro.mjs` — 実 relay 相手の 2 端末往復 e2e（RELAY_URL 必須＝誤本番書き込み防止のオプトイン）。
+- **テスト（Flutter / iOS）**: SDK は CI の `FLUTTER_VERSION` と揃える（現在 **3.44.6**・`git clone --depth 1 --branch <ver> https://github.com/flutter/flutter.git` で入れる）。`mobile_flutter/` で次を回す。単一テストは `flutter test --plain-name "<テスト名>"`。
+  ```bash
+  flutter pub get --enforce-lockfile   # CI と同じ lockfile 固定
+  flutter analyze                      # 現在 No issues
+  flutter test                         # test/core_test.dart・現在 13 PASS（JS 版 fixture との暗号/同期互換を含む）
+  dart format --output=none --set-exit-if-changed lib   # CI は見ないがリポジトリは整形済みを保つ
+  ```
+- **依存の単位は 4 つ**（`/`・`mobile/`・`infra/cloudflare/relay/` の独立 pnpm プロジェクト＋`mobile_flutter/` の pub）。ディレクトリ移動は `pnpm -C <dir>`。**[`.github/dependabot.yml`](.github/dependabot.yml) が見ているのは `/` だけ**なので、`mobile/` `relay/` `mobile_flutter/` の更新は取りこぼす＝手動棚卸し（`/deps`）が要る。
 - **Firefox 配信は別マニフェスト**: `manifest.firefox.json` を [`.github/workflows/publish.yml`](.github/workflows/publish.yml) が `manifest.json` として配置し `web-ext` で署名する（Chrome は `manifest.json`）。**`content_scripts` の js 追加・`web_accessible_resources` の追加は両マニフェストに入れる**（片方だけだと Firefox で content script 依存（例: `shared/markdown.js`）や同梱フォントが読めない）。`firefox-build/` は生成物（gitignore）。
 - **ローカルプレビュー**（chrome API をモックしてレールを実ページ風に確認）: Claude Code では `uv run python scripts/_preview_server.py` を直接起動し、http://127.0.0.1:8777/docs/preview-rail.html を開く。`.claude/launch.json` の `static` 構成は同サーバを port 8777 で起動する旧 Claude Preview 用設定。`docs/preview-popup.html` は popup を同様にモック確認（HTML は手書きミラーなので UI/設定変更時は追従が要る）。
 - **実機確認（unpacked）**: `chrome://extensions`（または `edge://extensions`）で「デベロッパーモード」ON →「パッケージ化されていない拡張機能を読み込む」でリポジトリルート（`manifest.json` のある場所）を選択。コード変更後は拡張カードの 🔄 で再読込。
@@ -124,12 +133,11 @@ node scripts/_sync_repro.mjs # 同期エンジンの回帰テスト（依存な�
 
 バージョン更新はゆろさんの明示指示時のみ（`/vava`）。`manifest.json` / `manifest.firefox.json` / `package.json` / `mobile/package.json` / `mobile_flutter/pubspec.yaml` の version は普段は維持する。
 
-## ドメイン移行（2026-07 開始・期限 2027/05/31）
+## ドメイン移行（このリポジトリ側は完了・2026-07）
 
-屋号を **Kagayoi** に統一したため、配信ドメインを `nephilim.jp` から `kagayoi.com` へ移行中。方針の全体像はユーザーグローバルの `CLAUDE.md` §屋号とドメイン を参照する。
+屋号を **Kagayoi** に統一し、`nephilim.jp` は消滅した。方針の全体像はユーザーグローバルの `CLAUDE.md` §屋号とドメイン を参照する（そちらの旧ドメイン温存ルールは Petarin には当てはまらない）。
 
-- **旧ドメイン `nephilim.jp` はレジストラで廃止申請済みで 2027/05/31 に失効する**（延長しない）。それまでに出荷済みバイナリを新ドメインへ移行しきる。
-- 旧ホストの Worker route / custom domain は**期限まで消さない**。消すと出荷済みアプリの自動更新が止まる。
-- `nephilim.jp` の Redirect Rules は `/` だけを 301 する。`releases.*.json` / `*.nupkg` / `*-Setup.exe` は転送せず R2 が配信を続ける。
-- 同期リレーは `fudaba.kagayoi.com`（札場）。旧 `relay.petarin.nephilim.jp` は custom domain に併記して残してある。出荷済みのスマホアプリは旧ホストを見に行くため消さないこと。
-- **`jp.nephilim.petarin` と `jp.nephilim.petarin.sync` は改名しない**。iOS/Android のバンドル ID と買い切り IAP のプロダクト ID で、App Store / Play に登録済み。変えると購入済みユーザーの権利が切れる。旧称を含むが据え置く。
+- 同期リレーは **`fudaba.kagayoi.com` のみ**（`DEFAULT_RELAY_URL` と wrangler の custom domain）。旧 `relay.petarin.nephilim.jp` の route は**削除済み**。Zone が消えているので書き戻すと `wrangler deploy` が失敗する。
+- アプリ識別子は **`com.kagayoi.petarin`**（iOS Bundle ID / Android package）、買い切り IAP は **`com.kagayoi.petarin.sync`**。コード内に残る `jp.nephilim.petarin*` は移行の経緯説明だけで、有効な識別子ではない。
+- **Apple の Bundle ID はリネームできない**。変更＝アプリレコード・IAP・provisioning profile・TestFlight グループ・AdMob アプリの作り直しで、`AppDelegate.swift` の旧 Capacitor 版データ移行も到達不能になる（§モバイル）。
+- 識別子を一括置換するときは **`nephilim` 文字列検索だけでは足りない**。旧称を含まない参照が別にある: `mobile_flutter/ios/Flutter/Release.xcconfig` の `PROVISIONING_PROFILE_SPECIFIER`（プロファイル名）と `ADMOB_IOS_APP_ID`（AdMob のアプリ ID は Bundle ID 紐付けなので新規登録が要る）。前者を取りこぼすと CI の archive が `No profile for team ... matching ...` で落ちる。
