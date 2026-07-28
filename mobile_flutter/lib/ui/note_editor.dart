@@ -28,10 +28,15 @@ class NoteEditor extends StatefulWidget {
 
 class _NoteEditorState extends State<NoteEditor> {
   late final TextEditingController _text;
+  late final FocusNode _focus;
   late String _color;
   late String _icon;
-  bool _preview = false;
   bool _saving = false;
+
+  // 一覧 → タップ → プレビュー → 「編集」→ 保存 → 一覧、という一方向の流れ。
+  // 編集⇄表示を行き来するトグルは持たず、既存付箋は必ずプレビューから入る。
+  // 新規作成は書くこと自体が目的なので最初から編集にする。
+  late bool _preview;
 
   bool get _isNew => widget.note == null;
 
@@ -39,6 +44,8 @@ class _NoteEditorState extends State<NoteEditor> {
   void initState() {
     super.initState();
     _text = TextEditingController(text: widget.note?.text ?? '');
+    _focus = FocusNode();
+    _preview = !_isNew;
     _color =
         widget.note?.color ??
         (widget.controller.store.settings['defaultColor'] as String? ??
@@ -52,7 +59,15 @@ class _NoteEditorState extends State<NoteEditor> {
     _text
       ..removeListener(_onTextChanged)
       ..dispose();
+    _focus.dispose();
     super.dispose();
+  }
+
+  // プレビュー → 編集。TextField は既に構築済みとは限らないので、
+  // フレーム確定後にフォーカスを渡してキーボードを出す。
+  void _startEdit() {
+    setState(() => _preview = false);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _focus.requestFocus());
   }
 
   @override
@@ -76,7 +91,7 @@ class _NoteEditorState extends State<NoteEditor> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
                         Text(
-                          _isNew ? '新しい付箋' : '付箋を編集',
+                          _isNew ? '新しい付箋' : (_preview ? '付箋' : '付箋を編集'),
                           style: const TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.w800,
@@ -88,24 +103,6 @@ class _NoteEditorState extends State<NoteEditor> {
                         ),
                       ],
                     ),
-                  ),
-                  SegmentedButton<bool>(
-                    showSelectedIcon: false,
-                    segments: const <ButtonSegment<bool>>[
-                      ButtonSegment<bool>(
-                        value: false,
-                        icon: Icon(Icons.edit_outlined, size: 18),
-                        label: Text('編集'),
-                      ),
-                      ButtonSegment<bool>(
-                        value: true,
-                        icon: Icon(Icons.visibility_outlined, size: 18),
-                        label: Text('表示'),
-                      ),
-                    ],
-                    selected: <bool>{_preview},
-                    onSelectionChanged: (Set<bool> selected) =>
-                        setState(() => _preview = selected.first),
                   ),
                   IconButton(
                     onPressed: () => Navigator.pop(context),
@@ -131,40 +128,53 @@ class _NoteEditorState extends State<NoteEditor> {
                     ),
                   ],
                 ),
+                // プレビューは一覧カードと違って全文をそのまま出す（縦スクロールで読み切れる）。
                 child: _preview
                     ? SingleChildScrollView(
                         padding: const EdgeInsets.all(18),
-                        child: MarkdownBody(
-                          data: _safeMarkdown(_text.text),
-                          selectable: true,
-                          imageBuilder: (Uri uri, String? title, String? alt) =>
-                              Text(alt ?? ''),
-                          styleSheet: MarkdownStyleSheet(
-                            p: TextStyle(
-                              color: Color(palette.ink),
-                              fontSize: 15,
-                              height: 1.65,
-                            ),
-                            h1: TextStyle(
-                              color: Color(palette.ink),
-                              fontWeight: FontWeight.w800,
-                            ),
-                            h2: TextStyle(
-                              color: Color(palette.ink),
-                              fontWeight: FontWeight.w800,
-                            ),
-                            code: TextStyle(
-                              color: Color(palette.ink),
-                              backgroundColor: Color(
-                                palette.deep,
-                              ).withValues(alpha: .18),
-                              fontFamily: 'Menlo',
-                            ),
-                          ),
-                        ),
+                        child: _text.text.trim().isEmpty
+                            ? Text(
+                                'まだ何も書かれていません。',
+                                style: TextStyle(
+                                  color: Color(
+                                    palette.ink,
+                                  ).withValues(alpha: .55),
+                                  fontSize: 15,
+                                ),
+                              )
+                            : MarkdownBody(
+                                data: _safeMarkdown(_text.text),
+                                selectable: true,
+                                imageBuilder:
+                                    (Uri uri, String? title, String? alt) =>
+                                        Text(alt ?? ''),
+                                styleSheet: MarkdownStyleSheet(
+                                  p: TextStyle(
+                                    color: Color(palette.ink),
+                                    fontSize: 15,
+                                    height: 1.65,
+                                  ),
+                                  h1: TextStyle(
+                                    color: Color(palette.ink),
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                  h2: TextStyle(
+                                    color: Color(palette.ink),
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                  code: TextStyle(
+                                    color: Color(palette.ink),
+                                    backgroundColor: Color(
+                                      palette.deep,
+                                    ).withValues(alpha: .18),
+                                    fontFamily: 'Menlo',
+                                  ),
+                                ),
+                              ),
                       )
                     : TextField(
                         controller: _text,
+                        focusNode: _focus,
                         autofocus: _isNew,
                         expands: true,
                         maxLines: null,
@@ -188,77 +198,79 @@ class _NoteEditorState extends State<NoteEditor> {
                       ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 12, 18, 8),
-              child: Row(
-                children: <Widget>[
-                  InkWell(
-                    borderRadius: BorderRadius.circular(13),
-                    onTap: _pickIcon,
-                    child: Container(
-                      width: 46,
-                      height: 46,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: .65),
-                        borderRadius: BorderRadius.circular(13),
-                        border: Border.all(color: Color(palette.deep)),
-                      ),
-                      child: Text(
-                        _icon.isEmpty ? '🎲' : _icon,
-                        style: const TextStyle(fontSize: 24),
+            // しるし・色・文字数は編集の道具なので、プレビュー中は出さない。
+            if (!_preview)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 12, 18, 8),
+                child: Row(
+                  children: <Widget>[
+                    InkWell(
+                      borderRadius: BorderRadius.circular(13),
+                      onTap: _pickIcon,
+                      child: Container(
+                        width: 46,
+                        height: 46,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: .65),
+                          borderRadius: BorderRadius.circular(13),
+                          border: Border.all(color: Color(palette.deep)),
+                        ),
+                        child: Text(
+                          _icon.isEmpty ? '🎲' : _icon,
+                          style: const TextStyle(fontSize: 24),
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: petaColors
-                            .map(
-                              (PetaColor color) => Padding(
-                                padding: const EdgeInsets.only(right: 9),
-                                child: Semantics(
-                                  label: color.label,
-                                  selected: color.id == _color,
-                                  child: InkWell(
-                                    customBorder: const CircleBorder(),
-                                    onTap: () =>
-                                        setState(() => _color = color.id),
-                                    child: AnimatedContainer(
-                                      duration: const Duration(
-                                        milliseconds: 140,
-                                      ),
-                                      width: 30,
-                                      height: 30,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        color: Color(color.paper),
-                                        border: Border.all(
-                                          color: color.id == _color
-                                              ? _ink
-                                              : Color(color.deep),
-                                          width: color.id == _color ? 3 : 1,
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: petaColors
+                              .map(
+                                (PetaColor color) => Padding(
+                                  padding: const EdgeInsets.only(right: 9),
+                                  child: Semantics(
+                                    label: color.label,
+                                    selected: color.id == _color,
+                                    child: InkWell(
+                                      customBorder: const CircleBorder(),
+                                      onTap: () =>
+                                          setState(() => _color = color.id),
+                                      child: AnimatedContainer(
+                                        duration: const Duration(
+                                          milliseconds: 140,
+                                        ),
+                                        width: 30,
+                                        height: 30,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: Color(color.paper),
+                                          border: Border.all(
+                                            color: color.id == _color
+                                                ? _ink
+                                                : Color(color.deep),
+                                            width: color.id == _color ? 3 : 1,
+                                          ),
                                         ),
                                       ),
                                     ),
                                   ),
                                 ),
-                              ),
-                            )
-                            .toList(),
+                              )
+                              .toList(),
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    '${_text.text.runes.length} / $maxChars',
-                    style: const TextStyle(fontSize: 10, color: _inkSoft),
-                  ),
-                ],
+                    const SizedBox(width: 8),
+                    Text(
+                      '${_text.text.runes.length} / $maxChars',
+                      style: const TextStyle(fontSize: 10, color: _inkSoft),
+                    ),
+                  ],
+                ),
               ),
-            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(18, 4, 18, 16),
               child: Row(
@@ -271,19 +283,27 @@ class _NoteEditorState extends State<NoteEditor> {
                       label: const Text('ゴミ箱へ'),
                     ),
                   const Spacer(),
-                  FilledButton.icon(
-                    onPressed: _saving ? null : _save,
-                    icon: _saving
-                        ? const SizedBox.square(
-                            dimension: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                        : const Icon(Icons.check_rounded),
-                    label: const Text('保存'),
-                  ),
+                  // プレビュー中は「編集」、編集中は「保存」。同じ位置で流れが一方向に進む。
+                  if (_preview)
+                    FilledButton.icon(
+                      onPressed: _saving ? null : _startEdit,
+                      icon: const Icon(Icons.edit_outlined),
+                      label: const Text('編集'),
+                    )
+                  else
+                    FilledButton.icon(
+                      onPressed: _saving ? null : _save,
+                      icon: _saving
+                          ? const SizedBox.square(
+                              dimension: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.check_rounded),
+                      label: const Text('保存'),
+                    ),
                 ],
               ),
             ),
@@ -383,6 +403,7 @@ class _NoteEditorState extends State<NoteEditor> {
   }
 }
 
+// 画像は読み込まず alt を出し、javascript:/data: リンクはリンク化しない（拡張の PetaMD と同方針）。
 String _safeMarkdown(String source) => source
     .replaceAllMapped(
       RegExp(r'!\[([^\]]*)\]\([^\)]*\)'),
