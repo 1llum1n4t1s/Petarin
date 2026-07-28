@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>ぺたりん</title>
+    <style>
+      /* 帯ウィンドウは透過。レール本体は Shadow DOM 側（rail.css）が描く。 */
+      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+      body[data-locked] { background: #fffdf5; }
+    </style>
+  </head>
+  <body>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

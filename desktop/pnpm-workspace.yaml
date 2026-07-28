@@ -1,0 +1,4 @@
+# ルートの workspace に巻き込まれないよう独立させる（mobile/ と同じ方針）。
+# postinstall ビルドが要る依存だけ許可する（未列挙はデフォルト拒否）。
+allowBuilds:
+  esbuild: true

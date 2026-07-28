@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ぺたりん",
+  "version": "0.1.0",
+  "identifier": "com.kagayoi.petarin.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5190",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "ぺたりん",
+        "width": 56,
+        "height": 900,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "focus": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://fudaba.kagayoi.com wss://fudaba.kagayoi.com https://sekisho.kagayoi.com"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "publisher": "Kagayoi",
+    "copyright": "© Kagayoi",
+    "shortDescription": "画面の端から付箋が生えるデスクトップ常駐アプリ",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Japanese"]
+      }
+    }
+  }
+}

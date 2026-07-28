@@ -1,0 +1,59 @@
+/* ライセンス面のスタイル。レール（Shadow DOM 隔離）とは別レイヤーなので通常の CSS で書く。
+   帯ウィンドウは普段は透過だが、この面が出ているときは全面を覆って読めるようにする。 */
+
+.lic-overlay,
+.lic-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 28px 24px;
+  overflow: auto;
+  background: #fffdf5;
+  color: #3a322a;
+  font: 14px/1.7 system-ui, "Yu Gothic UI", sans-serif;
+}
+
+.lic-overlay h1 { margin: 0; font-size: 20px; }
+.lic-panel h2 { margin: 0; font-size: 18px; }
+.lic-overlay p, .lic-panel p { margin: 0; color: #6b6151; }
+
+.lic-form { display: flex; flex-direction: column; gap: 10px; }
+.lic-step1, .lic-step2 { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.lic-overlay input,
+.lic-overlay textarea,
+.lic-panel input,
+.lic-panel textarea {
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid #e0d6bb;
+  border-radius: 9px;
+  background: #fff;
+  font: inherit;
+}
+
+.lic-overlay button,
+.lic-panel button {
+  padding: 9px 16px;
+  border: 1px solid #d9683f;
+  border-radius: 9px;
+  background: #d9683f;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.lic-overlay button:disabled,
+.lic-panel button:disabled { opacity: .5; cursor: default; }
+
+.lic-buy { align-self: flex-start; }
+
+/* 第二経路は主役ではないので控えめに。 */
+details summary { cursor: pointer; color: #6b6151; font-size: 13px; }
+details button { margin-top: 8px; background: #fff; color: #3a322a; border-color: #e0d6bb; }
+
+.lic-note { min-height: 1.7em; font-size: 13px; }
