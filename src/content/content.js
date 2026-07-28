@@ -11,12 +11,24 @@
 //
 // アニメのため開閉/編集/作成/削除は要素を作り直さずクラス切替（applyState）で差分更新する。
 // 全面再描画 render() は初期化・外部同期など限られた場面のみ。resize は位置・クランプだけ再計算。
+//
+// このファイルはレール UI の**単一ソース**で、拡張とデスクトップ版（desktop/・Tauri）の両方が読む。
+// 実行環境の違いは `globalThis.PETARIN_SURFACE` 1 点だけに集約する（デスクトップ側が読み込み前に立てる）:
+//   { domain: string, assetUrl: (path) => string }
+// 拡張では常に undefined なので、下の分岐はすべて右側＝従来の挙動へ落ちる（出荷済みの動作は不変）。
 (() => {
   "use strict";
 
-  if (window.top !== window) return;
-  if (!/^https?:$/.test(location.protocol)) return;
+  // デスクトップ版はページではなく画面そのものが表示面なので、ページ前提のガードは surface 側に委ねる。
+  const surface = globalThis.PETARIN_SURFACE;
+  if (!surface) {
+    if (window.top !== window) return;
+    if (!/^https?:$/.test(location.protocol)) return;
+  }
   if (document.getElementById("petarin-host")) return;
+
+  // 同梱アセット（rail.css・フォント）の URL 解決。拡張は chrome.runtime.getURL、デスクトップは bundler の URL。
+  const assetUrl = surface?.assetUrl ?? ((path) => chrome.runtime.getURL(path));
 
   // ── 定数（shared/storage.js と対応） ────────────────────────────
   const KEY_NOTES = "petarin:notes";
@@ -140,7 +152,8 @@
   });
   const MAX_CHARS = 10000; // shared/storage.js の MAX_CHARS と同値（content は import 不可・変更時は両方）
 
-  const domain = location.hostname;
+  // 付箋の保存キー。拡張は見ているページのドメイン、デスクトップ版は固定のグループキー（`group:`+base64url）。
+  const domain = surface?.domain ?? location.hostname;
   const colorOf = (id) => COLORS.find((c) => c.id === id) || COLORS[0];
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const isVertical = () => settings.side === "right" || settings.side === "left";
@@ -418,7 +431,7 @@
     if (!file || loadedFonts.has(id)) return;
     loadedFonts.add(id); // 先に印を付けて多重 fetch を防ぐ（失敗時は下で解除）
     try {
-      const buf = await (await fetch(chrome.runtime.getURL(`src/fonts/${file}`))).arrayBuffer();
+      const buf = await (await fetch(assetUrl(`src/fonts/${file}`))).arrayBuffer();
       const ff = new FontFace(`PetaFont_${id}`, buf, { display: "swap" });
       await ff.load();
       document.fonts.add(ff);
@@ -504,7 +517,7 @@
 
     const style = document.createElement("style");
     try {
-      const res = await fetch(chrome.runtime.getURL("src/content/rail.css"));
+      const res = await fetch(assetUrl("src/content/rail.css"));
       style.textContent = await res.text();
     } catch (e) {
       // 失敗してもレールは動く（無スタイル）。原因追跡のため握りつぶさず必ず記録する。
