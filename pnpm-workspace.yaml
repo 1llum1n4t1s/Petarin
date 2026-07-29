@@ -3,3 +3,9 @@ packages: []
 # postinstall でネイティブビルドが必要な依存を明示許可（pnpm v10.12+ はここで管理）
 allowBuilds:
   sharp: true
+
+# 上流が脆弱版を完全固定していて直接更新では解消できない推移的依存の底上げ。
+# fx-runner(web-ext 経由) が shell-quote@1.8.4 を固定し、コマンド組み立ての脆弱性
+# (GHSA) を残すため。上流が上げたらこの override は削除してよい。
+overrides:
+  shell-quote: ">=1.10.0"
