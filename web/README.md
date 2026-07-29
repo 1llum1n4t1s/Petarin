@@ -13,17 +13,22 @@
 直接叩く実装で、このドメインにライセンス API を置いた出荷済みバージョンが存在しないため
 （Kiriha は旧クライアント互換で `/buy` 等のリダイレクトを抱えているが、ここでは不要）。
 
-## ⚠️ 初回デプロイ: R2 カスタムドメインからの切り替え
+## 切り替え済み: R2 カスタムドメイン → Worker（2026-07-29 実施）
 
-`petarin.kagayoi.com` は現在 **R2 バケットのカスタムドメイン**として直結している。
-同じホスト名を R2 と Worker の両方へ向けることはできないので、**先に R2 側の割り当てを外してから** deploy する。
+`petarin.kagayoi.com` はもともと **R2 バケットのカスタムドメイン**として直結していた。
+同じホスト名を R2 と Worker の両方へ向けられないため、次の順で付け替えた（再構築が要るときも同じ手順）。
 
-この順序を誤る（Worker を先に deploy しようとする）と割り当て衝突で失敗し、
-逆に R2 を外したまま放置すると**出荷済みデスクトップ版の自動更新が 404 になる**ので、続けて実行すること。
+1. `[[routes]]` を一時的に無効化して `wrangler deploy` → **デプロイ権限とバンドルを先に実証**する
+   （R2 の割り当てを外した後に権限不足が発覚すると、配信が止まったまま復旧できない）
+2. `*.workers.dev` 経由で R2 パススルー（`releases.win.json` / `*.nupkg` / Range 206 / 416）を確認する
+3. R2 のカスタムドメインを API で削除
+   （`DELETE /accounts/{account}/r2/buckets/petarin-updates/domains/custom/petarin.kagayoi.com`）
+4. `[[routes]]` を戻して `wrangler deploy` → Worker のカスタムドメインとして張り直す
+5. 下の「デプロイ後の確認」を通す
 
-1. Cloudflare ダッシュボード → R2 → `petarin-updates` → Settings → Custom Domains → `petarin.kagayoi.com` を削除
-2. `pnpm dlx wrangler@4.110.0 deploy`（この web/ ディレクトリで実行）
-3. 下の「デプロイ後の確認」を必ず通す
+3→4 のあいだは配信が落ちる。加えて **Worker 側の証明書発行で追加の数分間は接続不可**になった
+（curl が 000 を返す＝TLS 未発行。DNS は AAAA `100::` proxied、Worker domain は `enabled: true` の状態）。
+慌てて切り戻さず、疎通が戻るまで待つこと。
 
 ## 通常のデプロイ
 
