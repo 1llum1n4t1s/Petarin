@@ -2,7 +2,7 @@
 #
 # GitHub Actions の SHA ピン留め推奨 (https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions)
 # に従い、Actions を SHA + タグコメントの形に保つための自動 PR 設定。
-# npm 依存 (sharp / web-ext) の脆弱性 / バージョン追随もまとめてカバーする。
+# 依存の単位はリポジトリ内に 6 つある（npm 4 つ + Cargo + pub）ので、すべてを見張る。
 version: 2
 updates:
   # GitHub Actions の SHA ピン留め維持
@@ -10,15 +10,66 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
     open-pull-requests-limit: 5
     commit-message:
       prefix: "ci"
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   # npm 依存の脆弱性 / マイナーバージョン追随
+  # / = 拡張のビルドツール / mobile = Capacitor / desktop = Tauri / relay = Workers
   - package-ecosystem: "npm"
-    directory: "/"
+    directories:
+      - "/"
+      - "/mobile"
+      - "/desktop"
+      - "/infra/cloudflare/relay"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # デスクトップ版（Tauri v2）の Rust クレート
+  - package-ecosystem: "cargo"
+    directory: "/desktop/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
     open-pull-requests-limit: 5
     commit-message:
       prefix: "deps"
+    groups:
+      cargo-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # iOS アプリ（Flutter）の pub パッケージ
+  - package-ecosystem: "pub"
+    directory: "/mobile_flutter"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      pub-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
