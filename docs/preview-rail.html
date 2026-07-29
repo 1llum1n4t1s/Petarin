@@ -16,15 +16,23 @@
     <script>
       // ── chrome API モック ─────────────────────────────────────────
       const now = Date.now();
-      const host = location.hostname; // 127.0.0.1 / localhost
+      // 付箋の保存単位は「プロファイル」（どのサイトを見ているかとは無関係）。レールは台帳
+      // （petarin:profiles）と settings.activeProfile から保存先を決めるので、モックにも両方を置く。
+      const profileKey = "group:44Oe44Kk5LuY566L"; // encodeGroupKey("マイ付箋")
       window.chrome = {
-        runtime: { getURL: (p) => "/" + p },
+        runtime: { getURL: (p) => "/" + p, sendMessage: async () => ({ ok: true }) },
         storage: {
           local: {
             _d: {
-              "petarin:settings": { side: "right", collapsedTranslucent: true, translucentOpacity: 0.45, showOnPage: true, creatorRatio: 0.78, font: "yomogi", fontSize: 16, lineNumbers: true, defaultColor: "mint" },
+              "petarin:settings": { side: "right", collapsedTranslucent: true, translucentOpacity: 0.45, showOnPage: true, creatorRatio: 0.78, font: "yomogi", fontSize: 16, lineNumbers: true, defaultColor: "mint", activeProfile: "group:44Oe44Kk5LuY566L" },
+              "petarin:profiles": {
+                order: ["group:44Oe44Kk5LuY566L"],
+                names: { "group:44Oe44Kk5LuY566L": "マイ付箋" },
+                meta: { "group:44Oe44Kk5LuY566L": { at: now } },
+                orderAt: now,
+              },
               "petarin:notes": {
-                [host]: [
+                [profileKey]: [
                   { id: "p1", text: "# 買い物メモ\n\n- **牛乳** を 1 本\n- りんご 3 個\n- `卵` を忘れずに\n\n| 品目 | 個数 | 価格 |\n| :--- | :--: | ---: |\n| 牛乳 | 1 | 200円 |\n| りんご | 3 | 450円 |\n\n> [レシピ](https://example.com) を見る", color: "yellow", icon: "🍎", posRatio: 0.18, createdAt: now, updatedAt: now },
                   { id: "p2", text: "あとで読む", color: "mint", icon: "📖", posRatio: 0.45, createdAt: now, updatedAt: now },
                 ],

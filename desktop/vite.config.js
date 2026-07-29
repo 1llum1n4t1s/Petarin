@@ -16,6 +16,15 @@ export default defineConfig({
     emptyOutDir: true,
     // WebView2（Chromium ベース）だけが対象なので、レガシー変換は不要。
     target: "es2022",
+    // 窓ごとに別ページ: レール（index）/ ポップアップ / 付箋デスク。
+    // ポップアップとデスクは拡張の popup・manage を単一ソースのまま読み込む薄い殻。
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        popup: fileURLToPath(new URL("./popup.html", import.meta.url)),
+        manage: fileURLToPath(new URL("./manage.html", import.meta.url)),
+      },
+    },
   },
   // Tauri の dev サーバは stderr を握るので、依存の最適化ログは静かにする。
   clearScreen: false,

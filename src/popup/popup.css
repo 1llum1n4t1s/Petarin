@@ -261,6 +261,25 @@ main { padding: 4px 16px 18px; display: flex; flex-direction: column; gap: 14px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* 移行の案内カード（既存ユーザーに 1 回だけ）。閉じると二度と出ない。 */
+.notice {
+  margin: 0 0 12px; padding: 12px 14px;
+  border: 1px solid var(--accent-warm); border-radius: 12px;
+  background: #fff6e2; color: var(--ink);
+}
+.notice-title { margin: 0 0 5px; font-size: 12.5px; font-weight: 800; }
+.notice-body { margin: 0 0 9px; font-size: 11px; line-height: 1.65; color: var(--ink-soft); }
+.notice-ok {
+  border: 0; border-radius: 8px; padding: 5px 14px; cursor: pointer;
+  background: var(--accent); color: var(--note-yellow-i); font: inherit; font-size: 11.5px; font-weight: 800;
+}
+.notice-ok:hover { filter: brightness(1.05); }
+
+/* プロファイル切替の補足文（何が起きるかを 1 行で伝える） */
+.profile-hint {
+  margin: 2px 2px 0; font-size: 10.5px; line-height: 1.5; color: var(--ink-soft);
+}
+
 /* ── 付箋デスクを開く（管理タブ入口）──────────────────────────────── */
 .open-desk {
   display: flex; align-items: center; gap: 12px; width: 100%;

@@ -110,7 +110,10 @@ function mountLockOverlay({ license, status, onActivated }) {
   const buy = el("button", { type: "button", className: "lic-buy", textContent: "購入ページを開く" });
   buy.addEventListener("click", () => {
     // 外部ブラウザで開く（アプリ内で決済画面を抱えない）。
-    globalThis.open?.("https://petarin.kagayoi.com/#pricing", "_blank");
+    // Stripe の URL を直接埋めずハブの /buy/:app へ向ける。決済リンクを差し替えても
+    // 出荷済みアプリを更新せずに済む（ハブが 302 で現在の Payment Link へ転送する）。
+    // petarin.kagayoi.com は R2 の更新配信ドメインなので購入導線には使わない。
+    globalThis.open?.("https://sekisho.kagayoi.com/buy/petarin", "_blank");
   });
 
   const overlay = el(

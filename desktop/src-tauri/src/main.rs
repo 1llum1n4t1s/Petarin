@@ -15,8 +15,9 @@
 
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
-    Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
 };
 
 /// レールを吸着させる画面の端。Web 側の `settings.side` と対応する。
@@ -70,6 +71,91 @@ fn set_rail_visible(window: WebviewWindow, visible: bool) -> Result<(), String> 
     Ok(())
 }
 
+/// ポップアップの論理サイズ。幅は拡張の popup.css（400px）に合わせる。
+const POPUP_WIDTH: f64 = 400.0;
+const POPUP_HEIGHT: f64 = 620.0;
+
+/// 付箋デスク（拡張の options ページ相当）を出す。
+///
+/// レール窓と違い**通常の装飾つきウィンドウ**にする。デスクは文字入力・スクロール・リサイズが
+/// 要るうえ、ゴミ箱の完全削除や同期モード切替といった取り消せない操作を置く。レール窓は
+/// transparent / decorations:false / alwaysOnTop / focus:false / resizable:false ＝
+/// フォーカスもリサイズも拒否する設定なので、同居させるとそれを全部剥がすことになる。
+fn show_desk(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if let Some(w) = app.get_webview_window("desk") {
+        let _ = w.unminimize();
+        w.show()?;
+        w.set_focus()?;
+        return Ok(());
+    }
+    let w = WebviewWindowBuilder::new(app, "desk", WebviewUrl::App("manage.html".into()))
+        .title("ぺたりん — 付箋デスク")
+        .inner_size(1100.0, 760.0)
+        .min_inner_size(720.0, 520.0)
+        .resizable(true)
+        .center()
+        .build()?;
+    w.set_focus()?;
+    Ok(())
+}
+
+/// トレイアイコンのクリックで出す小窓＝拡張のツールバーポップアップに相当。
+/// ブラウザと同じ体感にするため、枠なし・常に手前・タスクバーに出さない・
+/// **フォーカスを失ったら閉じる**。`at` はトレイアイコンの物理座標。
+fn show_popup(app: &tauri::AppHandle, at: PhysicalPosition<f64>) -> tauri::Result<()> {
+    let window = match app.get_webview_window("popup") {
+        Some(w) => w,
+        None => {
+            let w = WebviewWindowBuilder::new(app, "popup", WebviewUrl::App("popup.html".into()))
+                .title("ぺたりん")
+                .inner_size(POPUP_WIDTH, POPUP_HEIGHT)
+                .decorations(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .resizable(false)
+                .visible(false) // 位置を決めてから出す（既定位置に一瞬出るのを防ぐ）
+                .build()?;
+            let handle = w.clone();
+            w.on_window_event(move |event| {
+                if let WindowEvent::Focused(false) = event {
+                    let _ = handle.hide();
+                }
+            });
+            w
+        }
+    };
+
+    // トレイアイコンの真上あたりへ。画面外へはみ出さないようモニタ内へ収める。
+    if let Some(monitor) = window.current_monitor()? {
+        let scale = monitor.scale_factor();
+        let size = monitor.size();
+        let origin = monitor.position();
+        let w_phys = (POPUP_WIDTH * scale).round() as i32;
+        let h_phys = (POPUP_HEIGHT * scale).round() as i32;
+        let x = (at.x as i32 - w_phys / 2).clamp(origin.x, origin.x + size.width as i32 - w_phys);
+        let y = (at.y as i32 - h_phys).max(origin.y);
+        window.set_position(PhysicalPosition::new(x, y))?;
+    }
+    window.show()?;
+    window.set_focus()?;
+    Ok(())
+}
+
+/// popup の「付箋デスク」ボタン（chrome.runtime.openOptionsPage 相当）。
+#[tauri::command]
+fn open_desk(app: tauri::AppHandle) -> Result<(), String> {
+    show_desk(&app).map_err(|e| e.to_string())
+}
+
+/// popup.js の window.close() 相当（Tauri の webview は JS からの close が効かない）。
+#[tauri::command]
+fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("popup") {
+        w.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         // 2 重起動は既存ウィンドウを前面に出して終わる（常駐アプリなので多重起動は無意味）。
@@ -80,7 +166,12 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_store::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![resize_rail, set_rail_visible])
+        .invoke_handler(tauri::generate_handler![
+            resize_rail,
+            set_rail_visible,
+            open_desk,
+            hide_popup
+        ])
         .setup(|app| {
             let window = app
                 .get_webview_window("main")
@@ -91,14 +182,39 @@ fn main() {
 
             let show = MenuItem::with_id(app, "show", "レールを表示", true, None::<&str>)?;
             let hide = MenuItem::with_id(app, "hide", "レールを隠す", true, None::<&str>)?;
+            let desk = MenuItem::with_id(app, "desk", "付箋デスク…", true, None::<&str>)?;
             let license = MenuItem::with_id(app, "license", "ライセンス…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &hide, &license, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &hide, &desk, &license, &quit])?;
 
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("ぺたりん")
                 .menu(&menu)
+                // 右クリックだけメニューを出す。左クリックはブラウザのツールバーアイコンと同じく
+                // ポップアップに割り当てる（既定のままだと左クリックでもメニューが出てしまう）。
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        position,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        // 出ている状態でもう一度押したら閉じる（ブラウザのポップアップと同じ）。
+                        if let Some(w) = app.get_webview_window("popup") {
+                            if w.is_visible().unwrap_or(false) {
+                                let _ = w.hide();
+                                return;
+                            }
+                        }
+                        if let Err(e) = show_popup(app, position) {
+                            eprintln!("[petarin] ポップアップの表示に失敗: {e}");
+                        }
+                    }
+                })
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(w) = app.get_webview_window("main") {
@@ -108,6 +224,11 @@ fn main() {
                     "hide" => {
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.hide();
+                        }
+                    }
+                    "desk" => {
+                        if let Err(e) = show_desk(app) {
+                            eprintln!("[petarin] 付箋デスクの表示に失敗: {e}");
                         }
                     }
                     // ライセンス面は Web 側が持つ（ロック面と同一のフォームを使い回すため）。

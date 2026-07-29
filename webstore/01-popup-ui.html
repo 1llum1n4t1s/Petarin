@@ -48,11 +48,11 @@
 <body>
   <div class="copy">
     <span class="eyebrow">🗂 ぺたりん — WEB 付箋</span>
-    <h1>全ドメインの付箋を、<br /><span class="hl">ひとつの机</span>に。</h1>
-    <p class="lead">どのサイトに貼ったか忘れても大丈夫。ポップアップからドメインごとに一覧・検索して、ぱっと開けます。</p>
+    <h1>仕事用と個人用を、<br /><span class="hl">ひと切り替え</span>で。</h1>
+    <p class="lead">ツールバーのアイコンから、いま出す付箋のプロファイルを選ぶだけ。選んだ束が、どのサイトでも画面の端に出ます。</p>
     <div class="bullets">
-      <div class="bullet"><span class="chip" style="background:#FFE57A">📌</span>ドメインごとに自動で整理</div>
-      <div class="bullet"><span class="chip" style="background:#A6E6D5">🔍</span>付箋もサイトもまとめて検索</div>
+      <div class="bullet"><span class="chip" style="background:#FFE57A">🗂</span>プロファイルで使い分け</div>
+      <div class="bullet"><span class="chip" style="background:#A6E6D5">📐</span>貼る端・書体・大きさも思いのまま</div>
       <div class="bullet"><span class="chip" style="background:#FFB6C9">🎨</span>7 色 + 絵文字アイコンで色分け</div>
     </div>
   </div>
@@ -63,24 +63,23 @@
     </div>
   </div>
   <script>
-    // popup.js が付箋リストを描画したあと、設定パネルを越えて「ドメイン別の一覧」が
-    // 主役に来るよう iframe 内をスクロールする（同一オリジン配信なので contentDocument 可）。
+    // popup プレビュー（docs/preview-popup.html）を実物のまま埋める。主役はプロファイル切替なので
+    // 上端から素直に見せ、既存ユーザー向けの「移行の案内」だけ伏せる（新規インストール時の見た目に揃える）。
+    // iframe は同一オリジン配信なのでスタイルを注入できる。
     const frame = document.querySelector(".device iframe");
-    // 店頭素材ではドメイン別の付箋一覧を主役にしたいので、設定カード（配置ピッカー）を
-    // 伏せて、ブランド＋検索＋一覧が見えるようにする（iframe 同一オリジンなので注入可）。
-    function revealList() {
+    function hideMigrateNotice() {
       try {
         const d = frame.contentDocument;
         if (d.getElementById("petarin-store-crop")) return;
         const st = d.createElement("style");
         st.id = "petarin-store-crop";
-        st.textContent = ".settings{display:none !important}";
+        st.textContent = "#migrateNotice{display:none !important}";
         (d.head || d.documentElement).appendChild(st);
       } catch (e) {}
     }
     window.addEventListener("load", () => {
-      setTimeout(revealList, 300);
-      setTimeout(revealList, 800);
+      setTimeout(hideMigrateNotice, 300);
+      setTimeout(hideMigrateNotice, 800);
     });
   </script>
 </body>

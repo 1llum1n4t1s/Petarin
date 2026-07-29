@@ -15,7 +15,14 @@
           local: {
             _d: {
               "petarin:settings": { side: "right", collapsedTranslucent: true, translucentOpacity: 0.45, showOnPage: true, font: "yomogi", fontSize: 14, lineNumbers: true, defaultColor: "mint",
-                syncEnabled: false, syncSettings: false, syncScope: "selected", syncDomains: [] },
+                syncEnabled: false, syncSettings: false, syncScope: "selected", syncDomains: [], activeProfile: "github.com" },
+              // 付箋の保存単位は「プロファイル」。台帳が正本で、付箋 0 件のプロファイルもここに残る。
+              "petarin:profiles": {
+                order: ["www.reddit.com", "github.com", "group:44Oe44Kk5LuY566L"],
+                names: { "www.reddit.com": "リサーチ", "github.com": "仕事", "group:44Oe44Kk5LuY566L": "マイ付箋" },
+                meta: { "www.reddit.com": { at: now }, "github.com": { at: now - 1 }, "group:44Oe44Kk5LuY566L": { at: now - 2 } },
+                orderAt: now,
+              },
               "petarin:notes": {
                 "www.reddit.com": [
                   { id: "a1", text: "## やること\n\n- **あとで** 調べる\n- `r/news` も見る\n\n| 項目 | 数 |\n| --- | --: |\n| A | 1 |\n| B | 2 |\n\nリンク https://example.com も貼れる", color: "yellow", icon: "🍎", posRatio: 0.3, createdAt: now - 3600e3, updatedAt: now - 120e3 },
@@ -52,16 +59,16 @@
     <header class="deskbar">
       <div class="brand">
         <span class="logo-mark" aria-hidden="true"><span class="logo-note"></span></span>
-        <div class="brand-text"><h1>付箋デスク</h1><p>ぺたりんに貼った付箋を、ぜんぶここで。</p></div>
+        <div class="brand-text"><h1>付箋デスク</h1><p>プロファイルごとの付箋を、ぜんぶここで。</p></div>
       </div>
-      <div class="stats"><div class="stamp"><b id="statDomains">0</b><span>サイト</span></div><div class="stamp accent"><b id="statNotes">0</b><span>付箋</span></div></div>
+      <div class="stats"><div class="stamp"><b id="statDomains">0</b><span>プロファイル</span></div><div class="stamp accent"><b id="statNotes">0</b><span>付箋</span></div></div>
       <div class="tools">
         <div class="search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><line x1="16.5" y1="16.5" x2="21" y2="21" /></svg>
-          <input type="search" id="search" placeholder="付箋やサイトを探す…" autocomplete="off" />
+          <input type="search" id="search" placeholder="付箋やプロファイルを探す…" autocomplete="off" />
         </div>
         <label class="sort"><span>並べ替え</span>
-          <select id="sort"><option value="new">新しい順</option><option value="old">古い順</option><option value="domain">サイト順</option><option value="color">色で揃える</option><option value="length">文字数が多い順</option></select>
+          <select id="sort"><option value="new">新しい順</option><option value="old">古い順</option><option value="domain">プロファイル順</option><option value="color">色で揃える</option><option value="length">文字数が多い順</option></select>
         </label>
         <button class="syncbtn" id="syncBtn" type="button"><span aria-hidden="true">⇄</span> <span class="btn-label">同期</span></button>
         <button class="syncbtn" id="exportBtn" type="button"><span aria-hidden="true">⬇</span> <span class="btn-label">書き出し</span></button>
@@ -70,14 +77,14 @@
       </div>
     </header>
     <div class="workspace">
-      <aside class="index" id="index" aria-label="サイトの索引"></aside>
+      <aside class="index" id="index" aria-label="プロファイルの索引"></aside>
       <main class="board">
         <div class="board-head">
           <div class="scope"><span class="scope-favi" id="scopeFavi" aria-hidden="true"></span><div class="scope-text"><h2 id="scopeTitle">すべての付箋</h2><p id="scopeMeta">0 枚</p></div></div>
           <div class="board-actions">
             <button class="ghost" id="backAll" type="button" hidden>← すべて</button>
             <button class="ghost" id="selectAll" type="button">ぜんぶ選択</button>
-            <button class="ghost" id="openDomain" type="button" hidden>↗ このサイトを開く</button>
+            <button class="ghost" id="openDomain" type="button" hidden>↗ 元サイトを開く</button>
             <button class="ghost danger" id="emptyTrash" type="button" hidden>🗑 ゴミ箱を空にする</button>
           </div>
         </div>
@@ -96,15 +103,48 @@
     <div class="syncpanel" id="syncPanel" hidden>
       <div class="sp-card" role="dialog" aria-modal="true" aria-labelledby="syncTitle">
         <div class="sp-head"><h2 id="syncTitle"><span aria-hidden="true">⇄</span> 複数PCで同期</h2><button class="sp-close" id="syncClose" type="button" aria-label="閉じる">✕</button></div>
-        <label class="sp-toggle"><input type="checkbox" id="syncEnabled" /><span class="sp-track" aria-hidden="true"><span class="sp-knob"></span></span><span class="sp-toggle-label">同期を有効にする</span></label>
-        <p class="sp-consent">（プレビュー）</p>
+        <!-- 排他3モード（off/chrome/cloud）とペアリング。manage.html の setupSync が参照する id を欠かすと
+             init が例外で止まりデスク全体が描画されないので、要素の集合は本体と揃えておくこと。 -->
+        <fieldset class="sp-modes">
+          <legend>同期方式</legend>
+          <label class="sp-mode"><input type="radio" name="syncMode3" value="off" /><span class="sp-mode-t">同期しない</span></label>
+          <label class="sp-mode"><input type="radio" name="syncMode3" value="chrome" /><span class="sp-mode-t">ブラウザ標準同期</span></label>
+          <label class="sp-mode"><input type="radio" name="syncMode3" value="cloud" /><span class="sp-mode-t">クラウド同期</span></label>
+        </fieldset>
+        <p class="sp-consent" id="consentChrome" hidden>（プレビュー）ブラウザ標準同期の説明</p>
+        <p class="sp-consent" id="consentCloud" hidden>（プレビュー）クラウド同期の説明</p>
+        <div class="sp-pair" id="cloudPair" hidden>
+          <div class="sp-pair-status" id="pairStatus"></div>
+          <div id="pairSetup">
+            <div class="sp-pair-actions">
+              <button class="sp-btn primary" id="pairCreate" type="button">新しい同期グループを作成</button>
+              <button class="sp-btn" id="pairJoinToggle" type="button">既存のグループに参加</button>
+            </div>
+            <div class="sp-pair-join" id="pairJoinBox" hidden>
+              <textarea id="pairInput" class="sp-pair-ta" rows="3"></textarea>
+              <button class="sp-btn primary" id="pairJoin" type="button">このグループに参加</button>
+            </div>
+          </div>
+          <div id="pairLinked" hidden>
+            <div class="sp-pair-code" id="pairCodeBox" hidden>
+              <img id="pairQr" class="sp-pair-qr" alt="ペアリングQRコード" hidden />
+              <textarea id="pairCode" class="sp-pair-ta" rows="3" readonly></textarea>
+              <button class="sp-btn" id="pairCopy" type="button">コードをコピー</button>
+            </div>
+            <div class="sp-pair-actions">
+              <button class="sp-btn" id="pairReveal" type="button">引き継ぎコードを表示</button>
+              <button class="sp-btn danger" id="pairUnlink" type="button">この端末の接続を解除</button>
+            </div>
+          </div>
+          <p class="sp-note" id="pairNote"></p>
+        </div>
         <div class="sp-body" id="syncBody" hidden>
           <fieldset class="sp-scope"><legend>同期するもの</legend>
             <label class="sp-opt"><input type="checkbox" id="syncSettings" /> 見た目の設定</label>
-            <label class="sp-opt"><input type="radio" name="syncScope" value="selected" /> 選んだサイトの付箋だけ</label>
-            <label class="sp-opt"><input type="radio" name="syncScope" value="all" /> すべてのサイトの付箋</label>
+            <label class="sp-opt"><input type="radio" name="syncScope" value="selected" /> 選んだプロファイルの付箋だけ</label>
+            <label class="sp-opt"><input type="radio" name="syncScope" value="all" /> すべてのプロファイルの付箋</label>
           </fieldset>
-          <div class="sp-gauge"><div class="sp-gauge-bar"><span id="syncGaugeFill"></span></div><div class="sp-gauge-text" id="syncGaugeText">0 / 100 KB</div></div>
+          <div class="sp-gauge" id="syncGauge"><div class="sp-gauge-bar"><span id="syncGaugeFill"></span></div><div class="sp-gauge-text" id="syncGaugeText">0 / 100 KB</div></div>
           <div class="sp-domains" id="syncDomainList"></div>
           <p class="sp-note" id="syncNote"></p>
         </div>

@@ -21,6 +21,12 @@
   "cws": {
     "extensionIdFile": ".cws-id"
   },
+  "localRelease": {
+    "_comment": "デスクトップ版（Tauri）の署名付き Velopack リリース。SimplySign はスマホトークンが要るため CI から署名できず、ローカル実行に固定する。拡張・モバイルのリリースとは独立。",
+    "run": "pwsh -NoProfile -File desktop/scripts/release-local.ps1",
+    "precheck": "pwsh -NoProfile -Command \"if (-not (Get-ChildItem Cert:\\CurrentUser\\My | Where-Object { $_.Subject -like 'CN=Open Source Developer Yuichiro Shinozaki*' -and $_.NotAfter -gt (Get-Date) })) { exit 1 }\"",
+    "precheckFailMessage": "署名証明書が見つからないよ。SimplySign Desktop を起動してトークンでログインしてから /vava を再実行してね"
+  },
   "driftKeywords": {
     "_comment": "check-store-listing.mjs の drift 判定キーワード。listing が「主要キーワードを含む」か確認する。未設定 (null) なら drift チェックを skip。CWS は meta description しか取得できないため名前ベースの語で判定する。",
     "cws": {
@@ -29,12 +35,12 @@
     },
     "amo": {
       "summary": {
-        "ja": ["ドメインごと", "付箋"],
-        "en": ["per domain", "sticky notes"]
+        "ja": ["プロファイル", "付箋"],
+        "en": ["profiles", "notes"]
       },
       "description": {
-        "ja": ["ドメインごと", "付箋", "端"],
-        "en": ["per domain", "sticky notes", "edge"]
+        "ja": ["プロファイル", "付箋", "端"],
+        "en": ["profiles", "notes", "edge"]
       }
     }
   }

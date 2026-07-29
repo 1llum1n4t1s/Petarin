@@ -23,8 +23,18 @@ import {
   getSettings,
   LOCAL_TOMBS_KEY,
   TRASH_KEY,
+  PROFILES_KEY,
   mergeTrash,
+  mergeProfilesInto,
 } from "./storage.js";
+import {
+  isValidKey,
+  normalizeProfiles,
+  mergeProfiles,
+  gcProfiles,
+  filterProfiles,
+  isEmptyProfiles,
+} from "./profiles.js";
 
 // ── 端末判定 & sync の上限（2026 時点 Chrome / Firefox 共通: 100KB / 8KB-item / 512items）──
 export const IS_FIREFOX =
@@ -52,6 +62,7 @@ export const SYNC_KEYS = {
   meta: "petarin:sync:meta",         // { v, tomb:{ "domain<SEP>id": deletedAt } }
   notePrefix: "petarin:sync:n:",     // + domainHash → { d, n:[タプル...] } か { d, z:"base64gz" }
   trash: "petarin:sync:trash",       // ゴミ箱（追加だけ同期）。{ n:[タプル...] } か { z:"base64gz" }
+  profiles: "petarin:sync:profiles", // プロファイル台帳（単一 item・LWW マージ）。{ p:台帳 } か { z:"base64gz" }
 };
 // shadow（前回合意状態）は local 限定（sync しない）
 const LOCAL_SHADOW = "petarin:sync:shadow";  // { notes:{[domain]:Note[]}, settings, settingsT }
@@ -85,20 +96,10 @@ const indexById = (arr) => {
   for (const n of arr || []) if (n && n.id) m.set(n.id, n);
   return m;
 };
-// sync 由来ドメインの健全性チェック（A1-001）。local の hostname は安全だが、sync は信頼境界の外
-// （別端末・将来の import）。URL 構造文字（/ @ ? # \ 空白）を含む値は `https://${domain}/` 連結で
-// 別オリジンへ飛ばすフィッシングに化けうるので、取り込み時に弾く。punycode 済み英数 .- と IPv6 の
-// [::1]（: [ ]）は許可。
-export const isValidDomain = (d) =>
-  // 制御文字 C0(U+0000〜U+001F)/DEL(U+007F) を拒否。`https://${domain}/` が不正 URL になるうえ、
-  // SEP=U+001F は tombKey の区切り文字なので、埋め込まれると split(SEP) で別ドメインの削除簿記に化ける（Codex 指摘）。
-  typeof d === "string" && d.length > 0 && d.length < 256 && !/[\s/@?#\\\u0000-\u001f\u007f]/.test(d) &&
-  // 継承プロパティ名（__proto__/constructor/toString/valueOf/hasOwnProperty 等）を全て弾く。素の {} を
-  // ドメインマップに使うため、これらは own エントリが無くても `shadow.notes[d]` が Object.prototype の
-  // メンバ（関数等）に解決し、mergeDomainNotes が配列でなく関数を受け取って throw → 同期が wedge する
-  // （`d in {}` は Object.prototype 由来の継承名を true にするので一括で拒否できる。__proto__/constructor も
-  //  これで捕捉。prototype だけは Object.prototype に無いので個別に弾く。真の hostname はこれらにならない。Codex）。
-  d !== "prototype" && !(d in {});
+// 保存キー（旧: ドメイン／現: プロファイル）の健全性チェック（A1-001）。実体は profiles.js の isValidKey へ
+// 移した（台帳もキーの妥当性判定を要るため、正本を 1 つにする）。ここは旧名の互換 export で、manage.js と
+// scripts/_sync_repro.mjs はこの名前で参照している。
+export const isValidDomain = isValidKey;
 
 // ════════════════════════════════════════════════════════════════
 //  符号化層（sync 容量対策: ①スキーマ圧縮 ②gzip。ローカルは無加工のまま）
@@ -261,6 +262,34 @@ export async function decodeTrashItem(item) {
     return arr.map(expandTrashEntry).filter(Boolean);
   } catch {
     return [];
+  }
+}
+
+// ── プロファイル台帳 item の符号化（単一 item・LWW マージ）───────────────
+// 台帳は小さい（キー＋表示名＋打刻）ので構造圧縮はせず、そのまま入れて gzip の方が小さければ gzip にする。
+export async function encodeProfilesItem(led) {
+  const rawItem = { p: led };
+  if (hasCompression()) {
+    try {
+      const gz = await gzipString(JSON.stringify(led));
+      const zItem = { z: bytesToB64(gz) };
+      if (bytesOf({ [SYNC_KEYS.profiles]: zItem }) < bytesOf({ [SYNC_KEYS.profiles]: rawItem })) return zItem;
+    } catch { /* CompressionStream 不在/失敗 → 生で格納 */ }
+  }
+  return rawItem;
+}
+// 台帳 item を復号。破損は null（＝今回 remote から取り込まない）で安全に握る。台帳の反映は LWW マージで、
+// 「空を見たらローカルを消す」経路が無いので、domain item の corrupt 隔離より緩くてよい。
+export async function decodeProfilesItem(item) {
+  try {
+    if (!item || typeof item !== "object") return null;
+    let led = null;
+    if (typeof item.z === "string") led = JSON.parse(await gunzipToString(b64ToBytes(item.z)));
+    else if (item.p && typeof item.p === "object") led = item.p;
+    if (!led) return null;
+    return normalizeProfiles(led); // 信頼境界の外＝不正キー・壊れた値はここで落とす
+  } catch {
+    return null;
   }
 }
 
@@ -493,6 +522,11 @@ async function getLocalTrash() {
   const raw = await chrome.storage.local.get(TRASH_KEY);
   return Array.isArray(raw[TRASH_KEY]) ? raw[TRASH_KEY] : [];
 }
+// プロファイル台帳（local）。付箋 0 件のプロファイルも消えてはいけないので notes とは独立の台帳を持つ。
+async function getLocalProfiles() {
+  const raw = await chrome.storage.local.get(PROFILES_KEY);
+  return normalizeProfiles(raw[PROFILES_KEY]);
+}
 // sync 全体を読み、扱いやすい形へ。
 //  byDomain    : 復号した Note[]（マージ入力）
 //  rawByDomain : 格納されている生 item（書き込み要否の比較を符号化形同士で行うため）
@@ -531,8 +565,8 @@ async function readSync(transport) {
   // 二重計上すると上限近傍で誤って item_limit/quota_exceeded になり、上書きで収まる書き込みを skip する（Codex）。
   const orphanKeyBytes = new Map();
   for (const [k, v] of Object.entries(all)) {
-    // meta / settings / trash は別途読んで会計するのでここでは飛ばす。
-    if (k === SYNC_KEYS.meta || k === SYNC_KEYS.settings || k === SYNC_KEYS.trash) continue;
+    // meta / settings / trash / profiles は別途読んで会計するのでここでは飛ばす。
+    if (k === SYNC_KEYS.meta || k === SYNC_KEYS.settings || k === SYNC_KEYS.trash || k === SYNC_KEYS.profiles) continue;
     // 健全な note item だけ取り込む（不正・危険なドメイン名は弾く A1-001／キーが d の正規ハッシュ
     // でないものは別キーに置かれた stale/改竄＝canonical として取り込むと正規キーへ二重書き＆元キー残置で
     // 会計漏れ→write_failed になるので orphan 扱いにする。Codex 指摘）。
@@ -569,6 +603,11 @@ async function readSync(transport) {
   const trashRaw = trashExists ? all[SYNC_KEYS.trash] : null;
   const rawTrashBytes = trashExists ? bytesOf({ [SYNC_KEYS.trash]: trashRaw }) : 0;
   const trashRemote = trashExists ? await decodeTrashItem(trashRaw) : [];
+  // プロファイル台帳 item。会計は他 item と同じく「キーが在るか」＝生サイズで数える。
+  const profilesExists = SYNC_KEYS.profiles in all;
+  const profilesRaw = profilesExists ? all[SYNC_KEYS.profiles] : null;
+  const rawProfilesBytes = profilesExists ? bytesOf({ [SYNC_KEYS.profiles]: profilesRaw }) : 0;
+  const profilesRemote = profilesExists ? await decodeProfilesItem(profilesRaw) : null;
   return {
     settings: settingsS,
     settingsT: settingsItem ? settingsItem.t || 0 : 0,
@@ -576,6 +615,10 @@ async function readSync(transport) {
     trashRaw,       // 生 item（再 push 要否を符号化形同士で比較するため）
     trashExists,    // cloud に trash item が在るか（会計）
     rawTrashBytes,  // その実バイト（会計）
+    profilesRemote,    // 復号済みの remote 台帳（LWW マージの入力。破損/未存在は null）
+    profilesRaw,       // 生 item（再 push 要否を符号化形同士で比較するため）
+    profilesExists,    // cloud に profiles item が在るか（会計）
+    rawProfilesBytes,  // その実バイト（会計）
     // 生の settings item（破損で settingsS=null に sanitize しても cloud には残り占有するので、会計は
     // sanitize 後ではなく実在で数える。Codex#1）。falsy 値（false/0/""）も占有するので存在フラグで会計する。
     rawSettings: settingsItem,
@@ -676,12 +719,13 @@ async function _reconcile(opts) {
     syncSettings: !!settings.syncSettings,
   };
 
-  const [localNotes, shadow, sync, localTombs, localTrash] = await Promise.all([
+  const [localNotes, shadow, sync, localTombs, localTrash, localProfiles] = await Promise.all([
     getLocalNotes(),
     getShadow(),
     readSync(transport),
     getLocalTombs(),
     getLocalTrash(),
+    getLocalProfiles(),
   ]);
   const tomb = sync.meta.tomb || {};
   // corrupt（復号失敗）ドメインは scope から外し、local/sync とも一切いじらない（データ保護）。
@@ -715,6 +759,11 @@ async function _reconcile(opts) {
   }
   // ゴミ箱の和集合マージ（local ＋ 今回の消失退避 ＋ remote）。push/会計/local 書き戻しで使う。
   const nextTrash = mergeTrash(mergeTrash(localTrash, evictedEntries), sync.trashRemote);
+  // プロファイル台帳の LWW マージ（local ＋ remote）。付箋とは独立の単一 item で、shadow(base) は持たない。
+  const nextProfiles = gcProfiles(
+    sync.profilesRemote ? mergeProfiles(localProfiles, sync.profilesRemote) : normalizeProfiles(localProfiles),
+    now
+  );
   // 今回新規に立った墓石。実削除時刻(localTombs 由来)が TTL より古くても「初確立」なので、同回の
   // gcTombstones で即消されないよう除外する。即消すと墓石が cloud meta に永続化されず、shadow 無し端末の
   // rejoin でゾンビ復活しうる（>180日オフライン後に削除を初観測する稀ケース。監査 I4）。
@@ -835,6 +884,29 @@ async function _reconcile(opts) {
   }
   // 今回 trash を書かないが既存 cloud item が在るなら、その占有を会計に積む（cloud に残るので二重計上しない）。
   if (!willWriteTrash && sync.trashExists) { used += sync.rawTrashBytes; itemCount += 1; }
+
+  // ── プロファイル台帳 item も notes ループ前に予約する ──
+  // スコープ: selected は選んだプロファイルの名前だけ送る（ゴミ箱と同じインフォームドコンセント）／all は全件。
+  let forCloudProfiles = nextProfiles;
+  if (cfg.syncScope === "selected") {
+    forCloudProfiles = filterProfiles(nextProfiles, new Set(cfg.syncDomains || []));
+  }
+  let profilesItem = isEmptyProfiles(forCloudProfiles) ? null : await encodeProfilesItem(forCloudProfiles);
+  // per-item 予算(8KB)に収まらなければ今回は書かない（既存 cloud item を温存＝和集合 LWW なので次回で追いつく）。
+  if (profilesItem && bytesOf({ [SYNC_KEYS.profiles]: profilesItem }) > perItemBudget) profilesItem = null;
+  let willWriteProfiles = false;
+  if (profilesItem && JSON.stringify(profilesItem) !== JSON.stringify(sync.profilesRaw)) {
+    const pb = bytesOf({ [SYNC_KEYS.profiles]: profilesItem });
+    const net = pb - (sync.profilesExists ? sync.rawProfilesBytes : 0);
+    const slot = sync.profilesExists ? 0 : 1; // 既存 item を上書きするなら item 純増 0
+    if (used + net <= totalBudget && itemCount + slot <= SYNC_LIMITS.MAX_ITEMS) {
+      willWriteProfiles = true;
+      used += net;
+      itemCount += slot;
+      setOps[SYNC_KEYS.profiles] = profilesItem;
+    }
+  }
+  if (!willWriteProfiles && sync.profilesExists) { used += sync.rawProfilesBytes; itemCount += 1; }
 
   const ordered = domains
     .map((d) => ({ d, latest: Math.max(0, ...((mergedByDomain[d] || []).map(tsOf))) }))
@@ -964,6 +1036,7 @@ async function _reconcile(opts) {
   for (const d of sync.corrupt) report.domains.push({ domain: d, count: 0, synced: false, reason: "decode_error" });
   report.usedBytes = used;
   report.trash = { count: nextTrash.length, synced: willWriteTrash }; // ゴミ箱の件数と今回 cloud へ送ったか
+  report.profiles = { count: nextProfiles.order.length, synced: willWriteProfiles }; // 台帳の件数と今回 cloud へ送ったか
 
   // meta を setOps に載せる（収まる かつ 変化ありの willWriteMeta 時のみ。metaDeferred 時は据え置き＝
   // 下で shadow も前進させない）。変化検出は「読み取り時のスナップショット metaBefore」と行う（tomb は
@@ -1028,6 +1101,10 @@ async function _reconcile(opts) {
       }
     }
   }
+  // プロファイル台帳（pull）。マージは可換・冪等なので、notes の mergeStale とは独立に安全に当てられる。
+  // 「最新のローカル台帳へ remote を重ねる」形で書く（storage.js 側が verify-before-set で直列化するので、
+  // 別画面の作成/改名/削除と競合しても取りこぼさない）。
+  if (sync.profilesRemote) localWrites.push(mergeProfilesInto(sync.profilesRemote));
   if (settingsForLocal) {
     // 関数冒頭で読んだ settings は多数の await（readSync・gzip 等）を跨いで古びている。書き戻し直前に
     // 再読し、同期対象フィールドだけ上書きする。これで content.js のドラッグ等が並行で書いた
@@ -1066,6 +1143,7 @@ async function _reconcile(opts) {
     for (const d of report.domains) if (d.synced) { d.synced = false; d.reason = d.reason || "opt_out"; }
     report.settingsSynced = false;
     if (report.trash) report.trash.synced = false; // push 中止＝ゴミ箱も送っていない（report 真偽を実態に合わせる）
+    if (report.profiles) report.profiles.synced = false;
     return report;
   }
   // スコープ／見た目同期フラグも push 直前に再読する。in-flight 中にユーザーが対象を狭めた（selected から
@@ -1110,6 +1188,16 @@ async function _reconcile(opts) {
       _dirty = true; // 次回 reconcile が新スコープで forCloudTrash を組み直して push
     }
   }
+  // プロファイル台帳も同様に freshCfg で再検査する（in-flight で all→selected やキー除外が起きると、
+  // 選んでいないプロファイルの**名前**を送ってしまう。名前は利用者のコンテンツ＝consent の対象）。
+  if (setOps[SYNC_KEYS.profiles] !== undefined && freshCfg.syncScope === "selected") {
+    const fsel = new Set(freshCfg.syncDomains || []);
+    if (forCloudProfiles.order.some((k) => !fsel.has(k))) {
+      delete setOps[SYNC_KEYS.profiles];
+      if (report.profiles) report.profiles.synced = false;
+      _dirty = true; // 次回 reconcile が新スコープで組み直して push
+    }
+  }
   const hasSet = Object.keys(setOps).length > 0;
   let pushOk = true;
   try {
@@ -1145,6 +1233,7 @@ async function _reconcile(opts) {
     for (const d of report.domains) if (d.synced) { d.synced = false; d.reason = d.reason || "write_failed"; }
     report.settingsSynced = false;
     if (report.trash) report.trash.synced = false; // push 失敗＝ゴミ箱も送れていない
+    if (report.profiles) report.profiles.synced = false;
   }
 
   // (3) shadow（合意状態）は push 成功時のみ前進させる。失敗時に前進させると「local と shadow が一致＝

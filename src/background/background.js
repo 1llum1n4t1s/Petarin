@@ -8,7 +8,7 @@
 //  - 排他3モード（off / chrome / cloud）。cloud のとき transport を relay に差し替え（sync.js は不変）、
 //    realtime の WS（変更ピン受信）を保持し、容量ロジックは巨大 budget で無効化する。
 
-import { STORAGE_KEYS, DEFAULT_SETTINGS, VAULT_KEY, getVaultPairing } from "../shared/storage.js";
+import { STORAGE_KEYS, DEFAULT_SETTINGS, VAULT_KEY, PROFILES_KEY, getVaultPairing, ensureProfiles } from "../shared/storage.js";
 import { reconcile, purgeSyncProjection, wasJustPushed, SYNC_KEYS, setSyncTransport } from "../shared/sync.js";
 import { createRelayTransport } from "../shared/relay-transport.js";
 import { importVault, signRequest } from "../shared/vault.js";
@@ -211,11 +211,14 @@ chrome.runtime.onInstalled.addListener(async () => {
     await chrome.storage.local.set({ [STORAGE_KEYS.settings]: DEFAULT_SETTINGS });
   }
   applySettingsCache(raw[STORAGE_KEYS.settings]);
+  // プロファイル台帳の用意（既存ユーザーはドメインごとに 1 件・新規は既定 1 件）。追加のみで冪等。
+  await ensureProfiles().catch((e) => console.warn("[petarin] プロファイル移行に失敗:", e));
   await applyTransport();
   scheduleReconcile(); // 既存ユーザーが ON 済みなら起動時に追いつく
 });
 
 chrome.runtime.onStartup?.addListener(async () => {
+  await ensureProfiles().catch((e) => console.warn("[petarin] プロファイル移行に失敗:", e));
   await applyTransport();
   scheduleReconcile();
 });
@@ -242,7 +245,8 @@ function scheduleReconcile(delay = 1200) {
 }
 
 // 内部キー（shadow / device）の変更は reconcile を促さない（自己ループ防止）。
-const TRIGGER_LOCAL = new Set([STORAGE_KEYS.notes, STORAGE_KEYS.settings]);
+// プロファイル台帳の変更（作成/改名/削除/並べ替え）も同期対象なので push 方向の reconcile を促す。
+const TRIGGER_LOCAL = new Set([STORAGE_KEYS.notes, STORAGE_KEYS.settings, PROFILES_KEY]);
 
 chrome.storage.onChanged.addListener((changes, area) => {
   const keys = Object.keys(changes);
@@ -285,6 +289,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       .then((report) => sendResponse({ ok: true, report }))
       .catch((e) => sendResponse({ ok: false, error: String(e) }));
     return true; // 非同期応答
+  }
+  if (msg.type === "petarin:ensureProfiles") {
+    // レール（content.js）が保存先を決められないときの保険。MV3 SW は寝るので、この sendMessage 自体が
+    // 起床の合図になる（onInstalled/onStartup を取りこぼした端末でも台帳が必ず用意される）。
+    ensureProfiles()
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true;
   }
   if (msg.type === "petarin:purgeSync") {
     purgeSyncProjection()

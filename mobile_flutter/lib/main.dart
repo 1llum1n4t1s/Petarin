@@ -175,6 +175,11 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             IconButton(
+              tooltip: 'プロファイル',
+              onPressed: () => _openProfiles(context),
+              icon: const Icon(Icons.folder_copy_outlined),
+            ),
+            IconButton(
               tooltip: _showTrash ? '付箋へ戻る' : 'ゴミ箱',
               onPressed: () => setState(() => _showTrash = !_showTrash),
               icon: Icon(
@@ -235,29 +240,39 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Future<void> _startNewNote(BuildContext context) async {
-    final Map<String, List<NoteModel>> notes = widget.controller.notes;
-    final List<String> groups = notes.keys.where(isGroupKey).toList()
-      ..sort(
-        (String a, String b) =>
-            decodeGroupName(a).compareTo(decodeGroupName(b)),
-      );
-    String? selected;
-    if (groups.isEmpty) {
-      selected = defaultGroupName;
-    } else {
-      selected = await showDialog<String>(
-        context: context,
-        builder: (BuildContext context) => _GroupPicker(groups: groups),
-      );
-    }
-    if (!context.mounted || selected == null) return;
+  // プロファイル管理（改名・並べ替え・削除）。新規付箋の宛先を選ぶ _ProfilePicker とは
+  // 別の入口にしてある: 付箋ごと消える削除を、付箋を作る導線と同じ場所に置かないため。
+  Future<void> _openProfiles(BuildContext context) async {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
       builder: (BuildContext context) =>
-          NoteEditor(controller: widget.controller, groupName: selected!),
+          _ProfileSheet(controller: widget.controller),
+    );
+  }
+
+  // 新規付箋の宛先プロファイルを選ぶ。候補は台帳（付箋 0 件のプロファイルも出す）。
+  // 選択結果は**プロファイルキー**で受け取る（表示名から作り直さない＝改名しても保存先がずれない）。
+  Future<void> _startNewNote(BuildContext context) async {
+    final ProfileLedger led = widget.controller.profiles;
+    String? selected = led.order.length == 1 ? led.order.first : null;
+    selected ??= await showDialog<String>(
+      context: context,
+      builder: (BuildContext context) =>
+          _ProfilePicker(controller: widget.controller),
+    );
+    if (!context.mounted || selected == null) return;
+    final String key = selected;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (BuildContext context) => NoteEditor(
+        controller: widget.controller,
+        domain: key,
+        profileName: widget.controller.profiles.label(key),
+      ),
     );
   }
 }
@@ -270,11 +285,20 @@ class _NotesView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Map<String, List<NoteModel>> notes = controller.notes;
+    final ProfileLedger led = controller.profiles;
+    // 並びは台帳の表示順（拡張・デスクトップと同じ）。台帳に無いキーの付箋も末尾に出して隠さない。
     final List<String> groups =
-        notes.keys.where((String key) => notes[key]!.isNotEmpty).toList()..sort(
-          (String a, String b) =>
-              decodeGroupName(a).compareTo(decodeGroupName(b)),
-        );
+        <String>[
+              ...led.order,
+              ...notes.keys
+                  .where((String key) => !led.order.contains(key))
+                  .toList()
+                ..sort(),
+            ]
+            .where(
+              (String key) => (notes[key] ?? const <NoteModel>[]).isNotEmpty,
+            )
+            .toList();
     if (groups.isEmpty) {
       return _EmptyState(
         icon: Icons.note_add_outlined,
@@ -322,7 +346,7 @@ class _NoteGroup extends StatelessWidget {
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  decodeGroupName(domain),
+                  controller.profiles.label(domain),
                   style: const TextStyle(
                     color: _inkSoft,
                     fontSize: 12,
@@ -347,8 +371,8 @@ class _NoteGroup extends StatelessWidget {
               useSafeArea: true,
               builder: (BuildContext context) => NoteEditor(
                 controller: controller,
-                groupName: decodeGroupName(domain),
                 domain: domain,
+                profileName: controller.profiles.label(domain),
                 note: note,
               ),
             ),
@@ -489,7 +513,7 @@ class _TrashView extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
                 Text(
-                  decodeGroupName(entry.domain),
+                  controller.profiles.label(entry.domain),
                   style: const TextStyle(fontSize: 11, color: _inkSoft),
                 ),
                 const SizedBox(height: 4),
@@ -581,68 +605,310 @@ class _EmptyState extends StatelessWidget {
   );
 }
 
-class _GroupPicker extends StatefulWidget {
-  const _GroupPicker({required this.groups});
+/// プロファイル管理シート（改名・並べ替え・削除・追加）。
+/// 拡張・デスクトップの付箋デスクと同じ操作をモバイル単体でも完結させる（同期していない端末でも
+/// 名前を直したり不要な束を畳んだりできるようにするため）。
+class _ProfileSheet extends StatelessWidget {
+  const _ProfileSheet({required this.controller});
 
-  final List<String> groups;
+  final AppController controller;
 
   @override
-  State<_GroupPicker> createState() => _GroupPickerState();
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: controller,
+    builder: (BuildContext context, Widget? _) {
+      final ProfileLedger led = controller.profiles;
+      final Map<String, List<NoteModel>> notes = controller.notes;
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              const Text(
+                'プロファイル',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                '付箋の保存単位です。名前の変更・並べ替え・削除ができます。',
+                style: TextStyle(fontSize: 12, color: _inkSoft),
+              ),
+              const SizedBox(height: 12),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: led.order.length,
+                  itemBuilder: (BuildContext context, int index) {
+                    final String key = led.order[index];
+                    final int count =
+                        (notes[key] ?? const <NoteModel>[]).length;
+                    return _ProfileRow(
+                      controller: controller,
+                      order: led.order,
+                      index: index,
+                      label: led.label(key),
+                      count: count,
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => _add(context),
+                icon: const Icon(Icons.add_rounded, size: 20),
+                label: const Text('新しいプロファイル'),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+
+  Future<void> _add(BuildContext context) async {
+    final String? name = await _askProfileName(context, title: '新しいプロファイル');
+    if (name == null) return;
+    await controller.createProfile(name);
+  }
 }
 
-class _GroupPickerState extends State<_GroupPicker> {
-  final TextEditingController _newGroup = TextEditingController();
+class _ProfileRow extends StatelessWidget {
+  const _ProfileRow({
+    required this.controller,
+    required this.order,
+    required this.index,
+    required this.label,
+    required this.count,
+  });
+
+  final AppController controller;
+  final List<String> order;
+  final int index;
+  final String label;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final String key = order[index];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        decoration: BoxDecoration(
+          color: _card,
+          border: Border.all(color: _line),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
+        child: Row(
+          children: <Widget>[
+            Expanded(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            Text(
+              '$count枚',
+              style: const TextStyle(fontSize: 12, color: _inkSoft),
+            ),
+            IconButton(
+              tooltip: '上へ',
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              onPressed: index == 0 ? null : () => _move(-1),
+              icon: const Icon(Icons.arrow_upward_rounded),
+            ),
+            IconButton(
+              tooltip: '下へ',
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              onPressed: index == order.length - 1 ? null : () => _move(1),
+              icon: const Icon(Icons.arrow_downward_rounded),
+            ),
+            IconButton(
+              tooltip: '名前を変える',
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _rename(context, key),
+              icon: const Icon(Icons.edit_outlined),
+            ),
+            IconButton(
+              tooltip: 'このプロファイルを削除',
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              color: _danger,
+              // 最後の 1 件は消せない（付箋の置き場が無くなる）。store 側にも同じガードがある。
+              onPressed: order.length <= 1 ? null : () => _delete(context, key),
+              icon: const Icon(Icons.close_rounded),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _move(int delta) async {
+    final List<String> next = List<String>.from(order);
+    next.insert(index + delta, next.removeAt(index));
+    await controller.reorderProfiles(next);
+  }
+
+  Future<void> _rename(BuildContext context, String key) async {
+    final String? name = await _askProfileName(
+      context,
+      title: '名前を変える',
+      initial: label,
+    );
+    if (name == null || name == label) return;
+    await controller.renameProfile(key, name);
+  }
+
+  Future<void> _delete(BuildContext context, String key) async {
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: Text('「$label」を削除しますか？'),
+        content: Text(
+          count > 0
+              ? 'この付箋 $count 枚もゴミ箱へ移ります。あとから復元できます。'
+              : 'このプロファイルには付箋がありません。',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: _danger),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('削除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await controller.deleteProfile(key);
+  }
+}
+
+/// プロファイル名の入力ダイアログ（追加・改名で共用）。キャンセルと空入力は null。
+Future<String?> _askProfileName(
+  BuildContext context, {
+  required String title,
+  String initial = '',
+}) async {
+  final TextEditingController field = TextEditingController(text: initial);
+  final String? name = await showDialog<String>(
+    context: context,
+    builder: (BuildContext context) => AlertDialog(
+      title: Text(title),
+      content: TextField(
+        controller: field,
+        autofocus: true,
+        maxLength: maxProfileName,
+        decoration: const InputDecoration(
+          labelText: 'プロファイル名',
+          counterText: '',
+        ),
+        onSubmitted: (String value) => Navigator.pop(context, value.trim()),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('キャンセル'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, field.text.trim()),
+          child: const Text('決定'),
+        ),
+      ],
+    ),
+  );
+  field.dispose();
+  return (name == null || name.isEmpty) ? null : name;
+}
+
+/// 新規付箋の宛先プロファイルを選ぶダイアログ。**プロファイルキー**を pop で返す。
+class _ProfilePicker extends StatefulWidget {
+  const _ProfilePicker({required this.controller});
+
+  final AppController controller;
+
+  @override
+  State<_ProfilePicker> createState() => _ProfilePickerState();
+}
+
+class _ProfilePickerState extends State<_ProfilePicker> {
+  final TextEditingController _newProfile = TextEditingController();
+  bool _creating = false;
 
   @override
   void dispose() {
-    _newGroup.dispose();
+    _newProfile.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('どこに貼りますか？'),
-    content: SingleChildScrollView(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          ...widget.groups.map(
-            (String group) => ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.label_outline_rounded),
-              title: Text(decodeGroupName(group)),
-              onTap: () => Navigator.pop(context, decodeGroupName(group)),
+  Widget build(BuildContext context) {
+    final ProfileLedger led = widget.controller.profiles;
+    return AlertDialog(
+      title: const Text('どのプロファイルに貼りますか？'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            ...led.order.map(
+              (String key) => ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.label_outline_rounded),
+                title: Text(led.label(key)),
+                onTap: () => Navigator.pop(context, key),
+              ),
             ),
-          ),
-          const Divider(),
-          TextField(
-            controller: _newGroup,
-            maxLength: 80,
-            decoration: const InputDecoration(
-              labelText: '新しいグループ名',
-              counterText: '',
+            const Divider(),
+            TextField(
+              controller: _newProfile,
+              maxLength: maxProfileName,
+              decoration: const InputDecoration(
+                labelText: '新しいプロファイル名',
+                counterText: '',
+              ),
+              onSubmitted: _submit,
             ),
-            onSubmitted: _submit,
-          ),
-        ],
+          ],
+        ),
       ),
-    ),
-    actions: <Widget>[
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('キャンセル'),
-      ),
-      FilledButton(
-        onPressed: () => _submit(_newGroup.text),
-        child: const Text('この名前で作る'),
-      ),
-    ],
-  );
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('キャンセル'),
+        ),
+        FilledButton(
+          onPressed: _creating ? null : () => _submit(_newProfile.text),
+          child: const Text('この名前で作る'),
+        ),
+      ],
+    );
+  }
 
-  void _submit(String value) {
+  Future<void> _submit(String value) async {
     final String name = value.trim();
-    if (name.isNotEmpty) Navigator.pop(context, name);
+    if (name.isEmpty || _creating) return;
+    setState(() => _creating = true);
+    final String? key = await widget.controller.createProfile(name);
+    if (!mounted) return;
+    if (key == null) {
+      setState(() => _creating = false);
+      return;
+    }
+    Navigator.pop(context, key);
   }
 }
 

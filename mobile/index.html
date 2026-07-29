@@ -93,6 +93,19 @@
       .icon-cell { font-size: 22px; aspect-ratio: 1 / 1; border: none; background: transparent; border-radius: 8px; cursor: pointer; padding: 0; }
       .icon-cell.sel { background: var(--accent); }
       .group-item { text-align: left; }
+      /* プロファイル管理（改名・並べ替え・削除）。作成先ピッカーとは別パネルに分けている。 */
+      .prof-row {
+        display: flex; align-items: center; gap: 6px;
+        border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 8px 10px;
+      }
+      .prof-name { flex: 1; min-width: 0; font-size: 15px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .prof-count { font-size: 12px; color: var(--ink-soft); flex-shrink: 0; margin-right: 2px; }
+      .prof-tool {
+        border: 0; background: transparent; color: var(--ink-soft); font-size: 16px; line-height: 1;
+        padding: 8px 6px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
+      }
+      .prof-tool:disabled { opacity: 0.25; }
+      .prof-tool.del { color: var(--danger); }
       .trash-meta { font-size: 12px; color: var(--ink-soft); margin-bottom: 4px; }
     </style>
   </head>
@@ -100,6 +113,7 @@
     <header>
       <h1>ぺたりん</h1>
       <div class="hbtns">
+        <button class="btn" id="profilesBtn" type="button" aria-label="プロファイル">🗂</button>
         <button class="btn" id="trashBtn" type="button" aria-label="ゴミ箱">🗑</button>
         <button class="btn" id="syncBtn" type="button">⇄ 同期</button>
       </div>
@@ -137,7 +151,21 @@
       </div>
     </div>
 
-    <!-- 作成先グループ選択 -->
+    <!-- プロファイル管理（改名・並べ替え・削除）。
+         「どこに作る？」の作成先ピッカーとは**別パネル**にしてある: 付箋ごと消える削除を、
+         付箋を作る導線と同じ場所に置くと、モバイルでは誤タップで失う事故になるため。 -->
+    <div class="panel" id="profilesPanel" hidden>
+      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="profilesPanelTitle">
+        <h2 id="profilesPanelTitle">プロファイル <button class="btn" id="profilesClose" type="button" aria-label="閉じる">✕</button></h2>
+        <p class="empty">付箋の保存単位です。名前の変更・並べ替え・削除ができます。</p>
+        <div class="wrap" id="profileList"></div>
+        <div class="wrap">
+          <button class="btn primary" id="profileAdd" type="button">＋ 新しいプロファイル</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 作成先プロファイル選択 -->
     <div class="panel" id="groupPickPanel" hidden>
       <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="groupPickPanelTitle">
         <h2 id="groupPickPanelTitle">どこに作る？ <button class="btn" id="groupClose" type="button" aria-label="閉じる">✕</button></h2>

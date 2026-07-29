@@ -1,5 +1,6 @@
 // ぺたりん コンテンツスクリプト
-// 見ているページのドメインに紐づく付箋を、画面の端からそっと出すレールとして描画する。
+// いま選んでいる「プロファイル」の付箋を、画面の端からそっと出すレールとして描画する。
+// 表示するプロファイルは settings.activeProfile（端末ごとの手動選択）で決まり、どのサイトを見ているかとは無関係。
 // Shadow DOM でページ側の CSS から完全隔離。設定や付箋の変更は storage.onChanged で同期。
 //
 // 付箋は 3 状態:  格納(collapsed) ⇄ 展開プレビュー(previewing) ⇄ 展開編集(editing)。
@@ -14,8 +15,9 @@
 //
 // このファイルはレール UI の**単一ソース**で、拡張とデスクトップ版（desktop/・Tauri）の両方が読む。
 // 実行環境の違いは `globalThis.PETARIN_SURFACE` 1 点だけに集約する（デスクトップ側が読み込み前に立てる）:
-//   { domain: string, assetUrl: (path) => string }
-// 拡張では常に undefined なので、下の分岐はすべて右側＝従来の挙動へ落ちる（出荷済みの動作は不変）。
+//   { assetUrl: (path) => string }
+// 保存先は全プラットフォームで settings.activeProfile なので、以前あった `domain` の注入点は不要になった。
+// 拡張では surface が常に undefined なので、下の分岐はすべて右側＝従来の挙動へ落ちる。
 (() => {
   "use strict";
 
@@ -33,6 +35,10 @@
   // ── 定数（shared/storage.js と対応） ────────────────────────────
   const KEY_NOTES = "petarin:notes";
   const KEY_SETTINGS = "petarin:settings";
+  // プロファイル台帳（shared/storage.js PROFILES_KEY と同キー。content は import 不可でリテラル複製）。
+  //   形: { order: string[], names: { [key]: string }, meta: { [key]: {at,del?} }, orderAt }
+  // ここでは「表示順の生存キー」だけを使う（作成/改名/削除は popup・付箋デスク側の仕事）。
+  const KEY_PROFILES = "petarin:profiles";
   // 展開時のサイズ・位置（端末固有の表示設定）。chrome.storage.sync には載せない＝local 専用。
   // px 座標は解像度依存で同期の意味が薄く、Note へ持たせると updatedAt LWW で他端末の本文編集を
   // 握り潰す危険があるため、localTombs と同じ「local 専用キー」に分離する。
@@ -110,6 +116,7 @@
     fontSize: 11,
     lineNumbers: false,
     defaultColor: DEFAULT_COLOR,
+    activeProfile: "",
   };
 
   // 同梱フォント（shared/storage.js の FONTS と id 集合を一致させること。content は import 不可で手動複製）。
@@ -152,8 +159,11 @@
   });
   const MAX_CHARS = 10000; // shared/storage.js の MAX_CHARS と同値（content は import 不可・変更時は両方）
 
-  // 付箋の保存キー。拡張は見ているページのドメイン、デスクトップ版は固定のグループキー（`group:`+base64url）。
-  const domain = surface?.domain ?? location.hostname;
+  // 付箋の保存キー＝いま選んでいるプロファイル。台帳(KEY_PROFILES)と settings.activeProfile から解決する
+  // （どのサイトを見ているかとは無関係＝全プラットフォームで同じ経路）。台帳がまだ無い（インストール直後で
+  // ensureProfiles が走る前）あいだは "" で、その間はレールを描かずに台帳の到着を onChanged で待つ。
+  let profileKey = "";
+  let profileOrder = [];
   const colorOf = (id) => COLORS.find((c) => c.id === id) || COLORS[0];
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const isVertical = () => settings.side === "right" || settings.side === "left";
@@ -206,9 +216,24 @@
     raw = raw || (await chrome.storage.local.get(KEY_SETTINGS));
     settings = { ...DEFAULTS, ...(raw[KEY_SETTINGS] || {}) };
   }
+  // 台帳から「生存キーの表示順」を読み、activeProfile を正規化する（shared/storage.js の
+  // resolveActiveProfile と同じ規則＝台帳に無いキーなら order[0]）。返り値: 保存キーが変わったか。
+  async function loadProfiles(raw) {
+    raw = raw || (await chrome.storage.local.get(KEY_PROFILES));
+    const led = raw[KEY_PROFILES];
+    const meta = led && typeof led === "object" && led.meta && typeof led.meta === "object" ? led.meta : {};
+    const order = led && Array.isArray(led.order) ? led.order : [];
+    profileOrder = order.filter(
+      (k) => typeof k === "string" && Object.prototype.hasOwnProperty.call(meta, k) && !(meta[k] && meta[k].del)
+    );
+    const want = profileOrder.includes(settings.activeProfile) ? settings.activeProfile : profileOrder[0] || "";
+    const changed = want !== profileKey;
+    profileKey = want;
+    return changed;
+  }
   async function loadNotes(raw) {
     raw = raw || (await chrome.storage.local.get(KEY_NOTES));
-    const list = (raw[KEY_NOTES] || {})[domain] || [];
+    const list = (profileKey && (raw[KEY_NOTES] || {})[profileKey]) || [];
     // 旧データ・不完全データでも描画が落ちないよう各フィールドを正規化
     notes = list
       .filter((n) => n && n.id)
@@ -226,7 +251,7 @@
   // 展開時ジオメトリ（このドメインぶん）を読む。不正値は捨てる。存在しない付箋ぶんは在庫掃除で間引く。
   async function loadGeom(raw) {
     raw = raw || (await chrome.storage.local.get(KEY_GEOM));
-    const map = (raw[KEY_GEOM] || {})[domain] || {};
+    const map = (profileKey && (raw[KEY_GEOM] || {})[profileKey]) || {};
     geom = Object.create(null);
     const finite = (v) => typeof v === "number" && Number.isFinite(v);
     for (const id of Object.keys(map)) {
@@ -253,6 +278,10 @@
     // pointerdown を preventDefault するため textarea が blur せず saveTimer(280ms)が生き残り、削除後に
     // 発火して再挿入してしまう（Codex 指摘）。メモリ上の真実 notes に存在しない id は保存しない。
     if (!notes.some((n) => n && n.id === note.id)) return Promise.resolve();
+    // 保存キーは呼び出し時点で確定させる。withWrite の実行までにプロファイルが切り替わっても、
+    // この付箋を切替先へ書き込まない（レール上の全ての永続化で同じ扱いにする）。
+    const key = profileKey;
+    if (!key) return Promise.resolve();
     return withWrite(async () => {
       const saved = {
         id: note.id,
@@ -272,11 +301,11 @@
       for (let attempt = 0; attempt < MAX; attempt++) {
         const all = (await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {};
         const baseJSON = JSON.stringify(all);
-        const list = (all[domain] || []).slice();
+        const list = (all[key] || []).slice();
         const i = list.findIndex((n) => n && n.id === note.id);
         if (i >= 0) list[i] = saved;
         else list.push(saved);
-        all[domain] = list;
+        all[key] = list;
         // set 直前に再読。ベースが変わっていたら（reconcile 割り込み）最新で当て直す（最終試行は強行）。
         const cur = JSON.stringify((await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {});
         if (cur !== baseJSON && attempt < MAX - 1) continue;
@@ -290,6 +319,8 @@
   // 指定 id の付箋だけを保存済みの最新内容から取り除く（他の付箋・他タブの付箋は保持）。
   function removeNotesPersist(ids) {
     const drop = new Set(ids);
+    const key = profileKey; // upsert と同じく呼び出し時点で保存キーを確定させる
+    if (!key) return Promise.resolve();
     return withWrite(async () => {
       // upsert と同じ楽観的並行制御。毎回「最新を読む→対象 id だけ削除して当てる→set 直前に再読し、ベースが
       // 変わっていたら（reconcile が他ドメイン/他付箋を pull）最新へ当て直す」。全 notes 丸ごと書き戻しで pull を
@@ -301,20 +332,20 @@
         // notes だけでなく trash / localTombs の割り込み変化も検知する（reconcile の trash pull/消失退避を
         // 巻き戻さない＝storage.js _writeNotes と同形の verify-before-set。監査・content↔storage 乖離の修正）。
         const baseJSON = JSON.stringify({ n: all, t: raw[KEY_TRASH] || null, l: raw[KEY_LOCAL_TOMBS] || null });
-        const before = all[domain] || [];
+        const before = all[key] || [];
         const removedNotes = before.filter((n) => n && drop.has(n.id)); // ゴミ箱退避用に実体を控える
         const removed = removedNotes.map((n) => n.id);
         const list = before.filter((n) => n && !drop.has(n.id));
-        if (list.length) all[domain] = list;
-        else delete all[domain]; // 空になったドメインはキーごと掃除
+        if (list.length) all[key] = list;
+        else delete all[key]; // 空になったプロファイルはキーごと掃除（台帳には残るので消えない）
         // 実削除時刻を localTombs へ記録（notes と同一 set で書く＝reconcile が最新を読める。Codex#5）。
         const now = Date.now();
         const log = raw[KEY_LOCAL_TOMBS] || {};
         if (removed.length) {
           // 継承プロパティ名（__proto__ 等）の id でも own な記録を残す（素の dom[id]=now だと
           // id="__proto__" は own を作らず削除記録が消え、再 ON 時に stale cloud ノートが復活する。Codex）。
-          if (!Object.prototype.hasOwnProperty.call(log, domain)) ownSet(log, domain, {});
-          const dom = log[domain];
+          if (!Object.prototype.hasOwnProperty.call(log, key)) ownSet(log, key, {});
+          const dom = log[key];
           for (const id of removed) ownSet(dom, id, now);
         }
         for (const d of Object.keys(log)) { // TTL GC（同期しない local ログ）
@@ -325,7 +356,7 @@
         // 削除した付箋をゴミ箱へ退避（origin:"user"）。和集合マージで dedupe＋全体100件キャップ。
         const trash = mergeTrash(
           Array.isArray(raw[KEY_TRASH]) ? raw[KEY_TRASH] : [],
-          removedNotes.map((n) => ({ domain, note: n, deletedAt: now, origin: "user" }))
+          removedNotes.map((n) => ({ domain: key, note: n, deletedAt: now, origin: "user" }))
         );
         // set 直前に notes/trash/localTombs を再読。ベースが変わっていたら最新で当て直す（最終試行は強行＝削除を取りこぼさない）。
         const fresh = await chrome.storage.local.get([KEY_NOTES, KEY_LOCAL_TOMBS, KEY_TRASH]);
@@ -371,6 +402,8 @@
   // 全 id を突き合わせ在庫に無い孤児も一掃する（初期化時の在庫掃除）。全 id を毎回書き戻すと、別タブが
   // 同ドメインの「他の付箋」を動かしても、このタブが未取り込みの stale な geom で巻き戻してしまう（Codex/CodeRabbit 指摘）。
   function persistGeom(changedIds) {
+    const key = profileKey; // 保存キーは呼び出し時点で確定（切替後の書き込み混線を防ぐ）
+    if (!key) return Promise.resolve();
     return withWrite(async () => {
       // 楽観的並行制御（upsertNotePersist 同様）。毎回「最新を読む→delta を当てる→set 直前に再読し、
       // ベースが変わっていたら最新で当て直す」。別タブが同ドメインの geom を get〜set の隙に書いても、
@@ -380,7 +413,7 @@
         const all = (await chrome.storage.local.get(KEY_GEOM))[KEY_GEOM] || {};
         const baseJSON = JSON.stringify(all);
         // 最新の自ドメイン map を土台に delta を当てる。null-proto＝id が "__proto__" 等でも安全（Codex#573）。
-        const cur = Object.assign(Object.create(null), all[domain] && typeof all[domain] === "object" ? all[domain] : {});
+        const cur = Object.assign(Object.create(null), all[key] && typeof all[key] === "object" ? all[key] : {});
         const present = new Set(notes.map((n) => n.id));
         if (changedIds) {
           // 差分書き込み：触った id だけ upsert/delete し、他付箋（別タブ作成・移動分）には一切触れない。
@@ -398,8 +431,8 @@
           }
           for (const id of Object.keys(cur)) if (!present.has(id)) delete cur[id]; // 在庫に無い孤児だけ掃く
         }
-        if (Object.keys(cur).length) all[domain] = cur;
-        else delete all[domain];
+        if (Object.keys(cur).length) all[key] = cur;
+        else delete all[key];
         // set 直前に再読。別タブが get〜set の隙に KEY_GEOM を書いていたら最新で当て直す（最終試行は強行）。
         const fresh = JSON.stringify((await chrome.storage.local.get(KEY_GEOM))[KEY_GEOM] || {});
         if (fresh !== baseJSON && attempt < MAX - 1) continue;
@@ -504,8 +537,16 @@
   async function init() {
     // 設定／付箋／ジオメトリを 1 回の get でまとめて読む（初描画までの storage 往復を 3→1 に。
     // 各 load は raw 未指定なら従来どおり自前 get するので onChanged 等の個別呼び出しは不変）。
-    const raw = await chrome.storage.local.get([KEY_SETTINGS, KEY_NOTES, KEY_GEOM]);
+    const raw = await chrome.storage.local.get([KEY_SETTINGS, KEY_NOTES, KEY_GEOM, KEY_PROFILES]);
     await loadSettings(raw);
+    await loadProfiles(raw);
+    // 台帳がまだ無い（インストール/更新直後で ensureProfiles が走る前）＝保存先が決まらない。拡張では
+    // background を起こして移行を確実に走らせる（MV3 SW は寝ているので sendMessage が起床の合図になる）。
+    // デスクトップ版は起動時に自分で ensureProfiles 済みなのでここは通らない（surface 有りでは送らない）。
+    if (!profileKey && !surface) {
+      try { await chrome.runtime.sendMessage({ type: "petarin:ensureProfiles" }); } catch { /* SW 不在等 */ }
+      await loadProfiles();
+    }
     await loadNotes(raw);
     await loadGeom(raw);
     // 既に存在しない付箋ぶんのジオメトリ（他端末の同期削除等で孤児化）を storage から掃く。
@@ -719,7 +760,9 @@
 
   // ── 全面再描画（初期化・外部同期のみ）────────────────────────────
   function render() {
-    if (!settings.showOnPage) {
+    // 保存先のプロファイルが未解決（台帳がまだ無い）あいだは何も描かない。＋を押しても置き場が無く、
+    // 空のレールだけ出ると「付箋が消えた」と誤解されるため。台帳が届いたら onChanged が再描画する。
+    if (!profileKey || !settings.showOnPage) {
       layer.replaceChildren();
       if (closeAllBtn) closeAllBtn.classList.remove("show");
       return;
@@ -1309,6 +1352,12 @@
     if (!pendingSync) return;
     pendingSync = false;
     await loadSettings();
+    // プロファイルが切り替わっていたら、開いている付箋を畳んでからジオメトリごと読み直す（onChanged と同じ扱い）。
+    if (await loadProfiles()) {
+      expanded.clear();
+      editingId = null;
+      await withWrite(loadGeom).catch(() => {});
+    }
     await loadNotes();
     for (const id of [...expanded]) {
       if (!notes.some((n) => n.id === id)) { expanded.delete(id); if (editingId === id) editingId = null; }
@@ -1399,6 +1448,9 @@
       const now = Date.now();
       const notesExternal = changes[KEY_NOTES] && now - notesWriteAt >= 500;
       const settingsExternal = changes[KEY_SETTINGS] && now - settingsWriteAt >= 500;
+      // 台帳の変化（プロファイルの作成/改名/削除・同期 pull）は自エコー抑止の対象にしない。content.js は
+      // 台帳を書かないので、ここに来るのは常に外部変更。
+      const profilesExternal = !!changes[KEY_PROFILES];
       // 別タブが書いた geom を取り込み、stale な in-memory geom で次回 persist 時に巻き戻さないようにする。
       // 時間ベースの自エコー抑止は使わない＝自分の書き込み後 500ms 以内に別タブが他付箋を書くと、それを
       // 自エコーと誤判定して落とし他付箋の geom が stale に残るため（Codex#1355）。loadGeom は withWrite で
@@ -1410,7 +1462,7 @@
         if (interacting) geomPendingReload = true;
         else { try { await withWrite(loadGeom); } catch {} }
       }
-      if (!notesExternal && !settingsExternal) return;
+      if (!notesExternal && !settingsExternal && !profilesExternal) return;
       // textarea にフォーカスして入力中のときだけ全面再描画を見送る（入力・フォーカス・IME 保護）。
       // 開いていてもフォーカスが外れていれば通常どおり取り込む。入力中の外部変更は pendingSync で後追い。
       if (editingId && root.activeElement && root.activeElement.classList &&
@@ -1420,6 +1472,19 @@
       }
       let dirty = false;
       if (settingsExternal) { await loadSettings(); dirty = true; }
+      // プロファイルの切替（settings.activeProfile 変更・台帳側での削除/並べ替え）に追従する。
+      // 保存キーが変わったら、開いている付箋・編集状態を畳んでから付箋とジオメトリを読み直す
+      // （別プロファイルの付箋 id を握ったままにしない）。
+      if (settingsExternal || profilesExternal) {
+        const switched = await loadProfiles();
+        if (switched) {
+          expanded.clear();
+          editingId = null;
+          await loadNotes();
+          await withWrite(loadGeom).catch(() => {});
+          dirty = true;
+        }
+      }
       if (notesExternal) {
         await loadNotes();
         for (const id of [...expanded]) {

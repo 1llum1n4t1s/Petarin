@@ -200,21 +200,164 @@ void main() {
     });
   });
 
+  group('プロファイル台帳', () {
+    test('打刻LWWと削除墓石で収束する（JS版 mergeProfiles と同規則）', () {
+      final ProfileLedger a = ProfileLedger.fromJson(<String, Object?>{
+        'order': <String>['k1'],
+        'names': <String, Object?>{'k1': '仕事'},
+        'meta': <String, Object?>{
+          'k1': <String, Object?>{'at': 100},
+        },
+        'orderAt': 100,
+      });
+      final ProfileLedger b = ProfileLedger.fromJson(<String, Object?>{
+        'order': <String>['k1'],
+        'names': <String, Object?>{'k1': 'しごと'},
+        'meta': <String, Object?>{
+          'k1': <String, Object?>{'at': 200},
+        },
+        'orderAt': 100,
+      });
+      expect(ProfileLedger.merge(a, b).names['k1'], 'しごと');
+      expect(
+        jsonEncode(ProfileLedger.merge(a, b).toJson()),
+        jsonEncode(ProfileLedger.merge(b, a).toJson()),
+      );
+
+      final ProfileLedger deleted = ProfileLedger.fromJson(<String, Object?>{
+        'order': <String>[],
+        'names': <String, Object?>{},
+        'meta': <String, Object?>{
+          'k1': <String, Object?>{'at': 300, 'del': 1},
+        },
+        'orderAt': 300,
+      });
+      expect(ProfileLedger.merge(deleted, b).order, isEmpty);
+      expect(ProfileLedger.merge(deleted, b).meta['k1']!.deleted, isTrue);
+    });
+
+    test('不正キーと壊れた値を取り込まない', () {
+      final ProfileLedger led = ProfileLedger.fromJson(<String, Object?>{
+        'order': <String>['__proto__', 'ok.com'],
+        'names': <String, Object?>{'__proto__': 'x', 'ok.com': 5},
+        'meta': <String, Object?>{
+          'ok.com': <String, Object?>{'at': 'bad'},
+        },
+      });
+      expect(led.order, <String>['ok.com']);
+      expect(led.names['ok.com'], '');
+      expect(led.meta['ok.com']!.at, 0);
+    });
+
+    test('移行は既存キーを付け替えず台帳へ登録するだけ', () async {
+      final MemoryKeyValueStore kv = MemoryKeyValueStore(<String, String>{
+        notesKey: jsonEncode(<String, Object?>{
+          'old.example': <Object?>[_rawNote('a', 1000)],
+          'new.example': <Object?>[_rawNote('b', 5000)],
+        }),
+      });
+      final PetarinStore store = PetarinStore(kv);
+      await store.initialize();
+      final String before = kv.values[notesKey]!;
+      await store.ensureProfiles();
+
+      expect(kv.values[notesKey], before, reason: 'キーの付け替えをしない');
+      expect(store.profiles.order, <String>['new.example', 'old.example']);
+      expect(store.profiles.label('old.example'), 'old.example');
+      expect(store.activeProfile, 'new.example');
+
+      // 二重実行しても表示名を上書きしない
+      await store.renameProfile('old.example', 'むかしの');
+      await store.ensureProfiles();
+      expect(store.profiles.label('old.example'), 'むかしの');
+    });
+
+    test('新規ユーザーは既定プロファイル1件・付箋0件でも台帳から消えない', () async {
+      final PetarinStore store = PetarinStore(MemoryKeyValueStore());
+      await store.initialize();
+      await store.ensureProfiles();
+      expect(store.profiles.order.length, 1);
+      expect(store.profiles.label(store.activeProfile), defaultProfileName);
+
+      final NoteModel? note = await store.addNote(
+        domain: store.activeProfile,
+        text: 'メモ',
+        color: 'yellow',
+      );
+      await store.deleteNote(store.activeProfile, note!.id);
+      expect(store.notes, isEmpty);
+      expect(store.profiles.order.length, 1, reason: '付箋0件でも台帳に残る');
+    });
+
+    test('プロファイル削除は付箋も剥がしてゴミ箱へ退避する（最後の1件は消さない）', () async {
+      final PetarinStore store = PetarinStore(MemoryKeyValueStore());
+      await store.initialize();
+      await store.ensureProfiles();
+      final String first = store.activeProfile;
+      final String? second = await store.createProfile('もう一つ');
+      expect(second, isNotNull);
+      await store.addNote(domain: first, text: 'メモ', color: 'yellow');
+
+      final int? removed = await store.deleteProfile(first);
+      expect(removed, 1);
+      expect(store.notes[first], isNull);
+      expect(store.trash.single.domain, first);
+      expect(store.profiles.order, <String>[second!]);
+      expect(store.activeProfile, second);
+      expect(await store.deleteProfile(second), isNull, reason: '最後の1件は消さない');
+    });
+
+    test('並べ替えは表示順だけを変え、付箋と名前は動かさない', () async {
+      final PetarinStore store = PetarinStore(MemoryKeyValueStore());
+      await store.initialize();
+      await store.ensureProfiles();
+      final String first = store.activeProfile;
+      final String? second = await store.createProfile('あとで');
+      await store.addNote(domain: first, text: 'メモ', color: 'yellow');
+      expect(store.profiles.order, <String>[first, second!]);
+
+      await store.reorderProfiles(<String>[second, first]);
+      expect(store.profiles.order, <String>[second, first]);
+      expect(
+        store.profiles.label(first),
+        defaultProfileName,
+        reason: '名前は変わらない',
+      );
+      expect(store.notes[first]?.single.text, 'メモ', reason: '付箋は動かない');
+      expect(store.activeProfile, first, reason: '表示中のプロファイルは並べ替えで変わらない');
+    });
+
+    test('台帳itemを往復できる（破損はnull）', () {
+      final ProfileLedger led = ProfileLedger.fromJson(<String, Object?>{
+        'order': <String>['k1'],
+        'names': <String, Object?>{'k1': '仕事'},
+        'meta': <String, Object?>{
+          'k1': <String, Object?>{'at': 7},
+        },
+        'orderAt': 7,
+      });
+      final ProfileLedger? back = decodeProfilesItem(encodeProfilesItem(led));
+      expect(jsonEncode(back!.toJson()), jsonEncode(led.toJson()));
+      expect(decodeProfilesItem(<String, Object?>{'p': 'broken'}), isNull);
+      expect(decodeProfilesItem('nonsense'), isNull);
+    });
+  });
+
   test('ローカルCRUDは削除時刻とゴミ箱を同時に保持する', () async {
     final PetarinStore store = PetarinStore(MemoryKeyValueStore());
     await store.initialize();
     final NoteModel? created = await store.addNote(
-      domain: defaultGroupKey,
+      domain: defaultProfileKey,
       text: 'メモ',
       color: 'yellow',
     );
     expect(created, isNotNull);
-    await store.deleteNote(defaultGroupKey, created!.id);
+    await store.deleteNote(defaultProfileKey, created!.id);
     expect(store.notes, isEmpty);
-    expect(store.localTombs[defaultGroupKey]?[created.id], isNotNull);
+    expect(store.localTombs[defaultProfileKey]?[created.id], isNotNull);
     expect(store.trash.single.note.id, created.id);
     await store.restoreTrash(store.trash.single);
-    expect(store.notes[defaultGroupKey]?.single.id, created.id);
+    expect(store.notes[defaultProfileKey]?.single.id, created.id);
     expect(store.trash, isEmpty);
   });
 
@@ -222,14 +365,14 @@ void main() {
     test('壊れたremote itemを削除と誤認せずlocalを保持する', () async {
       final PetarinStore store = await _syncReadyStore();
       final NoteModel? note = await store.addNote(
-        domain: defaultGroupKey,
+        domain: defaultProfileKey,
         text: '消してはいけない',
         color: 'yellow',
       );
       final _FakeRelayTransport transport = _FakeRelayTransport(
         <String, Object?>{
-          domainKey(defaultGroupKey): <String, Object?>{
-            'd': defaultGroupKey,
+          domainKey(defaultProfileKey): <String, Object?>{
+            'd': defaultProfileKey,
             'n': 'broken',
           },
         },
@@ -238,7 +381,7 @@ void main() {
       final SyncReport report = await SyncEngine(store, transport).reconcile();
 
       expect(report.error, 'decode_error');
-      expect(store.notes[defaultGroupKey]?.single.id, note!.id);
+      expect(store.notes[defaultProfileKey]?.single.id, note!.id);
       expect(transport.removed, isEmpty);
     });
 
@@ -314,3 +457,13 @@ const String _pairingJson =
 
 const String _fixtureCiphertext =
     'K4rja7bi5fRRSo4a_LK0N-deIZ2pBHAk3BrMlXdXsuiKG1THsvGYHY4EQoZpAlNUjss2dJalCcSsZdz-ZyOjH4vrLgefwP1y14ZZKSWFWx_Of8BO7u6vSquPc679LeJFsYBqbWo3XtqHKLryV7iDwDFsdJcotUqxut--Jy-jCZjiIuWI0vXMLhPXr_g';
+
+Map<String, Object?> _rawNote(String id, int at) => <String, Object?>{
+  'id': id,
+  'text': 'x',
+  'color': 'yellow',
+  'icon': '',
+  'posRatio': 0.5,
+  'createdAt': at,
+  'updatedAt': at,
+};

@@ -2149,9 +2149,191 @@ async function scenarioS74() {
   ok(ids.includes("Y") && ids.includes("Z"), "Y と割り込み pull の Z は温存される（lost-update なし）", JSON.stringify(ids));
 }
 
+
+// ── プロファイル台帳（petarin:profiles）─────────────────────────────
+// 付箋の保存単位が「ドメイン」から「プロファイル」へ変わった。保存構造（{ [キー]: Note[] }）は不変で、
+// 台帳だけが増える。ここでは台帳の純関数マージ・移行・同期往復・consent（scope 絞り）を確認する。
+const KEY_PROFILES = "petarin:profiles";
+
+async function scenarioS75() {
+  console.log("S75（プロファイル）台帳マージは打刻 LWW＋削除墓石で収束する（改名の相互上書き・削除の復活を断つ）:");
+  const { mergeProfiles, normalizeProfiles } = await import("../src/shared/profiles.js");
+  const A = { order: ["k1"], names: { k1: "仕事" }, meta: { k1: { at: 100 } }, orderAt: 100 };
+  const B = { order: ["k1"], names: { k1: "しごと" }, meta: { k1: { at: 200 } }, orderAt: 100 };
+  ok(mergeProfiles(A, B).names.k1 === "しごと", "改名は打刻の新しい方が勝つ");
+  ok(
+    JSON.stringify(mergeProfiles(A, B)) === JSON.stringify(mergeProfiles(B, A)),
+    "マージは可換（どちらから当てても同じ）"
+  );
+  ok(
+    JSON.stringify(mergeProfiles(mergeProfiles(A, B), B)) === JSON.stringify(mergeProfiles(A, B)),
+    "マージは冪等（同じ相手を再度当てても変わらない）"
+  );
+
+  // A が削除、B は削除を知らない生存コピー → 削除が勝ち、復活しない
+  const delA = { order: [], names: {}, meta: { k1: { at: 300, del: 1 } }, orderAt: 300 };
+  const merged = mergeProfiles(delA, B);
+  ok(!merged.order.includes("k1"), "削除済みプロファイルは stale な生存コピーで復活しない");
+  ok(!!merged.meta.k1.del, "削除墓石が残る（次の相手にも削除を伝えられる）");
+
+  // 削除より後の改名は復活させる（LWW を壊さない）
+  const renameLater = { order: ["k1"], names: { k1: "再開" }, meta: { k1: { at: 400 } }, orderAt: 400 };
+  ok(mergeProfiles(delA, renameLater).order.includes("k1"), "削除後に更新された側が新しければ復活する（LWW 維持）");
+
+  // 信頼境界の外（同期・改竄）の不正キー・壊れた値を落とす
+  const dirty = normalizeProfiles({ order: ["__proto__", "ok.com"], names: { "__proto__": "x", "ok.com": 5 }, meta: { "ok.com": { at: "bad" } } });
+  ok(!dirty.order.includes("__proto__"), "継承プロパティ名のキーは取り込まない");
+  ok(dirty.names["ok.com"] === "", "非文字列の表示名は空へ落とす");
+  ok(dirty.meta["ok.com"].at === 0, "非有限の打刻は 0 へ落とす");
+}
+
+async function scenarioS76() {
+  console.log("S76（プロファイル）移行は既存キーを付け替えず台帳へ登録するだけ（付箋は 1 バイトも動かない）:");
+  const dev = makeDevice({}, "d76");
+  globalThis.chrome = dev.chrome;
+  dev.localStore[KEY_NOTES] = {
+    "old.example": [note("a", "古い", 1000)],
+    "new.example": [note("b", "新しい", 5000)],
+  };
+  const st = await import("../src/shared/storage.js?dev=prof76");
+  const before = JSON.stringify(dev.localStore[KEY_NOTES]);
+  await st.ensureProfiles();
+  ok(JSON.stringify(dev.localStore[KEY_NOTES]) === before, "petarin:notes は一切変更されない（キー付け替えなし）");
+  const led = dev.localStore[KEY_PROFILES];
+  ok(
+    JSON.stringify(led.order) === JSON.stringify(["new.example", "old.example"]),
+    "order は付箋の updatedAt 最大値の降順",
+    JSON.stringify(led.order)
+  );
+  ok(led.names["old.example"] === "old.example", "表示名は decodeGroupName（ホスト名はそのまま）");
+  ok(
+    dev.localStore[KEY_SETTINGS].activeProfile === "new.example",
+    "activeProfile = order[0]",
+    String(dev.localStore[KEY_SETTINGS].activeProfile)
+  );
+
+  // 「サイトごと」から移した端末にだけ 1 回だけの案内フラグを立てる
+  ok(await st.needsProfilesNotice(), "ホスト名キーを移した端末では移行の案内フラグが立つ");
+  await st.dismissProfilesNotice();
+  ok(!(await st.needsProfilesNotice()), "閉じたら案内フラグは消える（二度と出ない）");
+
+  // 二重実行しても表示名を上書きしない（完了フラグ）
+  await st.renameProfile("old.example", "むかしの");
+  await st.ensureProfiles();
+  ok(dev.localStore[KEY_PROFILES].names["old.example"] === "むかしの", "二重実行で表示名を上書きしない");
+}
+
+async function scenarioS77() {
+  console.log("S77（プロファイル）新規ユーザーは既定プロファイル 1 件・付箋 0 件でも台帳から消えない:");
+  const dev = makeDevice({}, "d77");
+  globalThis.chrome = dev.chrome;
+  const st = await import("../src/shared/storage.js?dev=prof77");
+  const led = await st.ensureProfiles();
+  ok(led.order.length === 1, "既定プロファイルが 1 件だけできる", JSON.stringify(led.order));
+  ok(st.profileLabel(led, led.order[0]) === st.DEFAULT_PROFILE_NAME, "既定名は「マイ付箋」");
+  ok(!(await st.needsProfilesNotice()), "新規ユーザーには移行の案内を出さない");
+
+  // 付箋を作って消しても（notes からキーが消えても）台帳には残る
+  const key = led.order[0];
+  dev.localStore[KEY_NOTES] = { [key]: [note("n1", "x", 1000)] };
+  await st.deleteNote(key, "n1");
+  ok(!(key in (dev.localStore[KEY_NOTES] || {})), "空になったプロファイルは notes からキーごと消える");
+  ok((await st.getProfiles()).order.includes(key), "付箋 0 件でも台帳のプロファイルは残る");
+}
+
+async function scenarioS78() {
+  console.log("S78（プロファイル）台帳は単一 item として同期し、2 端末で名前と並びが収束する:");
+  const syncStore = {};
+  const A = makeDevice(syncStore, "A78");
+  const B = makeDevice(syncStore, "B78");
+  seedDevice(A, { notes: { "ex.com": [note("n1", "hello", 1000)] } });
+  seedDevice(B, {});
+  const modA = await loadSync();
+  const modB = await loadSync();
+
+  globalThis.chrome = A.chrome;
+  const stA = await import("../src/shared/storage.js?dev=prof78a");
+  await stA.ensureProfiles();
+  await stA.createProfile("仕事用");
+  await reconcileAs(A, modA);
+  ok(!!syncStore["petarin:sync:profiles"], "台帳が cloud item として push される");
+
+  await reconcileAs(B, modB);
+  const ledB = B.localStore[KEY_PROFILES];
+  ok(!!ledB && ledB.order.length === 2, "B 側が台帳を pull する（2 件）", JSON.stringify(ledB && ledB.order));
+  ok(
+    Object.values(ledB.names).includes("仕事用"),
+    "表示名も届く",
+    JSON.stringify(ledB.names)
+  );
+
+  // B で改名 → A へ戻る
+  globalThis.chrome = B.chrome;
+  const stB = await import("../src/shared/storage.js?dev=prof78b");
+  const workKey = ledB.order.find((k) => ledB.names[k] === "仕事用");
+  await stB.renameProfile(workKey, "しごと");
+  await reconcileAs(B, modB);
+  await reconcileAs(A, modA);
+  ok(A.localStore[KEY_PROFILES].names[workKey] === "しごと", "改名が往復して収束する");
+}
+
+async function scenarioS79() {
+  console.log("S79（プロファイル・consent）scope=selected では選んでいないプロファイルの名前を送らない:");
+  const syncStore = {};
+  const A = makeDevice(syncStore, "A79");
+  seedDevice(A, { notes: { "ex.com": [note("n1", "x", 1000)] }, settings: { syncScope: "selected", syncDomains: ["ex.com"] } });
+  globalThis.chrome = A.chrome;
+  const st = await import("../src/shared/storage.js?dev=prof79");
+  await st.ensureProfiles();
+  const { key: secretKey } = await st.createProfile("ひみつ");
+  const mod = await loadSync();
+  await reconcileAs(A, mod);
+  const item = syncStore["petarin:sync:profiles"];
+  const dumped = JSON.stringify(item || {});
+  ok(!dumped.includes("ひみつ"), "非選択プロファイルの名前は cloud に出ない");
+  const { decodeProfilesItem } = mod;
+  const led = item ? await decodeProfilesItem(item) : null;
+  ok(led && !led.order.includes(secretKey), "非選択プロファイルのキーも cloud に出ない");
+  ok(led && led.order.includes("ex.com"), "選択済みプロファイルは送られる", JSON.stringify(led && led.order));
+}
+
+async function scenarioS80() {
+  console.log("S80（プロファイル）削除は付箋も剥がしてゴミ箱へ退避し、他端末で復活しない:");
+  const syncStore = {};
+  const A = makeDevice(syncStore, "A80");
+  const B = makeDevice(syncStore, "B80");
+  seedDevice(A, { notes: { "ex.com": [note("n1", "x", 1000)] } });
+  seedDevice(B, {});
+  const modA = await loadSync();
+  const modB = await loadSync();
+
+  globalThis.chrome = A.chrome;
+  const stA = await import("../src/shared/storage.js?dev=prof80a");
+  await stA.ensureProfiles();
+  await stA.createProfile("もう一つ"); // 最後の 1 件は消せないので 2 件にしておく
+  await reconcileAs(A, modA);
+  await reconcileAs(B, modB);
+  ok((B.localStore[KEY_NOTES]["ex.com"] || []).length === 1, "B に付箋が届いている");
+
+  globalThis.chrome = A.chrome;
+  const removed = await stA.deleteProfile("ex.com");
+  ok(removed === 1, "削除したプロファイルの付箋枚数を返す", String(removed));
+  ok(!("ex.com" in (A.localStore[KEY_NOTES] || {})), "A の付箋は剥がされる");
+  ok((A.localStore[KEY_TRASH] || []).some((e) => e.note.id === "n1"), "剥がした付箋はゴミ箱へ退避される");
+
+  await reconcileAs(A, modA);
+  await reconcileAs(B, modB);
+  ok(!(B.localStore[KEY_NOTES] || {})["ex.com"], "B の付箋も削除が伝播する");
+  ok(!B.localStore[KEY_PROFILES].order.includes("ex.com"), "B の台帳からもプロファイルが消える");
+
+  // A をもう一度回しても、B の stale なコピーで復活しない
+  await reconcileAs(A, modA);
+  ok(!A.localStore[KEY_PROFILES].order.includes("ex.com"), "再 reconcile でもプロファイルは復活しない");
+}
+
 (async () => {
   console.log("=== ぺたりん sync 再現テスト ===");
-  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56, scenarioS57, scenarioS58, scenarioS59, scenarioS60, scenarioS61, scenarioS62, scenarioS63, scenarioS64, scenarioS65, scenarioS66, scenarioS67, scenarioS68, scenarioS69, scenarioS70, scenarioS71, scenarioS72, scenarioS73, scenarioS74]) {
+  for (const s of [scenarioS1, scenarioS2, scenarioS3, scenarioS4, scenarioS5, scenarioS6, scenarioS7, scenarioS8, scenarioS9, scenarioS10, scenarioS11, scenarioS12, scenarioS13, scenarioS14, scenarioS15, scenarioS16, scenarioS17, scenarioS18, scenarioS19, scenarioS20, scenarioS21, scenarioS22, scenarioS23, scenarioS24, scenarioS25, scenarioS26, scenarioS27, scenarioS28, scenarioS29, scenarioS30, scenarioS31, scenarioS32, scenarioS33, scenarioS34, scenarioS35, scenarioS36, scenarioS37, scenarioS38, scenarioS39, scenarioS40, scenarioS41, scenarioS42, scenarioS43, scenarioS44, scenarioS45, scenarioS46, scenarioS47, scenarioS48, scenarioS49, scenarioS50, scenarioS51, scenarioS52, scenarioS53, scenarioS54, scenarioS55, scenarioS56, scenarioS57, scenarioS58, scenarioS59, scenarioS60, scenarioS61, scenarioS62, scenarioS63, scenarioS64, scenarioS65, scenarioS66, scenarioS67, scenarioS68, scenarioS69, scenarioS70, scenarioS71, scenarioS72, scenarioS73, scenarioS74, scenarioS75, scenarioS76, scenarioS77, scenarioS78, scenarioS79, scenarioS80]) {
     try { await s(); } catch (e) { FAIL++; console.log(`  ❌ シナリオ例外: ${e.stack || e}`); }
   }
   console.log(`\n結果: ${PASS} PASS / ${FAIL} FAIL`);

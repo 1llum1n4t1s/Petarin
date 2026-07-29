@@ -166,6 +166,20 @@ body {
   background: var(--accent); border-radius: 999px; padding: 1px 6px; flex-shrink: 0;
 }
 .idx-section { font-size: 10.5px; font-weight: 700; color: var(--ink-soft); padding: 14px 11px 6px; letter-spacing: 0.04em; }
+/* プロファイル操作（表示・並べ替え・改名・削除）。行にホバー/フォーカスしたときだけ出す。 */
+.idx-tools { display: flex; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity 0.12s ease; }
+.idx-row:hover .idx-tools, .idx-row:focus-within .idx-tools, .idx-row.active .idx-tools { opacity: 1; }
+.idx-tool {
+  width: 20px; height: 20px; border: 0; border-radius: 6px; cursor: pointer; padding: 0;
+  background: rgba(107,88,71,0.10); color: var(--kraft-deep); font-size: 11px; line-height: 1;
+  display: grid; place-items: center;
+}
+.idx-tool:hover { background: rgba(107,88,71,0.22); }
+.idx-tool:disabled { opacity: 0.25; cursor: default; }
+.idx-tool.del:hover { background: rgba(180, 70, 60, 0.2); color: #a03a30; }
+/* 「プロファイルを追加」行 */
+.idx-favi.add { background: rgba(107,88,71,0.12); color: var(--kraft-deep); box-shadow: none; font-size: 16px; }
+.idx-add .idx-name { color: var(--ink-soft); }
 
 /* 右：ボード */
 .board { overflow-y: auto; padding: 22px 26px 60px; position: relative; }

@@ -29,7 +29,30 @@
                 fontSize: 16,
                 lineNumbers: false,
                 defaultColor: "coral",
+                activeProfile: "github.com",
               },
+              // 付箋の保存単位は「プロファイル」。台帳（petarin:profiles）が正本で、
+              // 移行済みユーザーは旧ドメインキーがそのまま 1 プロファイルとして並ぶ。
+              "petarin:profiles": {
+                order: ["www.reddit.com", "github.com", "www.google.com", "docs.anthropic.com"],
+                // 移行で作られたプロファイルは表示名だけ改名できる（キーは変えない＝付箋は動かない）。
+                names: {
+                  "www.reddit.com": "リサーチ",
+                  "github.com": "仕事用",
+                  "www.google.com": "買いもの",
+                  "docs.anthropic.com": "個人用",
+                },
+                meta: {
+                  "www.reddit.com": { at: now },
+                  "github.com": { at: now - 1 },
+                  "www.google.com": { at: now - 2 },
+                  "docs.anthropic.com": { at: now - 3 },
+                },
+                orderAt: now,
+              },
+              // 移行の案内（既存ユーザーの端末で 1 回だけ出る）。「わかった」で remove される。
+              "petarin:profiles:migrated": true,
+              "petarin:profiles:notice": true,
               "petarin:notes": {
                 "www.reddit.com": [
                   { id: "a1", text: "## Fable 5 の事件\n\n- **あとで** 詳しく調べる\n- `r/news` も見る", color: "yellow", posRatio: 0.3, createdAt: now - 3600e3, updatedAt: now - 120e3 },
@@ -57,6 +80,9 @@
             async set(obj) {
               Object.assign(this._d, obj);
             },
+            async remove(key) {
+              for (const k of [].concat(key)) delete this._d[k];
+            },
           },
           onChanged: { addListener() {} },
         },
@@ -80,12 +106,35 @@
         <span class="logo-mark" aria-hidden="true"><span class="logo-note"></span></span>
         <div class="brand-text">
           <h1>ぺたりん</h1>
-          <p>このドメインに、ぺたり。</p>
+          <p>えらんだ付箋束に、ぺたり。</p>
         </div>
       </div>
       <div class="count-badge" id="totalBadge" title="保存中の付箋の合計">0</div>
     </header>
     <main>
+      <!-- 移行の案内（既存ユーザーの端末で 1 回だけ。閉じると二度と出ない） -->
+      <section class="notice" id="migrateNotice" hidden>
+        <p class="notice-title">付箋の出しかたが変わりました</p>
+        <p class="notice-body">
+          これまでサイトごとに分かれていた付箋は、そのままの名前で <b>プロファイル</b> になりました。
+          サイトを開いても自動では出ません。下のセレクトで選んだプロファイルが、どのサイトでも表示されます。
+        </p>
+        <button class="notice-ok" id="noticeOk" type="button">わかった</button>
+      </section>
+
+      <!-- プロファイル切替（付箋の保存単位。どのサイトを見ているかとは無関係の手動選択） -->
+      <section class="card settings">
+        <h2 class="card-title">どの付箋を出す？</h2>
+        <label class="select-row">
+          <span class="select-label">
+            プロファイル
+            <small>仕事用・個人用などを選んで使い分け（全サイト共通）</small>
+          </span>
+          <select id="profileSelect"></select>
+        </label>
+        <p class="profile-hint" id="profileHint"></p>
+      </section>
+
       <section class="card settings">
         <h2 class="card-title">どの端に貼る？</h2>
         <div class="side-picker">
@@ -131,7 +180,7 @@
         <span class="od-ico" aria-hidden="true">🗂</span>
         <span class="od-text">
           付箋デスクを開く
-          <small>全サイトの付箋を別タブでまとめて整理</small>
+          <small>プロファイルの作成・整理と、全付箋の検索・編集</small>
         </span>
         <span class="od-arrow" aria-hidden="true">↗</span>
       </button>

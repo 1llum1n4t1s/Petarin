@@ -139,6 +139,20 @@ class SyncEngine {
         setOperations[syncTrashKey] = encodeTrashItem(mergedTrash);
       }
 
+      // プロファイル台帳（単一 item・LWW マージ）。付箋とは独立で shadow(base) は持たない。
+      final ProfileLedger? remoteProfiles = decodeProfilesItem(
+        remote.rawProfiles,
+      );
+      final ProfileLedger mergedProfiles =
+          (remoteProfiles == null
+                  ? store.profiles
+                  : ProfileLedger.merge(store.profiles, remoteProfiles))
+              .gc(now);
+      if (!mergedProfiles.isEmpty &&
+          !_jsonEquals(mergedProfiles.toJson(), remoteProfiles?.toJson())) {
+        setOperations[syncProfilesKey] = encodeProfilesItem(mergedProfiles);
+      }
+
       Map<String, Object?>? adoptedSettings;
       Map<String, Object?>? nextShadowSettings = shadow.settings;
       int nextSettingsT = shadow.settingsT;
@@ -189,6 +203,7 @@ class SyncEngine {
         shadow: nextShadow,
         expectedRevision: expectedRevision,
         syncedSettings: adoptedSettings,
+        profiles: mergedProfiles,
       );
       if (!applied) {
         return SyncReport(
@@ -364,6 +379,40 @@ List<TrashEntry> decodeTrashItem(Object? item) {
   }
 }
 
+/// プロファイル台帳 item を作る。台帳は小さいので構造圧縮はせず、そのまま入れて gzip の方が
+/// 小さければ gzip にする（JS 版 encodeProfilesItem と同形）。
+Map<String, Object?> encodeProfilesItem(ProfileLedger led) {
+  final Map<String, Object?> json = led.toJson();
+  final Map<String, Object?> raw = <String, Object?>{'p': json};
+  final Map<String, Object?> compressed = <String, Object?>{
+    'z': base64.encode(gzip.encode(utf8.encode(jsonEncode(json)))),
+  };
+  return _bytesOf(<String, Object?>{syncProfilesKey: compressed}) <
+          _bytesOf(<String, Object?>{syncProfilesKey: raw})
+      ? compressed
+      : raw;
+}
+
+/// 台帳 item を復号。破損は null（＝今回 remote から取り込まない）で安全に握る。
+/// 台帳の反映は LWW マージで「空を見たらローカルを消す」経路が無いので、これで安全。
+ProfileLedger? decodeProfilesItem(Object? item) {
+  try {
+    if (item is! Map) return null;
+    Object? raw;
+    if (item['z'] is String) {
+      raw = jsonDecode(
+        utf8.decode(gzip.decode(base64.decode(item['z']! as String))),
+      );
+    } else if (item['p'] is Map) {
+      raw = item['p'];
+    }
+    if (raw is! Map) return null;
+    return ProfileLedger.fromJson(raw); // 信頼境界の外＝不正キー・壊れた値はここで落ちる
+  } on Object {
+    return null;
+  }
+}
+
 class _RemoteState {
   const _RemoteState({
     required this.notes,
@@ -373,6 +422,7 @@ class _RemoteState {
     required this.rawMeta,
     required this.rawSettings,
     required this.rawTrash,
+    required this.rawProfiles,
   });
 
   final Map<String, List<NoteModel>> notes;
@@ -382,6 +432,7 @@ class _RemoteState {
   final Object? rawMeta;
   final Object? rawSettings;
   final Object? rawTrash;
+  final Object? rawProfiles;
 }
 
 _RemoteState _readRemote(Map<String, Object?> all, int now) {
@@ -425,6 +476,7 @@ _RemoteState _readRemote(Map<String, Object?> all, int now) {
     rawMeta: rawMeta,
     rawSettings: all[syncSettingsKey],
     rawTrash: all[syncTrashKey],
+    rawProfiles: all[syncProfilesKey],
   );
 }
 

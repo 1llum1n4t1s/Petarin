@@ -1,8 +1,19 @@
 // ぺたりん 共有ストレージモジュール（popup / background / options から import して使う）
 // 付箋データとユーザー設定の単一の真実の源（single source of truth）。
 
+import {
+  emptyProfiles,
+  normalizeProfiles,
+  mergeProfiles,
+  gcProfiles,
+  liveProfiles,
+  isValidKey,
+  MAX_PROFILE_NAME,
+} from "./profiles.js";
+import { encodeGroupKey, decodeGroupName, isGroupKey } from "./groups.js";
+
 export const STORAGE_KEYS = {
-  notes: "petarin:notes",       // { [domain]: Note[] }
+  notes: "petarin:notes",       // { [profile]: Note[] }（キーは「プロファイル」＝利用者が作った保存単位）
   settings: "petarin:settings", // Settings
 };
 
@@ -87,6 +98,12 @@ export const DEFAULT_SETTINGS = {
   lineNumbers: false,         // 編集時に行番号（行ガター）を表示するか
   defaultColor: "yellow",     // 「最後に選んだ色」＝次に新規作成する付箋の初期色（COLORS の id）
 
+  // ── いま見ているプロファイル（付箋の保存単位）─────────────────────
+  // 「端末ごと」の設定で sync しない（SYNCABLE_SETTINGS から除外）。端末 A で仕事用を見ているときに
+  // 端末 B まで切り替わるのは誤り。台帳(petarin:profiles)に無いキーだったら order[0] へフォールバックする
+  // （resolveActiveProfile）。空文字＝未解決で、ensureProfiles が初回に埋める。
+  activeProfile: "",
+
   // ── 複数PC同期（案B・既定OFF）──────────────────────────────────
   // これらの同期制御は「端末ごと」の設定で、sync しない（src/shared/sync.js の
   // SYNCABLE_SETTINGS から除外）。ある端末で ON にしても他端末のデータ送信を
@@ -95,8 +112,10 @@ export const DEFAULT_SETTINGS = {
   syncEnabled: false,         // 同期そのものの ON/OFF（既定 OFF＝外部送信ゼロを維持）
   syncMode: "chrome",         // 同期 ON 時の経路（排他）: "chrome"（ブラウザ標準同期）| "cloud"（relay）。OFF は syncEnabled=false。transport 選択は background が syncMode で行い sync.js は不変
   syncSettings: false,        // 見た目設定（side/色味/表示）も同期するか
-  syncScope: "selected",      // "selected"（選択ドメインのみ）| "all"（容量内で全部）
-  syncDomains: [],            // syncScope==="selected" のとき同期するドメイン配列
+  syncScope: "selected",      // "selected"（選択プロファイルのみ）| "all"（容量内で全部）
+  // syncScope==="selected" のとき同期するプロファイルキーの配列。フィールド名は syncDomains のまま据え置く
+  // （出荷済みの設定値をそのまま読み続けるため。キーの意味がドメイン→プロファイルへ変わっただけ）。
+  syncDomains: [],
 };
 
 // 同期対象にできる「見た目設定」のフィールド（上の同期制御フラグ自体は端末ごと＝同期しない）。
@@ -282,25 +301,292 @@ export function mergeTrash(a, b) {
   return all.slice(0, TRASH_MAX);
 }
 
+// partial だけを「最新の settings」に重ねて書く（ロックは呼び出し側で取る）。別コンテキスト（manage/popup/content）
+// が read〜set の隙に他フィールドを書いても古い値で巻き戻さない。特に同期 opt-out（syncEnabled:false）を、別の
+// 書き込みが先に読んだ syncEnabled:true で上書きして同期を再開させない（set 直前に再読し、ベースが変わっていたら
+// 最新へ partial を当て直す。最終試行は最善努力。単一キー保存ゆえ全体書き戻しは不可避＝窓は最小化。Codex）。
+// withLock 済みの処理（ensureProfiles 等）から呼べるよう関数を分けてある（withLock を入れ子にすると自分の
+// 完了を待って永久にデッドロックする）。
+async function _saveSettings(partial) {
+  const MAX = 4;
+  let next;
+  for (let attempt = 0; attempt < MAX; attempt++) {
+    const current = await getSettings();
+    const baseJSON = JSON.stringify(current);
+    next = { ...current, ...partial };
+    const fresh = JSON.stringify(await getSettings());
+    if (fresh !== baseJSON && attempt < MAX - 1) continue; // 割り込みあり → 最新で当て直す
+    await chrome.storage.local.set({ [STORAGE_KEYS.settings]: next });
+    break;
+  }
+  return next;
+}
+
 export function saveSettings(partial) {
-  return withLock(async () => {
-    // partial だけを「最新の settings」に重ねて書く。別コンテキスト（manage/popup/content）が read〜set の隙に
-    // 他フィールドを書いても古い値で巻き戻さない。特に同期 opt-out（syncEnabled:false）を、別の書き込みが先に
-    // 読んだ syncEnabled:true で上書きして同期を再開させない（set 直前に再読し、ベースが変わっていたら最新へ
-    // partial を当て直す。最終試行は最善努力。単一キー保存ゆえ全体書き戻しは不可避＝窓は最小化。Codex）。
-    const MAX = 4;
-    let next;
-    for (let attempt = 0; attempt < MAX; attempt++) {
-      const current = await getSettings();
-      const baseJSON = JSON.stringify(current);
-      next = { ...current, ...partial };
-      const fresh = JSON.stringify(await getSettings());
-      if (fresh !== baseJSON && attempt < MAX - 1) continue; // 割り込みあり → 最新で当て直す
-      await chrome.storage.local.set({ [STORAGE_KEYS.settings]: next });
-      break;
-    }
-    return next;
+  return withLock(() => _saveSettings(partial));
+}
+
+// ════════════════════════════════════════════════════════════════
+//  プロファイル台帳（付箋の保存単位）
+// ════════════════════════════════════════════════════════════════
+// 付箋は「閲覧中のドメイン」ではなく「利用者が作ったプロファイル」に紐づく。保存構造
+// （petarin:notes = { [キー]: Note[] }）は変えず、キーの意味だけが変わる。
+//
+// ⚠️ 既存キーは絶対に付け替えない。移行は「既存キーを据え置き、台帳に登録するだけ」。同期エンジンから見ると
+//    キーの変更は「旧キーの全付箋を削除し、別物を新規作成した」と等価で、これが墓石として他端末へ伝播する
+//    ＝旧バージョンのままの端末では実際に付箋が消える（復旧はゴミ箱頼み・TRASH_MAX 超は失われる）。
+export const PROFILES_KEY = "petarin:profiles";
+// 移行完了フラグ（local 専用・never sync）。二重実行で表示名を上書きしないためのガード。
+export const PROFILES_MIGRATED_KEY = "petarin:profiles:migrated";
+// 「既存の付箋をプロファイルへ移した」案内を 1 回だけ出すためのフラグ（local 専用）。移行で 1 件以上を
+// 登録した端末にだけ立てる。移行後は example.com を開いても自動ではその付箋が出なくなる（プロファイル
+// 一覧に「example.com」という名前で残り、選べば見られる）ので、意図的な変更でも説明が要る。
+export const PROFILES_NOTICE_KEY = "petarin:profiles:notice";
+// 新規ユーザー（付箋が 1 件も無い）に作る既定プロファイル。
+export const DEFAULT_PROFILE_NAME = "マイ付箋";
+
+export { MAX_PROFILE_NAME };
+
+// 移行の案内をまだ出していないか（既存ユーザーの端末で 1 回だけ true）。
+export async function needsProfilesNotice() {
+  const raw = await chrome.storage.local.get(PROFILES_NOTICE_KEY);
+  return !!raw[PROFILES_NOTICE_KEY];
+}
+export function dismissProfilesNotice() {
+  return chrome.storage.local.remove(PROFILES_NOTICE_KEY);
+}
+
+// 表示名。台帳に名前が無い（同期で来たエントリ等）ならキーから導出する
+// （ホスト名はそのまま・`group:` は復号＝移行前後で見え方が変わらない）。
+export function profileLabel(led, key) {
+  const L = normalizeProfiles(led);
+  const nm = Object.prototype.hasOwnProperty.call(L.names, key) ? L.names[key] : "";
+  return nm || decodeGroupName(key);
+}
+
+// 表示用の一覧（表示順）。[{ key, name, label }]
+export function profileList(led) {
+  return liveProfiles(led).map(({ key, name }) => ({ key, name, label: name || decodeGroupName(key) }));
+}
+
+// settings.activeProfile を台帳で正規化する。台帳に無いキーなら order[0]（無ければ ""）。
+export function resolveActiveProfile(settings, led) {
+  const L = normalizeProfiles(led);
+  const cur = settings && typeof settings.activeProfile === "string" ? settings.activeProfile : "";
+  if (cur && L.order.includes(cur)) return cur;
+  return L.order[0] || "";
+}
+
+export async function getProfiles() {
+  const raw = await chrome.storage.local.get(PROFILES_KEY);
+  return normalizeProfiles(raw[PROFILES_KEY]);
+}
+
+// 台帳を read-modify-write する共通処理（ロックは呼び出し側）。mutate(led, now) が false を返したら書かない。
+// 他コンテキスト（同期の pull・別画面の作成/改名）と競合しても取りこぼさないよう、set 直前に再読して
+// ベースが変わっていたら最新へ当て直す（storage.js の他の書き込みと同じ verify-before-set）。
+async function _mutateProfiles(mutate) {
+  const MAX = 4;
+  for (let attempt = 0; attempt < MAX; attempt++) {
+    const raw = await chrome.storage.local.get(PROFILES_KEY);
+    const baseJSON = JSON.stringify(raw[PROFILES_KEY] ?? null);
+    const led = normalizeProfiles(raw[PROFILES_KEY]);
+    const now = Date.now();
+    const changed = mutate(led, now);
+    if (changed === false) return led;
+    gcProfiles(led, now);
+    const cur = JSON.stringify((await chrome.storage.local.get(PROFILES_KEY))[PROFILES_KEY] ?? null);
+    if (cur !== baseJSON && attempt < MAX - 1) continue;
+    await chrome.storage.local.set({ [PROFILES_KEY]: led });
+    return led;
+  }
+}
+
+// 台帳へ 1 件登録（既存エントリがあれば打刻と名前を更新）。order は呼び出し側で整える。
+function _putProfile(led, key, name, at) {
+  Object.defineProperty(led.meta, key, { value: { at }, writable: true, enumerable: true, configurable: true });
+  Object.defineProperty(led.names, key, {
+    value: String(name || "").slice(0, MAX_PROFILE_NAME),
+    writable: true,
+    enumerable: true,
+    configurable: true,
   });
+  if (!led.order.includes(key)) led.order.push(key);
+}
+
+// 初回起動時の移行（追加のみ・破壊的操作を含まない＝失敗しても付箋は無傷）。冪等で、完了フラグを持つ。
+//  1. petarin:notes の全キーを列挙し、既存キーのまま台帳へ登録する（表示名は decodeGroupName）
+//  2. order は付箋の updatedAt 最大値の降順（よく使う順に並ぶ）
+//  3. activeProfile = order[0]
+//  4. キーが 1 つも無ければ新規ユーザー扱い → 既定プロファイル 1 件を作る
+// 台帳が空になっている端末（移行済みだが全プロファイルを消した等）でも既定を 1 件は保つ。
+export function ensureProfiles() {
+  return withLock(async () => {
+    const raw = await chrome.storage.local.get([PROFILES_KEY, PROFILES_MIGRATED_KEY, STORAGE_KEYS.notes]);
+    const led = normalizeProfiles(raw[PROFILES_KEY]);
+    const notes = raw[STORAGE_KEYS.notes] || {};
+    const now = Date.now();
+    let changed = false;
+
+    let migratedExisting = false;
+    if (!raw[PROFILES_MIGRATED_KEY]) {
+      const latest = (arr) => Math.max(0, ...arr.map((n) => (n && (n.updatedAt || n.createdAt)) || 0));
+      const keys = Object.keys(notes).filter(
+        (k) => isValidKey(k) && Array.isArray(notes[k]) && notes[k].length
+      );
+      keys.sort((a, b) => latest(notes[b]) - latest(notes[a]) || (a < b ? -1 : a > b ? 1 : 0));
+      for (const k of keys) {
+        if (Object.prototype.hasOwnProperty.call(led.meta, k)) continue; // 同期で先に来ていたら尊重する
+        _putProfile(led, k, decodeGroupName(k), now);
+        changed = true;
+        // 案内はホスト名キー（＝拡張で「サイトごと」に貯めていた付箋）を移した端末にだけ出す。
+        // モバイル／デスクトップの `group:` キーは元々サイトと無関係なので、体験は変わらない＝案内は不要。
+        if (!isGroupKey(k)) migratedExisting = true;
+      }
+      if (changed) led.orderAt = now;
+    }
+
+    if (!led.order.length) {
+      // 新規ユーザー（または全消し後）。既定プロファイルを 1 件だけ用意する。
+      _putProfile(led, encodeGroupKey(DEFAULT_PROFILE_NAME), DEFAULT_PROFILE_NAME, now);
+      led.orderAt = now;
+      changed = true;
+    }
+
+    const out = {};
+    if (changed) out[PROFILES_KEY] = gcProfiles(led, now);
+    if (!raw[PROFILES_MIGRATED_KEY]) out[PROFILES_MIGRATED_KEY] = true;
+    // 既存の付箋を移した端末にだけ案内フラグを立てる（新規ユーザーには出さない）。
+    if (migratedExisting) out[PROFILES_NOTICE_KEY] = true;
+    if (Object.keys(out).length) await chrome.storage.local.set(out);
+
+    // activeProfile を台帳で正規化する（未設定・存在しないキーなら order[0]）。
+    const settings = await getSettings();
+    const active = resolveActiveProfile(settings, led);
+    if (active && settings.activeProfile !== active) await _saveSettings({ activeProfile: active });
+    return led;
+  });
+}
+
+// 新規プロファイルを作る。キーは `group:`+base64url(NFC(name)) で名前から決まる＝同じ名前を別端末で
+// 作っても同じキーへ収束する（マージで自然に 1 件になる）。既に生存している同名があれば作らない。
+// 返り値: { key, created }
+export function createProfile(name) {
+  const clean = String(name || "").normalize("NFC").trim().slice(0, MAX_PROFILE_NAME);
+  if (!clean) throw new Error("プロファイル名が空です");
+  const key = encodeGroupKey(clean);
+  return withLock(async () => {
+    let created = false;
+    await _mutateProfiles((led, now) => {
+      const live = Object.prototype.hasOwnProperty.call(led.meta, key) && !led.meta[key].del;
+      if (live) return false; // 同名（＝同キー）が生存中 → 何もしない
+      _putProfile(led, key, clean, now);
+      led.orderAt = now;
+      created = true;
+      return true;
+    });
+    return { key, created };
+  });
+}
+
+// 既存キーをそのまま台帳へ登録する（バックアップ取り込みなど、キーが先に決まっている経路用）。
+// 生存エントリが既にあるキーは触らない（表示名を上書きしない）。返り値: 登録した件数。
+export function registerProfiles(keys) {
+  return withLock(async () => {
+    let added = 0;
+    await _mutateProfiles((led, now) => {
+      for (const k of keys) {
+        if (!isValidKey(k)) continue;
+        if (Object.prototype.hasOwnProperty.call(led.meta, k) && !led.meta[k].del) continue;
+        _putProfile(led, k, decodeGroupName(k), now);
+        added++;
+      }
+      if (!added) return false;
+      led.orderAt = now;
+      return true;
+    });
+    return added;
+  });
+}
+
+// 表示名だけを変える。**キーは変えない**（キーの付け替え＝全付箋の削除＋新規作成として他端末へ伝播する）。
+export function renameProfile(key, name) {
+  const clean = String(name || "").normalize("NFC").trim().slice(0, MAX_PROFILE_NAME);
+  if (!clean) throw new Error("プロファイル名が空です");
+  return withLock(() =>
+    _mutateProfiles((led, now) => {
+      if (!Object.prototype.hasOwnProperty.call(led.meta, key) || led.meta[key].del) return false;
+      if (led.names[key] === clean) return false;
+      _putProfile(led, key, clean, now);
+      return true;
+    })
+  );
+}
+
+// プロファイルを削除する。台帳へ墓石を立て、そのプロファイルの付箋も削除する
+// （通常削除と同じ経路＝localTombs とゴミ箱へ退避され、他端末へも正しく伝播する）。
+// 最後の 1 件は削除しない（付箋の置き場が無くなるため）。返り値: 削除した付箋の枚数（null=削除しなかった）
+export function deleteProfile(key) {
+  return withLock(async () => {
+    const raw = await chrome.storage.local.get([PROFILES_KEY, STORAGE_KEYS.notes]);
+    const led = normalizeProfiles(raw[PROFILES_KEY]);
+    if (!led.order.includes(key) || led.order.length <= 1) return null;
+    const notes = (raw[STORAGE_KEYS.notes] || {})[key] || [];
+    const removed = notes.filter((n) => n && n.id).map((n) => ({ domain: key, id: n.id }));
+    if (removed.length) await _writeNotes([], removed, removed);
+    await _mutateProfiles((ledger, now) => {
+      if (!Object.prototype.hasOwnProperty.call(ledger.meta, key)) return false;
+      Object.defineProperty(ledger.meta, key, {
+        value: { at: now, del: 1 },
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+      delete ledger.names[key];
+      ledger.order = ledger.order.filter((k) => k !== key);
+      ledger.orderAt = now;
+      return true;
+    });
+    // 表示中のプロファイルを消したら order[0] へ寄せる（存在しないキーを見続けない）。
+    const after = await getProfiles();
+    const settings = await getSettings();
+    const active = resolveActiveProfile(settings, after);
+    if (settings.activeProfile !== active) await _saveSettings({ activeProfile: active });
+    return removed.length;
+  });
+}
+
+// 表示順を差し替える（UI の並べ替え）。渡されなかった生存キーは orderedLive が末尾へ回す。
+export function reorderProfiles(keys) {
+  return withLock(() =>
+    _mutateProfiles((led, now) => {
+      const next = (Array.isArray(keys) ? keys : []).filter((k) => led.order.includes(k));
+      led.order = next;
+      led.orderAt = now;
+      return true;
+    })
+  );
+}
+
+// 表示するプロファイルを切り替える（端末ごとの設定）。台帳に無いキーは無視する。
+export async function setActiveProfile(key) {
+  const led = await getProfiles();
+  if (!led.order.includes(key)) return null;
+  return saveSettings({ activeProfile: key });
+}
+
+// 同期の pull で得た台帳をローカルへ取り込む（sync.js から使う）。マージは可換なので順不同・冪等。
+export function mergeProfilesInto(remote) {
+  return withLock(() => _mutateProfiles((led, now) => {
+    const merged = mergeProfiles(led, remote);
+    if (JSON.stringify(merged) === JSON.stringify(led)) return false;
+    led.order = merged.order;
+    led.names = merged.names;
+    led.meta = merged.meta;
+    led.orderAt = merged.orderAt;
+    void now;
+    return true;
+  }));
 }
 
 // 全ドメインの付箋を { [domain]: Note[] } で返す

@@ -5,7 +5,11 @@ const int maxChars = 10000;
 const int trashMax = 100;
 const int tombTtlMs = 180 * 24 * 60 * 60 * 1000;
 const String groupPrefix = 'group:';
-const String defaultGroupName = 'マイメモ';
+
+/// 新規ユーザーに作る既定プロファイルの名前と、表示名の最大長。
+/// JS 版 src/shared/storage.js / profiles.js と同値に保つこと。
+const String defaultProfileName = 'マイ付箋';
+const int maxProfileName = 40;
 const String unitSeparator = '\u001f';
 
 const String notesKey = 'petarin:notes';
@@ -14,10 +18,13 @@ const String vaultKey = 'petarin:sync:vault';
 const String localTombsKey = 'petarin:sync:localTombs';
 const String trashKey = 'petarin:trash';
 const String shadowKey = 'petarin:sync:shadow';
+const String profilesKey = 'petarin:profiles';
+const String profilesMigratedKey = 'petarin:profiles:migrated';
 const String syncSettingsKey = 'petarin:sync:settings';
 const String syncMetaKey = 'petarin:sync:meta';
 const String syncNotePrefix = 'petarin:sync:n:';
 const String syncTrashKey = 'petarin:sync:trash';
+const String syncProfilesKey = 'petarin:sync:profiles';
 const String defaultRelayUrl = 'https://fudaba.kagayoi.com';
 
 const Set<String> fontIds = <String>{
@@ -129,7 +136,7 @@ const List<String> noteIcons = <String>[
 
 String encodeGroupKey(String name) {
   final String trimmed = name.trim();
-  if (trimmed.isEmpty) throw const FormatException('グループ名が空です');
+  if (trimmed.isEmpty) throw const FormatException('プロファイル名が空です');
   return '$groupPrefix${base64Url.encode(utf8.encode(trimmed)).replaceAll('=', '')}';
 }
 
@@ -146,7 +153,225 @@ String decodeGroupName(String key) {
   }
 }
 
-final String defaultGroupKey = encodeGroupKey(defaultGroupName);
+final String defaultProfileKey = encodeGroupKey(defaultProfileName);
+
+/// プロファイル台帳（付箋の保存単位の一覧）。JS 版 src/shared/profiles.js の移植で、
+/// マージ規則（打刻 LWW ＋ 削除墓石 ＋ order の LWW）まで一致させてある。
+///
+/// 台帳を notes のキーから導出しないのは、付箋 0 件のプロファイルも消えてはいけないため
+/// （notes は空になるとキーごと掃除される）。
+class ProfileLedger {
+  const ProfileLedger({
+    required this.order,
+    required this.names,
+    required this.meta,
+    required this.orderAt,
+  });
+
+  /// 表示順（生存キーのみ）
+  final List<String> order;
+
+  /// キー → 表示名（生存キーのみ）
+  final Map<String, String> names;
+
+  /// キー → { at: 打刻, del: 削除墓石 }
+  final Map<String, ProfileEntry> meta;
+
+  /// order 全体の LWW 打刻
+  final int orderAt;
+
+  static const ProfileLedger empty = ProfileLedger(
+    order: <String>[],
+    names: <String, String>{},
+    meta: <String, ProfileEntry>{},
+    orderAt: 0,
+  );
+
+  bool get isEmpty => meta.isEmpty;
+
+  String label(String key) {
+    final String name = names[key] ?? '';
+    return name.isNotEmpty ? name : decodeGroupName(key);
+  }
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'order': order,
+    'names': names,
+    'meta': meta.map(
+      (String key, ProfileEntry entry) =>
+          MapEntry<String, Object?>(key, entry.toJson()),
+    ),
+    'orderAt': orderAt,
+  };
+
+  /// 外部由来（同期・改竄・旧形式）の台帳を保存形へ正規化する。壊れた値は落とし、決して throw しない。
+  /// meta が無い旧形式（{order,names} だけ）は names のキーを at=0 の生存エントリとして拾う。
+  static ProfileLedger fromJson(Object? value) {
+    if (value is! Map) return empty;
+    final Map<Object?, Object?> rawNames = value['names'] is Map
+        ? value['names']! as Map
+        : const <Object?, Object?>{};
+    final Map<Object?, Object?> rawMeta = value['meta'] is Map
+        ? value['meta']! as Map
+        : const <Object?, Object?>{};
+    final Map<String, ProfileEntry> meta = <String, ProfileEntry>{};
+    final Map<String, String> names = <String, String>{};
+    final Set<Object?> keys = <Object?>{...rawMeta.keys, ...rawNames.keys};
+    for (final Object? key in keys) {
+      if (key is! String || !isValidDomain(key)) continue;
+      final Object? raw = rawMeta[key];
+      final ProfileEntry entry = raw is Map
+          ? ProfileEntry.fromJson(raw)
+          : const ProfileEntry(at: 0);
+      meta[key] = entry;
+      if (entry.deleted) continue;
+      final Object? name = rawNames[key];
+      names[key] = name is String ? _trimName(name) : '';
+    }
+    return ProfileLedger(
+      order: _orderedLive(
+        value['order'] is List
+            ? (value['order']! as List).whereType<String>().toList()
+            : const <String>[],
+        meta,
+      ),
+      names: names,
+      meta: meta,
+      orderAt: _finiteInt(value['orderAt']),
+    );
+  }
+
+  /// 2 つの台帳を突き合わせる（可換・冪等・副作用なし）。
+  ///  - エントリ: 打刻 at の LWW。同値は「削除優先 → 表示名の辞書順」で決定的に割る。
+  ///  - order:    orderAt の LWW。同値は order の内容で決定的に割り、生存キーへ畳む。
+  static ProfileLedger merge(ProfileLedger a, ProfileLedger b) {
+    final Map<String, ProfileEntry> meta = <String, ProfileEntry>{};
+    final Map<String, String> names = <String, String>{};
+    for (final String key in <String>{...a.meta.keys, ...b.meta.keys}) {
+      final ProfileEntry? ea = a.meta[key];
+      final ProfileEntry? eb = b.meta[key];
+      final ProfileEntry win;
+      final ProfileLedger src;
+      if (ea == null) {
+        win = eb!;
+        src = b;
+      } else if (eb == null) {
+        win = ea;
+        src = a;
+      } else if (ea.at != eb.at) {
+        win = eb.at > ea.at ? eb : ea;
+        src = eb.at > ea.at ? b : a;
+      } else if (ea.deleted != eb.deleted) {
+        // 同時刻の「削除 vs 生存」は削除を採る。逆にすると削除を観測していない端末の
+        // 生存エントリが毎回勝って永久に復活し続ける（収束しない）。
+        win = ea.deleted ? ea : eb;
+        src = ea.deleted ? a : b;
+      } else {
+        final String na = a.names[key] ?? '';
+        final String nb = b.names[key] ?? '';
+        win = nb.compareTo(na) < 0 ? eb : ea;
+        src = nb.compareTo(na) < 0 ? b : a;
+      }
+      meta[key] = win;
+      if (!win.deleted) names[key] = src.names[key] ?? '';
+    }
+    final ProfileLedger base;
+    if (b.orderAt > a.orderAt) {
+      base = b;
+    } else if (a.orderAt > b.orderAt) {
+      base = a;
+    } else {
+      base = b.order.join('\n').compareTo(a.order.join('\n')) < 0 ? b : a;
+    }
+    return ProfileLedger(
+      order: _orderedLive(base.order, meta),
+      names: names,
+      meta: meta,
+      orderAt: a.orderAt > b.orderAt ? a.orderAt : b.orderAt,
+    );
+  }
+
+  /// TTL を超えた削除墓石を刈る（純時間ベース＝TTL 内は削除を保持して復活を防ぐ）。
+  ProfileLedger gc(int now) {
+    final Map<String, ProfileEntry> meta = <String, ProfileEntry>{
+      for (final MapEntry<String, ProfileEntry> entry in this.meta.entries)
+        if (!(entry.value.deleted && now - entry.value.at > tombTtlMs))
+          entry.key: entry.value,
+    };
+    final Map<String, String> names = <String, String>{
+      for (final MapEntry<String, String> entry in this.names.entries)
+        if (meta.containsKey(entry.key)) entry.key: entry.value,
+    };
+    return ProfileLedger(
+      order: _orderedLive(order, meta),
+      names: names,
+      meta: meta,
+      orderAt: orderAt,
+    );
+  }
+
+  /// 同期スコープ（selected）で「選んだプロファイルだけ」に絞る。台帳は利用者のコンテンツ（名前）
+  /// なので、選んでいないプロファイルの名前を外部へ出さない。
+  ProfileLedger filter(Set<String> keys) {
+    final Map<String, ProfileEntry> meta = <String, ProfileEntry>{
+      for (final MapEntry<String, ProfileEntry> entry in this.meta.entries)
+        if (keys.contains(entry.key)) entry.key: entry.value,
+    };
+    return ProfileLedger(
+      order: _orderedLive(order, meta),
+      names: <String, String>{
+        for (final MapEntry<String, String> entry in names.entries)
+          if (meta.containsKey(entry.key)) entry.key: entry.value,
+      },
+      meta: meta,
+      orderAt: orderAt,
+    );
+  }
+}
+
+class ProfileEntry {
+  const ProfileEntry({required this.at, this.deleted = false});
+
+  final int at;
+  final bool deleted;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'at': at,
+    if (deleted) 'del': 1,
+  };
+
+  static ProfileEntry fromJson(Map<Object?, Object?> value) => ProfileEntry(
+    at: _finiteInt(value['at']),
+    deleted: value['del'] == 1 || value['del'] == true,
+  );
+}
+
+/// 生存キーだけを、与えられた順序を尊重して並べ直す。順序に無い生存キーは
+/// 「打刻の新しい順 → キー昇順」で末尾に足す（端末間で決定的＝churn しない）。
+List<String> _orderedLive(List<String> order, Map<String, ProfileEntry> meta) {
+  final List<String> live = meta.entries
+      .where((MapEntry<String, ProfileEntry> e) => !e.value.deleted)
+      .map((MapEntry<String, ProfileEntry> e) => e.key)
+      .toList();
+  final Set<String> liveSet = live.toSet();
+  final List<String> out = <String>[];
+  for (final String key in order) {
+    if (!liveSet.contains(key) || out.contains(key)) continue;
+    out.add(key);
+  }
+  final List<String> rest = live.where((String k) => !out.contains(k)).toList()
+    ..sort((String a, String b) {
+      final int byAt = meta[b]!.at.compareTo(meta[a]!.at);
+      return byAt != 0 ? byAt : a.compareTo(b);
+    });
+  return <String>[...out, ...rest];
+}
+
+String _trimName(String name) {
+  final Runes runes = name.trim().runes;
+  if (runes.length <= maxProfileName) return name.trim();
+  return String.fromCharCodes(runes.take(maxProfileName));
+}
 
 class NoteModel {
   const NoteModel({
@@ -304,6 +529,9 @@ Map<String, Object?> defaultSettings() => <String, Object?>{
   'fontSize': 11,
   'lineNumbers': false,
   'defaultColor': 'yellow',
+  // いま見ているプロファイル（端末ごとの設定＝syncableSettings には含めない）。
+  // 台帳に無いキーだったら order[0] へフォールバックする（PetarinStore.activeProfile）。
+  'activeProfile': '',
   'syncEnabled': false,
   'syncMode': 'cloud',
   'syncSettings': false,

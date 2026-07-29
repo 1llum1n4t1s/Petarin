@@ -38,7 +38,8 @@ function mountDevice(seed) {
 }
 mountDevice();
 
-const { getSettings, saveSettings, getAllNotes } = await import("../src/shared/storage.js");
+const { getSettings, saveSettings, getAllNotes, ensureProfiles, getProfiles, createProfile, profileLabel } =
+  await import("../src/shared/storage.js");
 const { reconcile, setSyncTransport } = await import("../src/shared/sync.js");
 const { generateVault } = await import("../src/shared/vault.js");
 const { createRelayTransport } = await import("../src/shared/relay-transport.js");
@@ -74,6 +75,9 @@ const note = {
 mountDevice();
 await saveSettings({ syncEnabled: true, syncMode: "cloud", syncScope: "all" });
 await chrome.storage.local.set({ "petarin:notes": { [domain]: [note] } });
+// プロファイル台帳も relay 経由で往復するか（暗号化 KV ミラー越しの単一 item・LWW マージ）。
+await ensureProfiles();
+await createProfile("しごと");
 setSyncTransport(createRelayTransport(vault));
 const rA = await reconcile(HUGE);
 ok(rA && rA.enabled === true, "device A: cloud モードで reconcile が走る（enabled）", JSON.stringify(rA && rA.enabled));
@@ -93,6 +97,16 @@ const pulled = after[domain] && after[domain][0];
 ok(!!pulled, "device B: relay から付箋ドメインを pull した", JSON.stringify(Object.keys(after)));
 ok(pulled && pulled.text === note.text, "device B: 本文が暗号化往復で一致（改行含む）", pulled && JSON.stringify(pulled.text));
 ok(pulled && pulled.icon === note.icon && pulled.color === note.color, "device B: icon/color も一致");
+
+// プロファイル台帳の pull（付箋とは別 item・shadow を持たない LWW マージ経路）。
+const ledB = await getProfiles();
+ok(
+  ledB.order.includes(domain),
+  "device B: 台帳が relay から届く（移行で登録された既存キー）",
+  JSON.stringify(ledB.order)
+);
+const workKey = ledB.order.find((k) => profileLabel(ledB, k) === "しごと");
+ok(!!workKey, "device B: A で作ったプロファイルの表示名も届く", JSON.stringify(ledB.names));
 
 // 設定が壊れていない（DEFAULT_SETTINGS スプレッド＋syncMode 反映）
 const s = await getSettings();

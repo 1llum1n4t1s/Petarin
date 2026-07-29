@@ -25,13 +25,36 @@
         </span>
         <div class="brand-text">
           <h1>ぺたりん</h1>
-          <p>このドメインに、ぺたり。</p>
+          <p>えらんだ付箋束に、ぺたり。</p>
         </div>
       </div>
       <div class="count-badge" id="totalBadge" title="保存中の付箋の合計">0</div>
     </header>
 
     <main>
+      <!-- 移行の案内（既存ユーザーの端末で 1 回だけ。閉じると二度と出ない） -->
+      <section class="notice" id="migrateNotice" hidden>
+        <p class="notice-title">付箋の出しかたが変わりました</p>
+        <p class="notice-body">
+          これまでサイトごとに分かれていた付箋は、そのままの名前で <b>プロファイル</b> になりました。
+          サイトを開いても自動では出ません。下のセレクトで選んだプロファイルが、どのサイトでも表示されます。
+        </p>
+        <button class="notice-ok" id="noticeOk" type="button">わかった</button>
+      </section>
+
+      <!-- プロファイル切替（付箋の保存単位。どのサイトを見ているかとは無関係の手動選択） -->
+      <section class="card settings">
+        <h2 class="card-title">どの付箋を出す？</h2>
+        <label class="select-row">
+          <span class="select-label">
+            プロファイル
+            <small>仕事用・個人用などを選んで使い分け（全サイト共通）</small>
+          </span>
+          <select id="profileSelect"></select>
+        </label>
+        <p class="profile-hint" id="profileHint"></p>
+      </section>
+
       <!-- 設定カード -->
       <section class="card settings">
         <h2 class="card-title">どの端に貼る？</h2>
@@ -118,7 +141,7 @@
         <span class="od-ico" aria-hidden="true">🗂</span>
         <span class="od-text">
           付箋デスクを開く
-          <small>全サイトの付箋を別タブでまとめて整理・検索・編集</small>
+          <small>プロファイルの作成・整理と、全付箋の検索・編集</small>
         </span>
         <span class="od-arrow" aria-hidden="true">↗</span>
       </button>

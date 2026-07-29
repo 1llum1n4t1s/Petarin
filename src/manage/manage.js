@@ -1,4 +1,8 @@
-// ぺたりん 付箋デスク — 全ドメインの付箋を広い画面でまとめて整理する
+// ぺたりん 付箋デスク — 全プロファイルの付箋を広い画面でまとめて整理する
+//
+// 付箋の保存単位は「プロファイル」（仕事用 / 個人用 …）。petarin:notes は { [プロファイルキー]: Note[] } で、
+// このファイル内で `domain` と名付けられている引数・フィールドはすべて**そのキー**を指す（保存形式は
+// 変えていないので、ゴミ箱エントリのフィールド名も domain のまま据え置いている）。
 import {
   getAllNotes,
   deleteNote,
@@ -24,6 +28,18 @@ import {
   getVaultPairing,
   saveVaultPairing,
   clearVaultPairing,
+  getProfiles,
+  ensureProfiles,
+  profileList,
+  profileLabel,
+  resolveActiveProfile,
+  setActiveProfile,
+  createProfile,
+  renameProfile,
+  deleteProfile,
+  reorderProfiles,
+  registerProfiles,
+  MAX_PROFILE_NAME,
 } from "../shared/storage.js";
 import { isValidDomain } from "../shared/sync.js";
 import { DEFAULT_RELAY_URL } from "../shared/relay-transport.js";
@@ -90,9 +106,10 @@ const SEP = "\u001f"; // \u001f = Unit Separator (domain<->id delimiter; never a
 let allNotes = {};
 let trashItems = [];            // ゴミ箱エントリ（getTrash() の結果・[{domain, note, deletedAt, origin}]）
 let trashView = false;          // true = ボードにゴミ箱を表示中
-let currentDomain = "";
+let profiles = null;            // プロファイル台帳（索引の元データ。付箋 0 件のプロファイルもここに残る）
+let currentDomain = "";         // レールが表示中のプロファイルキー（索引に「表示中」バッジを出す）
 let query = "";
-let activeDomain = null;        // null = すべて
+let activeDomain = null;        // 索引で選択中のプロファイルキー。null = すべて
 let sortKey = "new";
 const selection = new Set();    // "domain\u001fid"
 let editingKey = null;
@@ -114,7 +131,10 @@ const keyOf = (domain, id) => `${domain}${SEP}${id}`;
 
 // ── 起動 ──────────────────────────────────────────────────────────
 async function init() {
-  [allNotes, currentDomain, appSettings, trashItems] = await Promise.all([getAllNotes(), getCurrentDomain(), getSettings(), getTrash()]);
+  // 台帳が無い端末（インストール直後）でも索引が空にならないよう、ここでも移行を確実に走らせる。
+  profiles = await ensureProfiles();
+  [allNotes, appSettings, trashItems] = await Promise.all([getAllNotes(), getSettings(), getTrash()]);
+  currentDomain = resolveActiveProfile(appSettings, profiles);
   document.body.style.setProperty("--peta-edit-font", EDIT_FONT); // 編集面は UDEV 固定
 
   $("#search").addEventListener("input", (e) => {
@@ -137,7 +157,19 @@ async function init() {
 
   chrome.storage.onChanged.addListener(async (changes, area) => {
     if (area !== "local") return;
-    if (changes["petarin:settings"]) { appSettings = await getSettings(); applyNoteFont(); } // 書体変更をプレビューへ反映
+    // 書体変更をプレビューへ反映。表示中プロファイル（レール側の切替・同期 pull）も追う。
+    if (changes["petarin:settings"]) {
+      appSettings = await getSettings();
+      applyNoteFont();
+      const cur = resolveActiveProfile(appSettings, profiles);
+      if (cur !== currentDomain) { currentDomain = cur; renderIndex(); }
+    }
+    // プロファイル台帳の変化（他画面・他端末での作成/改名/削除/並べ替え）。
+    if (changes["petarin:profiles"]) {
+      profiles = await getProfiles();
+      currentDomain = resolveActiveProfile(appSettings, profiles);
+      if (!editingKey) render();
+    }
     // ゴミ箱の変化（自分の削除/復元・同期 pull）を反映。索引のバッジ件数も変わるので index も更新。
     if (changes[TRASH_KEY]) {
       trashItems = await getTrash();
@@ -174,17 +206,6 @@ async function init() {
   render();
 }
 
-async function getCurrentDomain() {
-  try {
-    const tabs = await chrome.tabs.query({});
-    const http = tabs
-      .filter((t) => /^https?:/.test(t.url || ""))
-      .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-    if (http.length) return new URL(http[0].url).hostname;
-  } catch {}
-  return "";
-}
-
 // ── データ整形 ────────────────────────────────────────────────────
 function flatNotes() {
   const out = [];
@@ -196,28 +217,36 @@ function flatNotes() {
 
 function matchesQuery(domain, note) {
   if (!query) return true;
-  return domain.toLowerCase().includes(query) || (note.text || "").toLowerCase().includes(query);
+  return (
+    domain.toLowerCase().includes(query) ||
+    profileLabel(profiles, domain).toLowerCase().includes(query) ||
+    (note.text || "").toLowerCase().includes(query)
+  );
 }
 
+// 索引に出すプロファイル。**台帳の表示順**が正本で、付箋 0 件のプロファイルも必ず出す
+// （notes は空になるとキーごと掃除されるため、notes からは導出できない）。
+// 台帳に無いキーの付箋（他端末の台帳がまだ届いていない等）は末尾に「未登録」として出す＝付箋を隠さない。
 function domainGroups() {
-  let groups = Object.entries(allNotes)
-    .filter(([, arr]) => arr.length)
-    .map(([domain, arr]) => ({
-      domain,
-      count: arr.length,
-      latest: Math.max(...arr.map((n) => n.updatedAt || n.createdAt || 0)),
-    }));
+  const listed = profileList(profiles);
+  const known = new Set(listed.map((p) => p.key));
+  const orphans = Object.keys(allNotes)
+    .filter((k) => !known.has(k) && (allNotes[k] || []).length)
+    .sort()
+    .map((key) => ({ key, label: decodeGroupName(key), orphan: true }));
+  let groups = [...listed, ...orphans].map((p) => ({
+    domain: p.key,
+    label: p.label,
+    orphan: !!p.orphan,
+    count: (allNotes[p.key] || []).length,
+  }));
   if (query) {
     groups = groups.filter(
-      (g) => g.domain.toLowerCase().includes(query) ||
-        allNotes[g.domain].some((n) => (n.text || "").toLowerCase().includes(query))
+      (g) => g.label.toLowerCase().includes(query) ||
+        g.domain.toLowerCase().includes(query) ||
+        (allNotes[g.domain] || []).some((n) => (n.text || "").toLowerCase().includes(query))
     );
   }
-  groups.sort((a, b) => {
-    if (a.domain === currentDomain) return -1;
-    if (b.domain === currentDomain) return 1;
-    return b.latest - a.latest;
-  });
   return groups;
 }
 
@@ -248,7 +277,8 @@ function sortItems(items) {
   const a = [...items];
   switch (sortKey) {
     case "old": a.sort((p, q) => t(p) - t(q)); break;
-    case "domain": a.sort((p, q) => p.domain.localeCompare(q.domain) || t(q) - t(p)); break;
+    // プロファイル順は表示名で並べる（キーは group: の base64url なので並べても意味を成さない）。
+    case "domain": a.sort((p, q) => profileLabel(profiles, p.domain).localeCompare(profileLabel(profiles, q.domain)) || t(q) - t(p)); break;
     case "color": a.sort((p, q) => ci(p) - ci(q) || t(q) - t(p)); break;
     case "length": a.sort((p, q) => (q.note.text || "").length - (p.note.text || "").length); break;
     default: a.sort((p, q) => t(q) - t(p));
@@ -258,8 +288,9 @@ function sortItems(items) {
 
 // ── 全体描画 ──────────────────────────────────────────────────────
 function render() {
-  // 存在しないドメインが activeDomain なら「すべて」に戻す
-  if (activeDomain && !(allNotes[activeDomain] && allNotes[activeDomain].length)) activeDomain = null;
+  // 索引に出ないキー（削除されたプロファイル）が選択中なら「すべて」に戻す。
+  // 付箋 0 件でも台帳に在るプロファイルは選択したままにする（空の状態を見せるのが正しい）。
+  if (activeDomain && !domainGroups().some((g) => g.domain === activeDomain)) activeDomain = null;
   pruneSelection();
   renderStats();
   renderIndex();
@@ -267,9 +298,8 @@ function render() {
 }
 
 function renderStats() {
-  const domains = Object.values(allNotes).filter((a) => a.length).length;
   const total = Object.values(allNotes).reduce((s, a) => s + a.length, 0);
-  $("#statDomains").textContent = String(domains);
+  $("#statDomains").textContent = String(profileList(profiles).length);
   $("#statNotes").textContent = String(total);
 }
 
@@ -281,13 +311,12 @@ function renderIndex() {
 
   frag.append(buildIndexRow({ all: true, count: total }));
 
-  if (groups.length) {
-    const sec = document.createElement("div");
-    sec.className = "idx-section";
-    sec.textContent = query ? "ヒットしたサイト" : "サイト";
-    frag.append(sec);
-    for (const g of groups) frag.append(buildIndexRow(g));
-  }
+  const sec = document.createElement("div");
+  sec.className = "idx-section";
+  sec.textContent = query ? "ヒットしたプロファイル" : "プロファイル";
+  frag.append(sec);
+  for (const g of groups) frag.append(buildIndexRow(g));
+  if (!query) frag.append(buildAddProfileRow());
 
   // ゴミ箱（常に末尾に出す。0 件でも入口として見せる）
   const trashCount = visibleTrash().length;
@@ -299,10 +328,23 @@ function renderIndex() {
   index.replaceChildren(frag);
 }
 
+// 索引の行。中にプロファイル操作ボタンを入れるため、行自体は <button> ではなく role="button" の <div>
+// にする（button の入れ子は不正で、クリック領域が壊れる）。Enter/Space はクリックへ写して操作性を保つ。
+function idxRow(className) {
+  const row = document.createElement("div");
+  row.className = className;
+  row.setAttribute("role", "button");
+  row.tabIndex = 0;
+  row.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    row.click();
+  });
+  return row;
+}
+
 function buildTrashIndexRow(count) {
-  const row = document.createElement("button");
-  row.className = "idx-row" + (trashView ? " active" : "");
-  row.type = "button";
+  const row = idxRow("idx-row" + (trashView ? " active" : ""));
   const favi = document.createElement("div");
   favi.className = "idx-favi trash";
   favi.textContent = "🗑";
@@ -324,9 +366,7 @@ function buildTrashIndexRow(count) {
 }
 
 function buildIndexRow(g) {
-  const row = document.createElement("button");
-  row.className = "idx-row";
-  row.type = "button";
+  const row = idxRow("idx-row");
 
   const favi = document.createElement("div");
   favi.className = "idx-favi" + (g.all ? " all" : "");
@@ -343,7 +383,7 @@ function buildIndexRow(g) {
     name.textContent = "すべての付箋";
     const sub = document.createElement("div");
     sub.className = "idx-sub";
-    sub.textContent = "全サイトをまとめて見る";
+    sub.textContent = "全プロファイルをまとめて見る";
     body.append(name, sub);
     row.classList.toggle("active", activeDomain === null && !trashView);
     row.append(favi, body, count);
@@ -351,25 +391,144 @@ function buildIndexRow(g) {
     return row;
   }
 
-  const label = decodeGroupName(g.domain);
+  const label = g.label || decodeGroupName(g.domain);
   favi.textContent = (label[0] || "?").toUpperCase();
   const hue = hashHue(g.domain);
   favi.style.background = `linear-gradient(150deg, hsl(${hue} 62% 60%), hsl(${(hue + 26) % 360} 58% 48%))`;
   name.textContent = label;
   name.title = g.domain;
   body.append(name);
+  if (g.orphan) {
+    // 台帳に無いキーの付箋（他端末の台帳がまだ届いていない等）。付箋を隠さずここで気付けるようにする。
+    const sub = document.createElement("div");
+    sub.className = "idx-sub";
+    sub.textContent = "台帳に未登録（同期待ち）";
+    body.append(sub);
+  }
   row.classList.toggle("active", activeDomain === g.domain && !trashView);
 
   if (g.domain === currentDomain) {
     const here = document.createElement("span");
     here.className = "idx-here";
-    here.textContent = "今ここ";
+    here.textContent = "表示中";
+    here.title = "レール（ページ上の付箋）に出ているプロファイル";
     row.append(favi, body, here, count);
   } else {
     row.append(favi, body, count);
   }
   row.addEventListener("click", () => { activeDomain = g.domain; trashView = false; renderIndex(); renderBoard(); });
+  if (!g.orphan) row.append(buildProfileTools(g));
   return row;
+}
+
+// 索引行のプロファイル操作（表示・改名・並べ替え・削除）。行そのものは「選択」なので、
+// 操作ボタンは stopPropagation して選択と取り違えないようにする。
+function buildProfileTools(g) {
+  const tools = document.createElement("span");
+  tools.className = "idx-tools";
+  const order = profileList(profiles).map((p) => p.key);
+  const at = order.indexOf(g.domain);
+
+  const mk = (cls, text, title, disabled, fn) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `idx-tool ${cls}`;
+    b.textContent = text;
+    b.title = title;
+    b.disabled = !!disabled;
+    b.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
+    tools.append(b);
+    return b;
+  };
+
+  mk("show", "👁", "このプロファイルをページ上に表示する", g.domain === currentDomain, () => showProfile(g.domain));
+  mk("up", "↑", "上へ", at <= 0, () => moveProfile(g.domain, -1));
+  mk("down", "↓", "下へ", at < 0 || at >= order.length - 1, () => moveProfile(g.domain, 1));
+  mk("edit", "✎", "名前を変える", false, () => renameProfilePrompt(g));
+  mk("del", "✕", "このプロファイルを削除する", order.length <= 1, () => removeProfile(g));
+  return tools;
+}
+
+function buildAddProfileRow() {
+  const row = idxRow("idx-row idx-add");
+  const favi = document.createElement("div");
+  favi.className = "idx-favi add";
+  favi.textContent = "＋";
+  const body = document.createElement("div");
+  body.className = "idx-body";
+  const name = document.createElement("div");
+  name.className = "idx-name";
+  name.textContent = "プロファイルを追加";
+  const sub = document.createElement("div");
+  sub.className = "idx-sub";
+  sub.textContent = "仕事用・個人用などで使い分ける";
+  body.append(name, sub);
+  row.append(favi, body);
+  row.addEventListener("click", addProfilePrompt);
+  return row;
+}
+
+// ── プロファイル操作 ──────────────────────────────────────────────
+async function reloadProfiles() {
+  profiles = await getProfiles();
+  appSettings = await getSettings();
+  currentDomain = resolveActiveProfile(appSettings, profiles);
+}
+
+async function addProfilePrompt() {
+  const name = prompt(`新しいプロファイルの名前（${MAX_PROFILE_NAME} 文字まで）`, "");
+  if (name === null) return;
+  if (!name.trim()) { showToast("名前を入れてね"); return; }
+  const { key, created } = await createProfile(name);
+  await reloadProfiles();
+  activeDomain = key;
+  trashView = false;
+  render();
+  showToast(created ? `「${profileLabel(profiles, key)}」を作ったよ` : "同じ名前のプロファイルがもうあるよ");
+}
+
+async function renameProfilePrompt(g) {
+  const cur = profileLabel(profiles, g.domain);
+  const name = prompt(`プロファイルの名前（${MAX_PROFILE_NAME} 文字まで）`, cur);
+  if (name === null || !name.trim() || name.trim() === cur) return;
+  await renameProfile(g.domain, name);
+  await reloadProfiles();
+  render();
+  showToast("名前を変えたよ");
+}
+
+async function moveProfile(key, delta) {
+  const order = profileList(profiles).map((p) => p.key);
+  const at = order.indexOf(key);
+  const to = at + delta;
+  if (at < 0 || to < 0 || to >= order.length) return;
+  order.splice(to, 0, ...order.splice(at, 1));
+  await reorderProfiles(order);
+  await reloadProfiles();
+  renderIndex();
+}
+
+async function showProfile(key) {
+  await setActiveProfile(key);
+  await reloadProfiles();
+  renderIndex();
+  showToast(`「${profileLabel(profiles, key)}」をページ上に表示するよ`);
+}
+
+async function removeProfile(g) {
+  const label = profileLabel(profiles, g.domain);
+  const count = (allNotes[g.domain] || []).length;
+  const msg = count
+    ? `プロファイル「${label}」を削除します。\nこのプロファイルの付箋 ${count} 枚もいっしょに剥がします（ゴミ箱から復元できます）。\nよろしいですか？`
+    : `プロファイル「${label}」を削除します。よろしいですか？`;
+  if (!confirm(msg)) return;
+  const removed = await deleteProfile(g.domain);
+  if (removed === null) { showToast("最後のプロファイルは削除できないよ"); return; }
+  if (activeDomain === g.domain) activeDomain = null;
+  await reloadProfiles();
+  [allNotes, trashItems] = await Promise.all([getAllNotes(), getTrash()]);
+  render();
+  showToast(removed ? `「${label}」と付箋 ${removed} 枚を剥がしたよ` : `「${label}」を削除したよ`);
 }
 
 // 描画済みカードの再利用キャッシュ。keyOf(domain,id) -> { el, sig }。内容シグネチャが一致する
@@ -413,13 +572,15 @@ function renderBoard() {
   const openBtn = $("#openDomain");
   $("#backAll").hidden = !activeDomain; // 狭幅で索引が隠れても「すべて」に戻れる導線
   if (activeDomain) {
-    const label = decodeGroupName(activeDomain);
+    const label = profileLabel(profiles, activeDomain);
     const hue = hashHue(activeDomain);
     favi.textContent = (label[0] || "?").toUpperCase();
     favi.style.background = `linear-gradient(150deg, hsl(${hue} 62% 60%), hsl(${(hue + 26) % 360} 58% 48%))`;
     title.textContent = label;
     title.title = activeDomain;
-    openBtn.hidden = isGroupKey(activeDomain); // group: キーは https URL を持たないので「開く」を隠す
+    // 移行で作られたプロファイルはキーがホスト名なので、その 1 種類だけ「サイトを開く」を出す
+    // （group: キーは https URL を持たない）。プロファイル自体はどのサイトとも紐づかない。
+    openBtn.hidden = isGroupKey(activeDomain);
   } else {
     favi.textContent = "★";
     favi.style.background = "";
@@ -440,18 +601,21 @@ function renderBoard() {
     if (query) {
       $("#emptyTitle").textContent = "見つからなかったわ";
       // textContent は自動エスケープされるので query をそのまま渡してよい（innerHTML 不使用）
-      $("#emptySub").textContent = `「${query}」に合う付箋もサイトも無いみたい。`;
+      $("#emptySub").textContent = `「${query}」に合う付箋もプロファイルも無いみたい。`;
     } else if (totalAll === 0) {
       $("#emptyTitle").textContent = "まだ付箋はないみたい";
       // 改行は <br> 要素を DOM で組み立てる（innerHTML を使わず AMO の UNSAFE_VAR_ASSIGNMENT を回避）
       $("#emptySub").replaceChildren(
-        document.createTextNode("気になるページを開いて、端の「＋」から"),
+        document.createTextNode("好きなページを開いて、端の「＋」から"),
         document.createElement("br"),
         document.createTextNode("最初の一枚をぺたりと貼ってみて。")
       );
+    } else if (activeDomain) {
+      $("#emptyTitle").textContent = "このプロファイルには付箋がないわ";
+      $("#emptySub").textContent = "このプロファイルを表示中にして、ページの端の「＋」から貼ってみて。";
     } else {
-      $("#emptyTitle").textContent = "このサイトには付箋がないわ";
-      $("#emptySub").textContent = "左の索引から別のサイトを選んでね。";
+      $("#emptyTitle").textContent = "付箋が見つからないわ";
+      $("#emptySub").textContent = "左の索引からプロファイルを選んでね。";
     }
     return;
   }
@@ -560,7 +724,7 @@ function buildTrashCard(entry) {
   }
   const dom = document.createElement("span");
   dom.className = "memo-domain";
-  dom.textContent = decodeGroupName(domain);
+  dom.textContent = profileLabel(profiles, domain);
   dom.title = domain;
   foot.append(dom);
   const when = document.createElement("span");
@@ -674,7 +838,7 @@ function buildMemo(domain, note) {
   if (!activeDomain) {
     const dom = document.createElement("span");
     dom.className = "memo-domain";
-    dom.textContent = decodeGroupName(domain);
+    dom.textContent = profileLabel(profiles, domain);
     dom.title = domain;
     foot.append(dom);
   }
@@ -927,7 +1091,7 @@ function toggleEmojiPicker() {
 
 // ── 削除 / 一括 / 元に戻す ─────────────────────────────────────────
 async function reload() {
-  allNotes = await getAllNotes();
+  [allNotes, profiles] = await Promise.all([getAllNotes(), getProfiles()]);
   render();
 }
 
@@ -1095,9 +1259,11 @@ async function importNotes(e) {
       if (clean) pairs.push({ domain, note: clean });
     }
   }
-  if (!pairs.length) { showToast(skipped ? "取り込めるドメインが無かった（不正なドメイン名はスキップ）" : "取り込める付箋が無かったよ"); return; }
+  if (!pairs.length) { showToast(skipped ? "取り込めるプロファイルが無かった（不正なキーはスキップ）" : "取り込める付箋が無かったよ"); return; }
   expectEcho();
   await restoreNotes(pairs);
+  // 取り込んだキーを台帳へ登録する（台帳に無いと索引から辿れない＝付箋が見えなくなる）。
+  await registerProfiles([...new Set(pairs.map((p) => p.domain))]);
   await reload();
   showToast(`${pairs.length} 枚を取り込んだよ（重複はスキップ）`);
 }
@@ -1324,17 +1490,27 @@ async function onPairUnlink() {
   setPairNote("接続を解除しました。");
 }
 
-// 同期サイト一覧（scope=selected はチェックボックス、all は読み取り専用）。
+// 同期プロファイル一覧（scope=selected はチェックボックス、all は読み取り専用）。
+// 台帳に在るプロファイルは付箋 0 件でも出す（先に同期対象へ選んでおけるようにする）。
 function renderSyncDomains(report) {
   const box = $("#syncDomainList");
-  const local = Object.keys(allNotes).filter((d) => (allNotes[d] || []).length);
+  const local = [
+    ...new Set([
+      ...profileList(profiles).map((p) => p.key),
+      ...Object.keys(allNotes).filter((d) => (allNotes[d] || []).length),
+    ]),
+  ];
   // レポートにしか出ないドメイン（最後の付箋を消したが削除が保留＝cloud に残り他端末ではまだ見える）も
   // 行として出す。allNotes 基準だけだと delete_deferred のドメインが一覧から消え、削除が未伝播なことを
   // ユーザーが把握できない（Codex）。少なくとも delete_deferred は report-only でも表示する。
   const reportOnly = report
     ? (report.domains || []).filter((x) => x.reason === "delete_deferred" && !local.includes(x.domain)).map((x) => x.domain)
     : [];
-  const domains = [...new Set([...local, ...reportOnly])].sort();
+  // 表示順は台帳の並び（索引と同じ）。台帳に無いキーは末尾へ回す。
+  const rank = new Map(profileList(profiles).map((p, i) => [p.key, i]));
+  const domains = [...new Set([...local, ...reportOnly])].sort(
+    (a, b) => (rank.get(a) ?? 1e9) - (rank.get(b) ?? 1e9) || (a < b ? -1 : a > b ? 1 : 0)
+  );
   const statusOf = (d) => (report ? (report.domains || []).find((x) => x.domain === d) || null : null);
   box.replaceChildren(...domains.map((d) => {
     const row = document.createElement("label");
@@ -1353,7 +1529,7 @@ function renderSyncDomains(report) {
     }
     const name = document.createElement("span");
     name.className = "sp-dom-name";
-    name.textContent = decodeGroupName(d);
+    name.textContent = profileLabel(profiles, d);
     name.title = d;
     const count = document.createElement("span");
     count.className = "sp-dom-count";
@@ -1412,11 +1588,11 @@ function renderSyncReport(report) {
   } else if (skipped.length) {
     note.classList.add("warn");
     note.removeAttribute("title");
-    note.textContent = `${skipped.length} サイトが容量上限で未同期です（その付箋はこの端末にのみ残ります）。`;
+    note.textContent = `${skipped.length} 個のプロファイルが容量上限で未同期です（その付箋はこの端末にのみ残ります）。`;
   } else if (deferred.length) {
     note.classList.add("warn");
     note.removeAttribute("title");
-    note.textContent = `${deferred.length} サイトの削除が保留中です（容量に空きができ次第、他の端末へ自動で反映されます）。`;
+    note.textContent = `${deferred.length} 個のプロファイルの削除が保留中です（容量に空きができ次第、他の端末へ自動で反映されます）。`;
   } else {
     note.classList.remove("warn");
     note.removeAttribute("title");

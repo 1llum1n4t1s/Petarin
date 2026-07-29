@@ -56,8 +56,16 @@ class AppController extends ChangeNotifier {
   String? get pairingCode =>
       store.pairing == null ? null : exportPairingCode(store.pairing!);
 
+  /// プロファイル台帳（付箋の保存単位の一覧）。付箋 0 件のプロファイルもここに残る。
+  ProfileLedger get profiles => store.profiles;
+
+  /// いま見ているプロファイルキー（台帳に無ければ order[0]）。
+  String get activeProfile => store.activeProfile;
+
   Future<void> initialize() async {
     await store.initialize();
+    // 既存の「グループ」キーはそのまま台帳へ登録される＝データは動かない（キーの付け替えはしない）。
+    await store.ensureProfiles();
     iap.addListener(_onIapChanged);
     ads.addListener(_onAdsChanged);
     await iap.initialize();
@@ -69,18 +77,44 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> addNote({
-    required String groupName,
+    required String domain,
     required String text,
     required String color,
     String? icon,
   }) async {
-    await store.addNote(
-      domain: encodeGroupKey(groupName),
-      text: text,
-      color: color,
-      icon: icon,
-    );
+    await store.addNote(domain: domain, text: text, color: color, icon: icon);
     _changedLocally();
+  }
+
+  // ── プロファイル操作 ──────────────────────────────────────────────
+  /// 新規プロファイルを作る（同名が既にあればそのキーを返す）。返り値: プロファイルキー。
+  Future<String?> createProfile(String name) async {
+    final String? key = await store.createProfile(name);
+    if (key != null) _changedLocally();
+    return key;
+  }
+
+  /// 表示名だけを変える（キーは変えない＝付箋は動かない）。
+  Future<void> renameProfile(String key, String name) async {
+    await store.renameProfile(key, name);
+    _changedLocally();
+  }
+
+  /// プロファイルと、その付箋を削除する。返り値: 剥がした付箋の枚数（null=削除しなかった）。
+  Future<int?> deleteProfile(String key) async {
+    final int? removed = await store.deleteProfile(key);
+    if (removed != null) _changedLocally();
+    return removed;
+  }
+
+  Future<void> reorderProfiles(List<String> keys) async {
+    await store.reorderProfiles(keys);
+    _changedLocally();
+  }
+
+  Future<void> setActiveProfile(String key) async {
+    await store.setActiveProfile(key);
+    notifyListeners();
   }
 
   Future<void> updateNote(

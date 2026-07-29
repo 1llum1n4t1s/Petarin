@@ -11,15 +11,20 @@ const Color _danger = Color(0xffc8553d);
 class NoteEditor extends StatefulWidget {
   const NoteEditor({
     required this.controller,
-    required this.groupName,
-    this.domain,
+    required this.domain,
+    required this.profileName,
     this.note,
     super.key,
   });
 
   final AppController controller;
-  final String groupName;
-  final String? domain;
+
+  /// 保存先のプロファイルキー（petarin:notes のキー）。新規作成でも既に確定している
+  /// ＝表示名から作り直さないので、改名しても保存先がずれない。
+  final String domain;
+
+  /// 見出しに出す表示名（保存には使わない）。
+  final String profileName;
   final NoteModel? note;
 
   @override
@@ -98,7 +103,7 @@ class _NoteEditorState extends State<NoteEditor> {
                           ),
                         ),
                         Text(
-                          widget.groupName,
+                          widget.profileName,
                           style: const TextStyle(fontSize: 11, color: _inkSoft),
                         ),
                       ],
@@ -324,14 +329,14 @@ class _NoteEditorState extends State<NoteEditor> {
     setState(() => _saving = true);
     if (_isNew) {
       await widget.controller.addNote(
-        groupName: widget.groupName,
+        domain: widget.domain,
         text: text,
         color: _color,
         icon: _icon.isEmpty ? null : _icon,
       );
     } else {
       await widget.controller.updateNote(
-        widget.domain!,
+        widget.domain,
         widget.note!.id,
         text: text,
         color: _color,
@@ -362,7 +367,7 @@ class _NoteEditorState extends State<NoteEditor> {
     );
     if (confirmed != true) return;
     setState(() => _saving = true);
-    await widget.controller.deleteNote(widget.domain!, widget.note!.id);
+    await widget.controller.deleteNote(widget.domain, widget.note!.id);
     if (mounted) Navigator.pop(context);
   }
 

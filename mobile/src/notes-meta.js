@@ -30,9 +30,8 @@ export function pickIcon(usedIcons) {
 }
 
 // グループキーの符号化/デコードは拡張デスク(manage.js)と共有するため src/shared/groups.js に集約した。
-// ここはモバイル側の再エクスポート＋既定グループだけを持つ（実体は groups.js が単一の真実の源）。
+// ここはモバイル側の再エクスポートだけを持つ（実体は groups.js が単一の真実の源）。
+//
+// 旧「グループ」は全プラットフォーム共通の「プロファイル」へ名称統一した。既定プロファイルの名前とキーは
+// @shared/storage.js（DEFAULT_PROFILE_NAME / ensureProfiles）が持つので、ここの旧 DEFAULT_GROUP_* は廃止した。
 export { GROUP_PREFIX, isGroupKey, encodeGroupKey, decodeGroupName } from "../../src/shared/groups.js";
-import { encodeGroupKey } from "../../src/shared/groups.js";
-
-export const DEFAULT_GROUP_NAME = "マイメモ";
-export const DEFAULT_GROUP_KEY = encodeGroupKey(DEFAULT_GROUP_NAME);

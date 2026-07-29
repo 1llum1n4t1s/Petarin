@@ -1,6 +1,7 @@
 // ぺたりん モバイル（Capacitor）エントリ。
 // 拡張の同期エンジン（@shared）を chrome.storage シム（Capacitor Preferences 裏付け）の上で動かす。
-// 無課金でスタンドアローンに使える付箋アプリ: 作成/編集/削除/グループ/ゴミ箱はローカルで完結。
+// 無課金でスタンドアローンに使える付箋アプリ: 作成/編集/削除/プロファイル/ゴミ箱はローカルで完結。
+// 付箋の保存単位は拡張・デスクトップと共通の「プロファイル」（旧称: グループ）。台帳は @shared/storage.js。
 // IAP（買い切り¥500）は「クラウド同期」モードだけのゲート（同期 OFF=外部送信ゼロ）。
 
 import { createChromeStorageShim } from "./storage-shim.js";
@@ -17,6 +18,8 @@ import {
   makeId, colorOf, COLORS, MAX_CHARS,
   restoreNotes, updateNote, deleteNote,
   getTrash, restoreFromTrash, purgeFromTrash, emptyTrash,
+  ensureProfiles, getProfiles, profileList, profileLabel, createProfile,
+  renameProfile, deleteProfile, reorderProfiles, MAX_PROFILE_NAME,
 } from "@shared/storage.js";
 import { DEFAULT_RELAY_URL } from "@shared/relay-transport.js";
 import { generateVault, importVault, exportPairingCode, parsePairingCode } from "@shared/vault.js";
@@ -25,7 +28,7 @@ import { initIap, isUnlocked, purchase } from "./iap.js";
 import { App } from "@capacitor/app";
 import qrcode from "qrcode-generator";
 import jsQR from "jsqr";
-import { ICONS, pickIcon, clamp, encodeGroupKey, decodeGroupName, isGroupKey, DEFAULT_GROUP_NAME, DEFAULT_GROUP_KEY } from "./notes-meta.js";
+import { ICONS, pickIcon, clamp, decodeGroupName } from "./notes-meta.js";
 
 const $ = (s) => document.querySelector(s);
 const PetaMD = globalThis.PetaMD;
@@ -37,6 +40,8 @@ let composing = false;    // IME 変換中ガード
 
 async function boot() {
   await initIap();
+  // プロファイル台帳の用意（既存の「グループ」キーはそのまま台帳へ登録される＝データは動かない）。
+  await ensureProfiles();
   attachStorageListener();
   // 同期 OFF（無課金既定）では reconcile が即 return＝この経由の再描画は来ない。よって全 CRUD は末尾で
   // 自分で renderNotes() する。setOnChange は cloud ON 時の他端末反映の付録（編集中は一覧だけ差し替え）。
@@ -62,6 +67,11 @@ async function boot() {
   $("#addBtn").addEventListener("click", openGroupPick);
   $("#trashBtn").addEventListener("click", toggleTrash);
   $("#groupClose").addEventListener("click", () => ($("#groupPickPanel").hidden = true));
+
+  // プロファイル管理（作成先ピッカーとは別パネル）
+  $("#profilesBtn").addEventListener("click", openProfiles);
+  $("#profilesClose").addEventListener("click", () => ($("#profilesPanel").hidden = true));
+  $("#profileAdd").addEventListener("click", onProfileAdd);
   $("#edClose").addEventListener("click", closeEditor);
   $("#edSave").addEventListener("click", saveEditor);
   $("#edDelete").addEventListener("click", deleteCurrent);
@@ -87,8 +97,12 @@ function paintCard(card, color) {
 
 async function renderNotes() {
   if (activeView === "trash") return renderTrash();
-  const all = await getAllNotes();
-  const groups = Object.keys(all).filter((k) => (all[k] || []).length).sort();
+  const [all, led] = await Promise.all([getAllNotes(), getProfiles()]);
+  // 並びは台帳の表示順（拡張・デスクトップと同じ）。台帳に無いキーの付箋も末尾に出して隠さない。
+  const listed = profileList(led).map((p) => p.key);
+  const known = new Set(listed);
+  const groups = [...listed, ...Object.keys(all).filter((k) => !known.has(k)).sort()]
+    .filter((k) => (all[k] || []).length);
   const root = $("#notes");
   if (!groups.length) {
     root.replaceChildren(
@@ -99,7 +113,7 @@ async function renderNotes() {
   root.replaceChildren(
     ...groups.map((key) => {
       const sec = el("section", "dom");
-      sec.append(el("h2", "dom-name", decodeGroupName(key)));
+      sec.append(el("h2", "dom-name", profileLabel(led, key)));
       for (const n of all[key]) {
         const card = el("article", "card");
         paintCard(card, n.color);
@@ -116,30 +130,96 @@ async function renderNotes() {
 }
 
 // ── 付箋 CRUD ───────────────────────────────────────────────────
-// 新規作成の宛先グループを選ぶ。既存グループ（group: のみ・ホスト名キーは除外）＋「新しいグループ」。
+// ── プロファイル管理（改名・並べ替え・削除）─────────────────────────
+// 拡張・デスクトップの付箋デスクと同じ操作をモバイル単体でも完結させる（同期していない端末でも
+// 名前を直したり不要な束を畳んだりできるようにするため）。
+async function openProfiles() {
+  await renderProfiles();
+  $("#profilesPanel").hidden = false;
+}
+
+async function renderProfiles() {
+  const [led, all] = await Promise.all([getProfiles(), getAllNotes()]);
+  const list = profileList(led);
+  const box = $("#profileList");
+  box.replaceChildren(
+    ...list.map((p, i) => {
+      const row = el("div", "prof-row");
+      const name = el("div", "prof-name", p.label);
+      const count = el("span", "prof-count", `${(all[p.key] || []).length}枚`);
+      const tool = (text, label, disabled, fn) => {
+        const b = el("button", "prof-tool" + (label === "削除" ? " del" : ""), text);
+        b.type = "button";
+        b.setAttribute("aria-label", `${p.label} を${label}`);
+        b.disabled = disabled;
+        if (!disabled) b.addEventListener("click", fn);
+        return b;
+      };
+      row.append(
+        name,
+        count,
+        tool("↑", "上へ移動", i === 0, () => moveProfile(list, i, -1)),
+        tool("↓", "下へ移動", i === list.length - 1, () => moveProfile(list, i, 1)),
+        tool("✎", "改名", false, () => onProfileRename(p)),
+        // 最後の 1 件は消せない（付箋の置き場が無くなる）。storage 側でも同じガードがある。
+        tool("✕", "削除", list.length <= 1, () => onProfileDelete(p, (all[p.key] || []).length)),
+      );
+      return row;
+    }),
+  );
+}
+
+async function onProfileAdd() {
+  const name = (window.prompt(`新しいプロファイル名（${MAX_PROFILE_NAME} 文字まで）`, "") || "").trim();
+  if (!name) return;
+  try { await createProfile(name); } catch { return; }
+  await renderProfiles();
+  await renderNotes();
+}
+
+async function onProfileRename(p) {
+  const name = (window.prompt(`プロファイル名（${MAX_PROFILE_NAME} 文字まで）`, p.label) || "").trim();
+  if (!name || name === p.label) return;
+  await renameProfile(p.key, name);
+  await renderProfiles();
+  await renderNotes();
+}
+
+async function onProfileDelete(p, count) {
+  const msg = count
+    ? `プロファイル「${p.label}」を削除します。\nこの付箋 ${count} 枚もゴミ箱へ移ります。\nよろしいですか？`
+    : `プロファイル「${p.label}」を削除します。よろしいですか？`;
+  if (!window.confirm(msg)) return;
+  await deleteProfile(p.key);
+  await renderProfiles();
+  await renderNotes();
+}
+
+async function moveProfile(list, from, delta) {
+  const order = list.map((p) => p.key);
+  order.splice(from + delta, 0, ...order.splice(from, 1));
+  await reorderProfiles(order);
+  await renderProfiles();
+  await renderNotes();
+}
+
+// 新規作成の宛先プロファイルを選ぶ。台帳の全プロファイル（付箋 0 件でも出す）＋「新しいプロファイル」。
 async function openGroupPick() {
-  const all = await getAllNotes();
-  const keys = Object.keys(all).filter((k) => isGroupKey(k) && (all[k] || []).length).sort();
+  const led = await getProfiles();
   const box = $("#groupList");
-  const items = [];
-  if (!keys.length) {
-    const d = el("button", "btn group-item", DEFAULT_GROUP_NAME);
-    d.addEventListener("click", () => { $("#groupPickPanel").hidden = true; openEditor(DEFAULT_GROUP_KEY, null); });
-    items.push(d);
-  }
-  for (const k of keys) {
-    const b = el("button", "btn group-item", decodeGroupName(k));
-    b.addEventListener("click", () => { $("#groupPickPanel").hidden = true; openEditor(k, null); });
-    items.push(b);
-  }
-  const nb = el("button", "btn primary", "＋ 新しいグループ");
-  nb.addEventListener("click", () => {
-    const name = (window.prompt("グループ名", "") || "").trim();
+  const items = profileList(led).map((p) => {
+    const b = el("button", "btn group-item", p.label);
+    b.addEventListener("click", () => { $("#groupPickPanel").hidden = true; openEditor(p.key, null); });
+    return b;
+  });
+  const nb = el("button", "btn primary", "＋ 新しいプロファイル");
+  nb.addEventListener("click", async () => {
+    const name = (window.prompt(`プロファイル名（${MAX_PROFILE_NAME} 文字まで）`, "") || "").trim();
     if (!name) return;
-    let key;
-    try { key = encodeGroupKey(name); } catch { return; }
+    let created;
+    try { created = await createProfile(name); } catch { return; }
     $("#groupPickPanel").hidden = true;
-    openEditor(key, null);
+    openEditor(created.key, null);
   });
   items.push(nb);
   box.replaceChildren(...items);

@@ -6,7 +6,7 @@ Android は当面 [`../mobile/`](../mobile/) の Capacitor 実装を継続する
 
 ## 構成
 
-- `lib/core/models.dart` — 付箋・ゴミ箱・グループキーと検証
+- `lib/core/models.dart` — 付箋・ゴミ箱・プロファイル台帳（キーと検証）
 - `lib/core/storage.dart` — SharedPreferences を使うローカル保存と削除墓石
 - `lib/core/vault.dart` — JS/WebCrypto 版と互換の P-256 / AES-GCM / HMAC / HKDF
 - `lib/core/relay_transport.dart` — Cloudflare relay の署名付き暗号化 transport

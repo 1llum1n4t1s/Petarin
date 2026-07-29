@@ -1,0 +1,331 @@
+# release-local.ps1 — ぺたりん デスクトップ版のローカル署名付き Velopack リリース
+#
+# Kiriha の scripts/release-local.ps1 を Tauri 向けに移植したもの。配布・更新方式を
+# 屋号内で 1 本に保つため、インストーラーは Tauri 内蔵 NSIS ではなく Velopack を使う
+# （署名フロー・R2 配信・自動更新 UX・/vava 連携をすべて既存資産のまま流用できる）。
+#
+# SimplySign (Certum クラウド署名) は Desktop 接続 + スマホトークンが必要で
+# GitHub Actions からは署名できないため、リリースは本スクリプトでローカル実行する。
+#
+# 前提:
+#   - SimplySign Desktop が接続済み (証明書が CurrentUser\My に見えていること)
+#   - desktop/src-tauri/tauri.conf.json の version がリリースしたい値になっていること (/vava 済み)
+#   - C:\Users\IMT\dev\Secret\secrets.json に cloudflare.api_token があること
+#   - R2 バケット petarin-updates が custom domain petarin.kagayoi.com で公開済みであること
+#
+# 使い方:
+#   pwsh desktop/scripts/release-local.ps1              # フルリリース (build + sign + upload + cleanup)
+#   pwsh desktop/scripts/release-local.ps1 -SkipUpload  # ビルド + 署名のみ (アップロードしない動作確認用)
+
+[CmdletBinding()]
+param(
+    [switch]$SkipUpload,
+    # win-arm64 を足すときは rustup target add aarch64-pc-windows-msvc したうえでここに追加する。
+    [string[]]$Runtimes = @('win-x64')
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$Bucket = 'petarin-updates'
+$BaseUrl = 'https://petarin.kagayoi.com'
+$ZoneName = 'kagayoi.com'
+$AccountId = '10901bfadbf1005164774a7350082985'
+$SecretsPath = 'C:\Users\IMT\dev\Secret\secrets.json'
+$CertSubjectName = 'Open Source Developer Yuichiro Shinozaki'
+$SignParams = "/n `"$CertSubjectName`" /fd SHA256 /td SHA256 /tr http://time.certum.pl"
+$WranglerVersion = '4.110.0'
+$ExeName = 'petarin-desktop.exe'   # Cargo package name 由来 (src-tauri/Cargo.toml)
+$RuntimeMatrix = @{
+    'win-x64'   = @{ RustTarget = 'x86_64-pc-windows-msvc';  Channel = 'win' }
+    'win-arm64' = @{ RustTarget = 'aarch64-pc-windows-msvc'; Channel = 'win-arm64' }
+}
+
+# このスクリプトは desktop/scripts/ にあるので、リポジトリルートは 2 つ上。
+$DesktopDir = Split-Path -Parent $PSScriptRoot
+$RepoRoot = Split-Path -Parent $DesktopDir
+Set-Location $RepoRoot
+$WorkDir = Join-Path $DesktopDir 'local-release'
+$ArtifactsDir = Join-Path $WorkDir 'artifacts'
+
+function Invoke-Native {
+    param([string]$Description, [scriptblock]$Block)
+    & $Block
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Description が失敗しました (exit $LASTEXITCODE)"
+    }
+}
+
+function Remove-WorkDirectory {
+    if (-not (Test-Path $WorkDir)) { return }
+    $resolved = (Resolve-Path $WorkDir).Path
+    if (-not $resolved.StartsWith($DesktopDir + [IO.Path]::DirectorySeparatorChar)) {
+        throw "作業ディレクトリが desktop/ の外です: $resolved"
+    }
+    Remove-Item -LiteralPath $resolved -Recurse -Force
+}
+
+Write-Host '== プリフライト ==' -ForegroundColor Cyan
+
+# rustup のインストーラは対話シェルの PATH にしか cargo を通さないため、
+# 非対話実行 (タスクスケジューラ・/vava 経由など) では `cargo metadata ... program not found` で
+# tauri build が即死する。ここで標準の設置先を補完しておく。
+$cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+if ((Test-Path (Join-Path $cargoBin 'cargo.exe')) -and $env:PATH -notlike "*$cargoBin*") {
+    $env:PATH = "$cargoBin;$env:PATH"
+}
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    throw 'cargo が見つかりません。rustup で Rust ツールチェインを入れてください。'
+}
+
+# バージョンの正本は tauri.conf.json。Cargo.toml がずれていると exe の
+# ファイルバージョンだけ旧値になり、更新後の表示が食い違うので突き合わせる。
+$tauriConfPath = Join-Path $DesktopDir 'src-tauri/tauri.conf.json'
+$version = (Get-Content $tauriConfPath -Raw | ConvertFrom-Json).version
+if (-not $version) { throw 'tauri.conf.json から version を取得できませんでした' }
+$cargoVersion = (Select-String -Path (Join-Path $DesktopDir 'src-tauri/Cargo.toml') -Pattern '^version\s*=\s*"([^"]+)"' |
+    Select-Object -First 1).Matches[0].Groups[1].Value
+if ($cargoVersion -ne $version) {
+    throw "バージョン不一致: tauri.conf.json=$version / Cargo.toml=$cargoVersion（/vava で両方を揃えてください）"
+}
+Write-Host "バージョン: $version"
+
+$cert = Get-ChildItem Cert:\CurrentUser\My |
+    Where-Object { $_.Subject -like "CN=$CertSubjectName*" -and $_.NotAfter -gt (Get-Date) }
+if (-not $cert) {
+    throw '署名証明書が見つかりません。SimplySign Desktop へログインしてください。'
+}
+Write-Host "署名証明書: $($cert.Subject) (期限 $($cert.NotAfter.ToString('yyyy-MM-dd')))"
+
+# Velopack (vpk) は常に最新安定版を使う: NuGet から実行時に最新を解決して pin する
+$VpkVersion = (Invoke-RestMethod 'https://api.nuget.org/v3-flatcontainer/vpk/index.json' -TimeoutSec 30).versions |
+    Where-Object { $_ -notmatch '-' } | Select-Object -Last 1
+if (-not $VpkVersion) { throw 'vpk の最新安定版バージョンの取得に失敗しました (NuGet API)' }
+$vpkInstalled = (dotnet tool list --global | Select-String -SimpleMatch 'vpk') -match [regex]::Escape($VpkVersion)
+if (-not $vpkInstalled) {
+    dotnet tool uninstall --global vpk 2>$null | Out-Null
+    Invoke-Native 'vpk のインストール' { dotnet tool install --global vpk --version $VpkVersion }
+}
+Write-Host "vpk: $VpkVersion"
+
+# Cloudflare トークン (アップロード時のみ必要)
+# zone 解決もここで行う: R2 アップロード後の途中失敗 (新ファイルだけ R2 に乗ってパージ・
+# クリーンアップが走らない半端なリリース) を避け、何もアップロードしていない時点で fail fast する
+if (-not $SkipUpload) {
+    $secrets = Get-Content $SecretsPath -Raw | ConvertFrom-Json
+    if (-not $secrets.cloudflare.api_token) { throw "secrets.json に cloudflare.api_token が見つかりません" }
+    $env:CLOUDFLARE_API_TOKEN = $secrets.cloudflare.api_token
+    $env:CLOUDFLARE_ACCOUNT_ID = $AccountId
+
+    $cfHeaders = @{ Authorization = "Bearer $($env:CLOUDFLARE_API_TOKEN)" }
+    $zoneResp = Invoke-RestMethod -Uri "https://api.cloudflare.com/client/v4/zones?name=$ZoneName" -Headers $cfHeaders -TimeoutSec 30
+    if (-not $zoneResp.success -or @($zoneResp.result).Count -eq 0) { throw "Cloudflare zone '$ZoneName' の取得に失敗しました (トークンの zone:read 権限を確認してください)" }
+    $zoneId = $zoneResp.result[0].id
+    Write-Host "Cloudflare zone: $ZoneName ($zoneId)"
+}
+
+Remove-WorkDirectory
+New-Item -ItemType Directory -Path $ArtifactsDir -Force | Out-Null
+
+foreach ($runtime in $Runtimes) {
+    $config = $RuntimeMatrix[$runtime]
+    if (-not $config) { throw "未対応の Runtime です: $runtime" }
+    $publishDir = Join-Path $WorkDir "publish-$runtime"
+    New-Item -ItemType Directory -Path $publishDir -Force | Out-Null
+
+    Write-Host "== build: $runtime ==" -ForegroundColor Cyan
+    # --no-bundle: Tauri 内蔵の NSIS/MSI は作らない。配布は Velopack に一本化する。
+    Invoke-Native "tauri build ($runtime)" {
+        pnpm -C desktop exec tauri build --no-bundle --target $config.RustTarget
+    }
+
+    # Tauri の出力先は target/<rust-target>/release。deps/ や .pdb を含むので
+    # Velopack へは exe だけを別ディレクトリへ集めて渡す（packDir の中身がそのまま配布物になる）。
+    $builtExe = Join-Path $DesktopDir "src-tauri/target/$($config.RustTarget)/release/$ExeName"
+    if (-not (Test-Path $builtExe)) { throw "ビルド成果物が見つかりません: $builtExe" }
+    Copy-Item $builtExe (Join-Path $publishDir $ExeName)
+
+    Write-Host "== vpk pack + 署名: $runtime ==" -ForegroundColor Cyan
+    Invoke-Native "vpk pack ($runtime)" {
+        vpk pack `
+            --packId Petarin `
+            --packVersion $version `
+            --packTitle 'ぺたりん' `
+            --packAuthors 'Kagayoi' `
+            --mainExe $ExeName `
+            --icon (Join-Path $DesktopDir 'src-tauri/icons/icon.ico') `
+            --packDir $publishDir `
+            --outputDir $ArtifactsDir `
+            --channel $config.Channel `
+            --shortcuts 'StartMenuRoot,Desktop' `
+            --signParams $SignParams
+    }
+}
+
+Write-Host '== 署名検証 ==' -ForegroundColor Cyan
+foreach ($exe in Get-ChildItem $ArtifactsDir -Filter '*.exe') {
+    $signature = Get-AuthenticodeSignature $exe.FullName
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike "CN=$CertSubjectName*") {
+        throw "署名検証に失敗しました: $($exe.Name) ($($signature.Status))"
+    }
+    Write-Host "  ✅ $($exe.Name)"
+}
+
+if ($SkipUpload) {
+    Write-Host "`n✅ -SkipUpload 指定のためここで終了。成果物: $ArtifactsDir" -ForegroundColor Green
+    Get-ChildItem $ArtifactsDir | Format-Table Name, @{n='Size(MB)'; e={[math]::Round($_.Length/1MB,1)}}
+    return
+}
+
+Write-Host '== R2 アップロード ==' -ForegroundColor Cyan
+# releases.*.json を最後に置く: 先に本体、最後にマニフェスト。逆順だと
+# マニフェストだけ新しくなった一瞬に更新チェックが走り、存在しない nupkg を掴む。
+$files = Get-ChildItem $ArtifactsDir -File
+$orderedFiles = @($files | Where-Object { $_.Name -notlike 'releases.*.json' }) +
+    @($files | Where-Object { $_.Name -like 'releases.*.json' })
+foreach ($file in $orderedFiles) {
+    Write-Host "  ↑ $($file.Name)"
+    Invoke-Native "R2 put ($($file.Name))" {
+        pnpm dlx "wrangler@$WranglerVersion" r2 object put "$Bucket/$($file.Name)" `
+            --file $file.FullName --remote
+    }
+}
+Write-Host "✅ R2 アップロード完了: $($orderedFiles.Count) ファイル"
+
+# ---- Cloudflare エッジキャッシュのパージ ----
+# 固定名ファイル (Setup.exe / Portable.zip / RELEASES* / releases.*.json) は毎リリースで
+# 中身が変わるのに URL が不変。パージしないと新規ダウンロード・自動更新が旧版を掴む。
+# バージョン付き nupkg は URL が一意なのでパージ不要。
+# アップロードは成功済みなので、パージ失敗はリリースを止めず warning-and-continue にする。
+Write-Host '== Cloudflare キャッシュパージ ==' -ForegroundColor Cyan
+$purgeUrls = @($orderedFiles | Where-Object { $_.Name -notlike '*.nupkg' } | ForEach-Object { "$BaseUrl/$($_.Name)" })
+if ($purgeUrls.Count -gt 0) {
+    try {
+        # purge_cache は 1 リクエストあたり最大 30 URL までのため分割送信する
+        for ($i = 0; $i -lt $purgeUrls.Count; $i += 30) {
+            $batch = $purgeUrls[$i..[Math]::Min($i + 29, $purgeUrls.Count - 1)]
+            $purgeBody = ConvertTo-Json -InputObject @{ files = $batch } -Compress
+            $purgeResp = Invoke-RestMethod -Method Post -Uri "https://api.cloudflare.com/client/v4/zones/$zoneId/purge_cache" `
+                -Headers $cfHeaders -ContentType 'application/json' -Body $purgeBody -TimeoutSec 30
+            if (-not $purgeResp.success) { throw "Cloudflare キャッシュパージに失敗しました: $($purgeResp.errors | ConvertTo-Json -Compress)" }
+        }
+        Write-Host "  ✅ パージ: $($purgeUrls.Count) URL"
+    } catch {
+        Write-Warning "  キャッシュパージに失敗（アップロード済みリリースには影響なし、max-age 経過で自然反映）— $($_.Exception.Message)"
+    }
+} else {
+    Write-Host '  パージ対象なし'
+}
+
+Write-Host '== 配信確認 ==' -ForegroundColor Cyan
+$verifyDir = Join-Path $WorkDir 'remote-verification'
+New-Item -ItemType Directory -Path $verifyDir -Force | Out-Null
+foreach ($runtime in $Runtimes) {
+    $channel = $RuntimeMatrix[$runtime].Channel
+    $manifestName = "releases.$channel.json"
+    $localManifest = Join-Path $ArtifactsDir $manifestName
+    if (-not (Test-Path $localManifest)) { throw "$manifestName が生成されませんでした" }
+    $remoteManifest = Join-Path $verifyDir $manifestName
+    $response = Invoke-WebRequest -Uri "$BaseUrl/$manifestName`?verify=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" `
+        -Headers @{ 'Cache-Control' = 'no-cache' } -OutFile $remoteManifest -PassThru -TimeoutSec 30
+    if ($response.StatusCode -ne 200) { throw "$manifestName の配信確認に失敗しました" }
+    if ((Get-FileHash $localManifest -Algorithm SHA256).Hash -ne (Get-FileHash $remoteManifest -Algorithm SHA256).Hash) {
+        throw "$manifestName の配信内容がローカル成果物と一致しません"
+    }
+
+    $manifest = Get-Content $remoteManifest -Raw | ConvertFrom-Json
+    foreach ($asset in $manifest.Assets) {
+        if ($asset.Version -ne $version) { throw "$manifestName のバージョンが不正です: $($asset.Version)" }
+        $remoteAsset = Join-Path $verifyDir $asset.FileName
+        Invoke-WebRequest -Uri "$BaseUrl/$($asset.FileName)" -OutFile $remoteAsset -TimeoutSec 180
+        if ((Get-Item $remoteAsset).Length -ne [long]$asset.Size) { throw "$($asset.FileName) のサイズが一致しません" }
+        if ((Get-FileHash $remoteAsset -Algorithm SHA256).Hash -ne $asset.SHA256) { throw "$($asset.FileName) の SHA256 が一致しません" }
+    }
+    Write-Host "  ✅ ${manifestName}: version/hash/size"
+}
+
+foreach ($setup in Get-ChildItem $ArtifactsDir -Filter '*-Setup.exe') {
+    $remoteSetup = Join-Path $verifyDir $setup.Name
+    Invoke-WebRequest -Uri "$BaseUrl/$($setup.Name)" -OutFile $remoteSetup -TimeoutSec 180
+    if ((Get-FileHash $setup.FullName -Algorithm SHA256).Hash -ne (Get-FileHash $remoteSetup -Algorithm SHA256).Hash) {
+        throw "$($setup.Name) の配信内容がローカル成果物と一致しません"
+    }
+    $remoteSignature = Get-AuthenticodeSignature $remoteSetup
+    if ($remoteSignature.Status -ne 'Valid' -or $remoteSignature.SignerCertificate.Subject -notlike "CN=$CertSubjectName*") {
+        throw "$($setup.Name) の配信後署名検証に失敗しました"
+    }
+    Write-Host "  ✅ $($setup.Name): SHA256/署名"
+}
+
+# ---- 旧バージョン成果物のクリーンアップ (直近 2 世代を保持) ----
+# ローカル artifacts の manifest (= 今アップロードしたものと同一) から keep set を作り、
+# R2 上の「バージョン文字列を含み、かつ manifest 外」だけを削除する。固定ファイル名
+# (Setup.exe / releases.*.json 等) はバージョン文字列を含まないので対象外＝安全。
+Write-Host '== 旧成果物クリーンアップ ==' -ForegroundColor Cyan
+$keep = @{}
+$manifests = Get-ChildItem $ArtifactsDir -Filter 'releases.*.json'
+if (-not $manifests) { throw 'artifacts に releases.*.json が見つかりません' }
+foreach ($m in $manifests) {
+    foreach ($asset in (Get-Content $m.FullName -Raw | ConvertFrom-Json).Assets) {
+        if ($asset.FileName) { $keep[$asset.FileName] = $true }
+    }
+}
+
+$api = "https://api.cloudflare.com/client/v4/accounts/$AccountId/r2/buckets/$Bucket"
+$headers = @{ Authorization = "Bearer $($env:CLOUDFLARE_API_TOKEN)" }
+
+$allKeys = [System.Collections.Generic.List[string]]::new()
+$cursor = ''
+while ($true) {
+    $uri = "$api/objects?per_page=1000" + $(if ($cursor) { "&cursor=$cursor" })
+    $resp = Invoke-RestMethod -Uri $uri -Headers $headers -TimeoutSec 30
+    foreach ($obj in $resp.result) { $allKeys.Add($obj.key) }
+    # 全件 1 ページに収まると result_info が省略される (StrictMode 下では直接参照が throw)
+    $info = $resp.PSObject.Properties['result_info']
+    if (-not $info -or -not $info.Value) { break }
+    $truncated = $info.Value.PSObject.Properties['is_truncated']
+    if (-not $truncated -or -not $truncated.Value) { break }
+    $cursorProp = $info.Value.PSObject.Properties['cursor']
+    $cursor = if ($cursorProp) { $cursorProp.Value } else { '' }
+    if (-not $cursor) { break }
+}
+
+$KeepVersionCount = 2
+$versionPattern = '(\d+\.\d+\.\d+)'
+$allVersions = @(
+    $allKeys | ForEach-Object {
+        $m = [regex]::Match($_, $versionPattern)
+        if ($m.Success) { $m.Groups[1].Value }
+    } | Sort-Object -Property { [version]$_ } -Unique
+)
+$keepVersions = @($allVersions | Select-Object -Last $KeepVersionCount)
+Write-Host "  保持バージョン: $($keepVersions -join ', ') (全 $($allVersions.Count) 世代)"
+
+$toDelete = $allKeys | Where-Object {
+    # manifest が参照するファイルは絶対保持 (消すと自動更新が壊れる)
+    if ($keep.ContainsKey($_)) { return $false }
+    $m = [regex]::Match($_, $versionPattern)
+    if (-not $m.Success) { return $false }
+    return $keepVersions -notcontains $m.Groups[1].Value
+}
+if (-not $toDelete) {
+    Write-Host '  ✅ 削除対象なし'
+} else {
+    $deleted = 0; $failed = 0
+    foreach ($key in $toDelete) {
+        $encoded = [uri]::EscapeDataString($key)
+        try {
+            Invoke-RestMethod -Method Delete -Uri "$api/objects/$encoded" -Headers $headers -TimeoutSec 30 | Out-Null
+            Write-Host "  🗑️  $key"
+            $deleted++
+        } catch {
+            Write-Warning "  削除失敗: $key — $($_.Exception.Message)"
+            $failed++
+        }
+    }
+    Write-Host "  🧹 クリーンアップ: $deleted 削除 / $failed 失敗"
+    # 全件失敗は token 権限等の異常なので fail (一部失敗は次回リリースで再試行される)
+    if ($failed -gt 0 -and $deleted -eq 0) { throw '旧成果物の削除がすべて失敗しました。API token の権限を確認してください。' }
+}
+
+Write-Host "`n🎉 リリース完了: v$version → $BaseUrl" -ForegroundColor Green

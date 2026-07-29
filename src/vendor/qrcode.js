@@ -2295,3 +2295,9 @@ var qrcode = function() {
 }(function () {
     return qrcode;
 }));
+
+// 拡張は <script> で読むので `var qrcode` がそのまま window に載るが、デスクトップ版は
+// バンドラ経由の ES モジュールとして読み込むため var がモジュールスコープに閉じ、
+// manage.js の `window.qrcode` 判定が false になって QR だけ出なくなる。
+// 明示的に globalThis へ載せて両方の読み込み方で同じ結果にする（拡張側では同値の再代入＝無害）。
+if (typeof globalThis !== "undefined") globalThis.qrcode = qrcode;

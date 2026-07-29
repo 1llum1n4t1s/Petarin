@@ -1,9 +1,16 @@
-// ぺたりん ポップアップ — このドメインの簡易設定（貼る端・半透明・表示・書体・サイズ・行番号）。
-// 付箋の一覧・検索・編集・管理は「付箋デスク」(options ページ)で一元化する。
+// ぺたりん ポップアップ — 表示するプロファイルの切替と簡易設定（貼る端・半透明・表示・書体・サイズ・行番号）。
+// プロファイルの作成/改名/削除、付箋の一覧・検索・編集は「付箋デスク」(options ページ)で一元化する。
 import {
   getAllNotes,
   getSettings,
   saveSettings,
+  getProfiles,
+  ensureProfiles,
+  profileList,
+  resolveActiveProfile,
+  setActiveProfile,
+  needsProfilesNotice,
+  dismissProfilesNotice,
   SIDES,
   FONTS,
   FONT_SIZES,
@@ -15,6 +22,7 @@ import {
 const $ = (sel) => document.querySelector(sel);
 
 let settings = null;
+let profiles = null; // プロファイル台帳（切替セレクトの元データ）
 
 // 半透明の濃さ（スライダー range 0.1〜0.9）。同期由来の範囲外値も読み取り/保存の両方でクランプし、
 // 表示と保存値を仕様内に揃える。非数値は既定 0.45。
@@ -30,33 +38,64 @@ const normalizeFontSize = (v) => (FONT_SIZES.includes(Number(v)) ? Number(v) : D
 
 // ── 起動 ────────────────────────────────────────────────────────────
 async function init() {
+  // 台帳が無い端末（インストール直後）でも切替セレクトが空にならないよう、ここでも移行を確実に走らせる。
+  profiles = await ensureProfiles();
   settings = await getSettings();
 
+  renderProfilePicker();
   renderSidePicker();
   populateFontControls();
   syncToggles();
   bindEvents();
   updateCounts();
+  // 既存ユーザーの端末で 1 回だけ、保存単位が変わったことを知らせる（新規ユーザーには出ない）。
+  $("#migrateNotice").hidden = !(await needsProfilesNotice());
 
   // popup 表示中に設定や付箋がページ側で変わっても追従
   chrome.storage.onChanged.addListener(async (changes, area) => {
     if (area !== "local") return;
     if (changes["petarin:notes"]) updateCounts();
+    if (changes["petarin:profiles"]) {
+      profiles = await getProfiles();
+      renderProfilePicker();
+      updateCounts();
+    }
     if (changes["petarin:settings"]) {
       settings = await getSettings();
+      renderProfilePicker();
       renderSidePicker();
       populateFontControls();
       syncToggles();
+      updateCounts();
     }
   });
 }
 
-// 保存中の付箋の合計枚数だけをヘッダのバッジ／フッターに出す（一覧は付箋デスクで管理）。
+// 表示するプロファイルの切替。作成/改名/削除は付箋デスク側（ここは「選ぶ」だけに絞る）。
+function renderProfilePicker() {
+  const sel = $("#profileSelect");
+  const list = profileList(profiles);
+  sel.replaceChildren(
+    ...list.map((p) => {
+      const o = document.createElement("option");
+      o.value = p.key;
+      o.textContent = p.label;
+      return o;
+    })
+  );
+  sel.value = resolveActiveProfile(settings, profiles);
+  $("#profileHint").textContent =
+    list.length > 1 ? "選んだプロファイルの付箋が、どのサイトでも表示されます。" : "付箋デスクで、用途ごとのプロファイルを増やせます。";
+}
+
+// 付箋の枚数（選択中プロファイル／全体）をヘッダのバッジとフッターに出す（一覧は付箋デスクで管理）。
 async function updateCounts() {
   const all = await getAllNotes();
   const total = Object.values(all).reduce((s, arr) => s + arr.length, 0);
-  $("#totalBadge").textContent = String(total);
-  $("#footCount").textContent = `${total} 枚の付箋`;
+  const active = resolveActiveProfile(settings, profiles);
+  const mine = (all[active] || []).length;
+  $("#totalBadge").textContent = String(mine);
+  $("#footCount").textContent = mine === total ? `${total} 枚の付箋` : `このプロファイル ${mine} 枚 / 全体 ${total} 枚`;
 }
 
 // ── 配置セレクター ───────────────────────────────────────────────────
@@ -120,6 +159,18 @@ function updateFontSample() {
 }
 
 function bindEvents() {
+  $("#noticeOk").addEventListener("click", async () => {
+    $("#migrateNotice").hidden = true;
+    await dismissProfilesNotice();
+  });
+
+  $("#profileSelect").addEventListener("change", async (e) => {
+    const next = await setActiveProfile(e.target.value);
+    if (next) settings = next;
+    else renderProfilePicker(); // 台帳から消えていた（別端末の削除が届いた）→ 現在値へ戻す
+    updateCounts();
+  });
+
   $("#sidePicker").addEventListener("click", async (e) => {
     const zone = e.target.closest(".zone");
     if (!zone) return;
