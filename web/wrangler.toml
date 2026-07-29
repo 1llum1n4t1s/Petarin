@@ -1,0 +1,29 @@
+# ぺたりん ランディングページ配信 Worker。
+# Worker 自身を配信元にして、DNS と証明書も Cloudflare に管理させる（Kagayoi の他プロダクトと同型）。
+#
+# ⚠️ このドメインはデスクトップ版の**自動更新チャネルでもある**。deploy する前に
+#    petarin.kagayoi.com の R2 カスタムドメイン割り当てを外しておくこと（同一ホスト名を
+#    R2 と Worker の両方へ向けることはできない）。手順は web/README.md を参照。
+name = "petarin-landing"
+main = "worker.js"
+compatibility_date = "2026-05-01"
+
+[[routes]]
+pattern = "petarin.kagayoi.com"
+custom_domain = true
+
+# 更新ファイル（releases.win.json / *.nupkg / *-Setup.exe / *-Portable.zip / RELEASES）の配信元。
+# release-local.ps1 がこのバケットへアップロードする。
+[[r2_buckets]]
+binding = "UPDATES"
+bucket_name = "petarin-updates"
+
+# index.html / tokushoho.html を文字列として Worker バンドルへ取り込む
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true
+
+# 配信障害（R2 不調等）を事後調査できるよう Workers Logs を有効化する
+[observability]
+enabled = true

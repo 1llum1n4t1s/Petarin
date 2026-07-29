@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ぺたりん — 画面の端に、そっと付箋を。Windows アプリ / Chrome 拡張</title>
+  <meta name="description" content="ぺたりん（Petarin）は、画面の端からそっと顔を出す付箋アプリです。「仕事用」「個人用」などのプロファイルで使い分け、選んだ束がどの画面でも表示されます。Windows デスクトップ版は 14 日間の無料試用つき買い切り ¥980、Chrome / Firefox 拡張は無料。端末間のクラウド同期はエンドツーエンド暗号化。" />
+  <meta name="keywords" content="ぺたりん, Petarin, 付箋, 付箋アプリ, スティッキーノート, Windows, Chrome拡張, Firefox, メモ, Markdown, 同期" />
+  <meta name="author" content="1llum1n4t1s" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#ffffff" />
+  <link rel="canonical" href="https://petarin.kagayoi.com/" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="ぺたりん" />
+  <meta property="og:title" content="ぺたりん — 画面の端に、そっと付箋を。" />
+  <meta property="og:description" content="「仕事用」「個人用」で使い分ける付箋。Windows アプリは 14 日無料試用・買い切り ¥980、Chrome / Firefox 拡張は無料。" />
+  <meta property="og:url" content="https://petarin.kagayoi.com/" />
+  <meta property="og:locale" content="ja_JP" />
+
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Petarin — Sticky notes at the edge of your screen" />
+  <meta name="twitter:description" content="Organize notes into profiles like Work and Personal. Windows app with 14-day trial (¥980 one-time), free Chrome / Firefox extension." />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600;700&amp;display=swap" rel="stylesheet" />
+  <script>document.documentElement.classList.add('js');</script>
+
+  <style>
+    /* ライトテーマ固定（Kagayoi 共通のデザイントークン。差し色だけ付箋の琥珀色に寄せる） */
+    :root {
+      --bg: #ffffff;
+      --fg: #11181c;
+      --muted: #52525b;
+      --muted-2: #a1a1aa;
+      --border: #e4e4e7;
+      --border-soft: #f0f0f2;
+      --card: #ffffff;
+      --primary: #e0940f;
+      --primary-soft: #fdf3e0;
+      --violet: #7828c8;
+      --violet-soft: #f2eafa;
+      --pink: #ff4ecd;
+      --pink-soft: #ffedfa;
+      --green: #17c964;
+      --green-soft: #e8faf0;
+      --blue: #006fee;
+      --blue-soft: #e6f1fe;
+      --amber: #f5a524;
+      --amber-soft: #fefce8;
+      --shadow-sm: 0 2px 10px rgba(0, 0, 0, .04);
+      --shadow-md: 0 12px 34px rgba(0, 0, 0, .08);
+      --shadow-lg: 0 24px 70px rgba(0, 0, 0, .12);
+      --radius: 14px;
+      --radius-lg: 22px;
+      --max: 1140px;
+      --font: "IBM Plex Sans JP", system-ui, sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      font-family: var(--font);
+      color: var(--fg);
+      background: var(--bg);
+      line-height: 1.7;
+      font-feature-settings: "palt";
+    }
+    a { color: inherit; text-decoration: none; }
+    img { max-width: 100%; }
+    .wrap { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+    /* 背景のグラデーションブロブ */
+    .glow { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: -1; }
+    .glow::before, .glow::after {
+      content: ""; position: absolute; border-radius: 50%; filter: blur(90px); opacity: .5;
+    }
+    .glow::before { width: 560px; height: 560px; left: -160px; top: -220px; background: radial-gradient(circle, #ffe6a8, transparent 65%); }
+    .glow::after { width: 620px; height: 620px; right: -200px; top: -140px; background: radial-gradient(circle, #ffd7e6, transparent 65%); }
+
+    /* ===== ナビバー ===== */
+    header.nav {
+      position: sticky; top: 0; z-index: 50;
+      backdrop-filter: saturate(1.6) blur(14px);
+      -webkit-backdrop-filter: saturate(1.6) blur(14px);
+      background: rgba(255, 255, 255, .72);
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .nav-inner { display: flex; align-items: center; gap: 26px; height: 64px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; letter-spacing: .02em; }
+    .brand-mark {
+      width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+      background: linear-gradient(135deg, #ffd76b, #e8a13c);
+      color: #fff; font-size: 15px; box-shadow: var(--shadow-sm);
+    }
+    .nav-links { display: flex; gap: 4px; margin-left: auto; }
+    .nav-links a {
+      padding: 7px 14px; border-radius: 999px; font-size: 13.5px; font-weight: 500; color: var(--muted);
+      transition: background .15s, color .15s;
+    }
+    .nav-links a:hover { background: #f4f4f5; color: var(--fg); }
+    .nav-links a.nav-cta, .nav-cta {
+      margin-left: 6px; padding: 8px 18px; border-radius: 999px; font-size: 13.5px; font-weight: 600;
+      color: #fff; background: var(--primary); box-shadow: 0 6px 16px rgba(224, 148, 15, .35);
+      transition: transform .15s, box-shadow .15s;
+    }
+    .nav-links a.nav-cta:hover, .nav-cta:hover { color: #fff; transform: translateY(-1px); box-shadow: 0 10px 22px rgba(224, 148, 15, .4); }
+    @media (max-width: 760px) { .nav-links a:not(.nav-cta) { display: none; } }
+
+    /* ===== ヒーロー ===== */
+    .hero { position: relative; padding: 84px 0 60px; text-align: center; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
+      color: #9a6a10; background: var(--primary-soft); border: 1px solid #f5e0b8;
+    }
+    .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+    .hero h1 {
+      margin: 22px auto 0; max-width: 21em;
+      font-size: clamp(30px, 5.4vw, 54px); font-weight: 700; line-height: 1.25; letter-spacing: .01em;
+    }
+    .grad {
+      background: linear-gradient(91deg, #e0940f 10%, #e8618c 58%, #7828c8 96%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .hero p.lead { margin: 18px auto 0; max-width: 38em; font-size: clamp(14.5px, 1.8vw, 16.5px); color: var(--muted); }
+    .hero-ctas { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 30px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 10px;
+      padding: 13px 26px; border-radius: 999px; font-size: 14.5px; font-weight: 700;
+      transition: transform .15s, box-shadow .15s, background .15s;
+    }
+    .btn-primary { color: #fff; background: var(--primary); box-shadow: 0 10px 26px rgba(224, 148, 15, .35); }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 16px 34px rgba(224, 148, 15, .42); }
+    .btn-primary small { display: block; font-size: 11px; font-weight: 500; opacity: .85; }
+    .btn-ghost { color: var(--fg); background: #fff; border: 1px solid var(--border); box-shadow: var(--shadow-sm); }
+    .btn-ghost:hover { background: #fafafa; transform: translateY(-2px); }
+    .btn-ghost small { display: block; font-size: 11px; font-weight: 500; color: var(--muted-2); }
+    .hero-meta { margin-top: 16px; font-size: 12.5px; color: var(--muted-2); }
+
+    /* ===== 付箋のイラスト（画像を持たないので CSS で組む） ===== */
+    .mock { margin: 54px auto 0; max-width: 900px; }
+    .rail {
+      position: relative; border-radius: var(--radius-lg); border: 1px solid var(--border);
+      background: linear-gradient(180deg, #fdfcf8, #f6f2e8); box-shadow: var(--shadow-lg);
+      padding: 26px 26px 30px; overflow: hidden;
+    }
+    .rail-bar { display: flex; align-items: center; gap: 7px; margin-bottom: 18px; }
+    .rail-bar i { width: 11px; height: 11px; border-radius: 50%; background: #e2ddd2; }
+    .rail-bar .url { flex: 1; height: 22px; border-radius: 999px; background: #efeade; margin-left: 8px; }
+    .rail-body { display: grid; gap: 9px; }
+    .rail-body span { height: 11px; border-radius: 999px; background: #eae5d8; }
+    .rail-body span:nth-child(2) { width: 88%; }
+    .rail-body span:nth-child(3) { width: 72%; }
+    .rail-body span:nth-child(5) { width: 80%; }
+    .notes { position: absolute; right: 22px; top: 62px; display: grid; gap: 10px; width: 216px; }
+    .note {
+      border-radius: 12px; padding: 11px 13px; font-size: 12.5px; line-height: 1.55;
+      box-shadow: 0 10px 22px rgba(90, 70, 30, .16); transform: rotate(-1.2deg);
+    }
+    .note:nth-child(2) { transform: rotate(1deg); }
+    .note:nth-child(3) { transform: rotate(-.6deg); }
+    .note b { display: block; font-size: 11px; opacity: .62; font-weight: 600; margin-bottom: 2px; }
+    .n-yellow { background: #FCF9EC; color: #4D442D; border: 1px solid #e6dcb8; }
+    .n-blue { background: #BCD3E2; color: #33485A; border: 1px solid #a3c1d5; }
+    .n-mint { background: #B6D6CE; color: #29453F; border: 1px solid #9cc6bc; }
+    @media (max-width: 720px) { .notes { position: static; width: auto; margin-top: 20px; } }
+
+    /* ===== セクション共通 ===== */
+    section { position: relative; padding: 84px 0; }
+    .sec-head { text-align: center; max-width: 660px; margin: 0 auto 48px; }
+    .sec-head .kicker { font-size: 12.5px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--primary); }
+    .sec-head h2 { margin: 10px 0 0; font-size: clamp(24px, 3.6vw, 34px); font-weight: 700; line-height: 1.35; }
+    .sec-head p { margin: 12px 0 0; color: var(--muted); font-size: 14.5px; }
+
+    /* ===== カード ===== */
+    .grid { display: grid; gap: 18px; grid-template-columns: repeat(3, 1fr); }
+    @media (max-width: 960px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+      padding: 24px; box-shadow: var(--shadow-sm); transition: transform .18s, box-shadow .18s;
+    }
+    .card:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
+    .card .icon { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; font-size: 20px; margin-bottom: 14px; }
+    .icon.blue { background: var(--blue-soft); }
+    .icon.violet { background: var(--violet-soft); }
+    .icon.pink { background: var(--pink-soft); }
+    .icon.green { background: var(--green-soft); }
+    .icon.amber { background: var(--amber-soft); }
+    .card h3 { margin: 0 0 8px; font-size: 16.5px; font-weight: 700; }
+    .card p { margin: 0; font-size: 13.5px; color: var(--muted); }
+    .card .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+    .card .tags span { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: #f4f4f5; color: var(--muted); }
+
+    /* ===== 対応プラットフォーム ===== */
+    .plat { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 420px)); justify-content: center; }
+    @media (max-width: 760px) { .plat { grid-template-columns: 1fr; } }
+    .plat .card { display: flex; flex-direction: column; }
+    .plat .price-tag { font-size: 12.5px; font-weight: 700; color: var(--primary); margin-bottom: 6px; }
+    .plat ul { list-style: none; margin: 14px 0 20px; padding: 0; display: grid; gap: 8px; font-size: 13px; color: var(--muted); }
+    .plat li::before { content: "✓"; font-weight: 700; color: var(--green); margin-right: 8px; }
+    .plat .cta { margin-top: auto; display: flex; flex-wrap: wrap; gap: 8px; }
+    .plat .cta a { font-size: 13px; padding: 10px 18px; }
+
+    /* ===== 料金 ===== */
+    .pricing { display: grid; gap: 20px; grid-template-columns: repeat(2, minmax(0, 340px)); justify-content: center; }
+    @media (max-width: 720px) { .pricing { grid-template-columns: minmax(0, 400px); } }
+    .price-card {
+      position: relative; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg);
+      padding: 30px 28px; box-shadow: var(--shadow-sm); display: flex; flex-direction: column;
+    }
+    .price-card.featured {
+      border: 2px solid transparent;
+      background: linear-gradient(#fff, #fff) padding-box, linear-gradient(120deg, #e0940f, #e8618c, #7828c8) border-box;
+      box-shadow: var(--shadow-md);
+    }
+    .price-card .plan { font-size: 14px; font-weight: 700; color: var(--muted); }
+    .price-card .price { margin-top: 8px; font-size: 38px; font-weight: 700; letter-spacing: .01em; }
+    .price-card .price small { font-size: 13px; font-weight: 600; color: var(--muted-2); margin-left: 6px; }
+    .price-card ul { list-style: none; margin: 18px 0 24px; padding: 0; display: grid; gap: 10px; font-size: 13.5px; color: var(--muted); }
+    .price-card li::before { content: "✓"; font-weight: 700; color: var(--green); margin-right: 9px; }
+    .price-card .cta { margin-top: auto; text-align: center; }
+    .badge-popular {
+      position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
+      background: linear-gradient(91deg, #e0940f, #e8618c); color: #fff;
+      font-size: 11px; font-weight: 700; padding: 4px 14px; border-radius: 999px; box-shadow: var(--shadow-sm);
+      white-space: nowrap;
+    }
+    .price-note { text-align: center; margin-top: 22px; font-size: 12.5px; color: var(--muted-2); }
+    .price-note a { color: var(--primary); font-weight: 600; }
+
+    /* ===== 動作環境 ===== */
+    .req { display: grid; gap: 14px; grid-template-columns: repeat(3, 1fr); max-width: 860px; margin: 0 auto; }
+    @media (max-width: 720px) { .req { grid-template-columns: 1fr; } }
+    .req .card { padding: 20px 22px; }
+    .req b { display: block; font-size: 13.5px; margin-bottom: 4px; }
+    .req span { font-size: 12.5px; color: var(--muted); }
+
+    /* ===== ダウンロード ===== */
+    .dl-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 400px)); justify-content: center; }
+    @media (max-width: 720px) { .dl-grid { grid-template-columns: 1fr; } }
+    .dl-card {
+      display: flex; align-items: center; gap: 14px;
+      background: #fff; border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 16px 20px; box-shadow: var(--shadow-sm);
+      transition: transform .15s, box-shadow .15s, border-color .15s;
+    }
+    .dl-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); border-color: #f0d9a8; }
+    .dl-card.primary { background: var(--primary); border-color: var(--primary); color: #fff; box-shadow: 0 10px 26px rgba(224, 148, 15, .35); }
+    .dl-card .arrow { margin-left: auto; opacity: .55; }
+    .dl-card b { display: block; font-size: 14px; }
+    .dl-card small { font-size: 12px; opacity: .75; }
+    .dl-glyph { font-size: 22px; }
+
+    /* ===== フッター ===== */
+    footer { border-top: 1px solid var(--border-soft); padding: 46px 0 60px; background: #fafafa; }
+    .foot { display: flex; flex-wrap: wrap; gap: 36px; justify-content: space-between; font-size: 13px; color: var(--muted); }
+    .foot h4 { margin: 0 0 10px; font-size: 12.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
+    .foot a { display: block; padding: 3px 0; }
+    .foot a:hover { color: var(--primary); }
+    .foot .brand { margin-bottom: 8px; }
+    .copyright { margin-top: 34px; text-align: center; font-size: 12px; color: var(--muted-2); }
+
+    /* ===== 出現アニメーション ===== */
+    .js .reveal { opacity: 0; transform: translateY(18px); transition: opacity .6s ease, transform .6s ease; transition-delay: var(--delay, 0ms); }
+    .js .reveal.in { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce) {
+      .js .reveal { opacity: 1; transform: none; transition: none; }
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body id="top">
+
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="#top"><span class="brand-mark">🗒️</span>ぺたりん</a>
+      <nav class="nav-links" aria-label="ページ内リンク">
+        <a href="#features">機能</a>
+        <a href="#platforms">対応環境</a>
+        <a href="#pricing">料金</a>
+        <a class="nav-cta" href="#download">ダウンロード</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- ヒーロー -->
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="glow" aria-hidden="true"></div>
+      <div class="wrap">
+        <span class="chip reveal"><span class="dot"></span>Windows アプリ · Chrome / Firefox 拡張 — 自動更新つき</span>
+        <h1 id="hero-title" class="reveal" style="--delay: 80ms">
+          画面の端に、<br /><span class="grad">そっと付箋を。</span>
+        </h1>
+        <p class="lead reveal" style="--delay: 160ms">
+          ぺたりんは、画面の端からそっと顔を出す付箋アプリです。「仕事用」「個人用」などの
+          <b>プロファイル</b>で使い分け、選んだ束がどの画面でも同じように出てきます。
+          ふだんは小さく畳まれて、必要なときだけ開けばいい。
+        </p>
+        <div class="hero-ctas reveal" style="--delay: 240ms">
+          <a class="btn btn-primary" href="/Petarin-win-Setup.exe" download>
+            ⬇ Windows 版を試す<small>14 日間無料 · Setup.exe</small>
+          </a>
+          <a class="btn btn-ghost" href="https://chromewebstore.google.com/detail/dgdffcdhlghngidilklaobaaedmacdph" target="_blank" rel="noopener noreferrer">
+            🧩 ブラウザ拡張を追加<small>Chrome / Edge · 無料</small>
+          </a>
+        </div>
+        <p class="hero-meta reveal" style="--delay: 300ms">Windows 版は 14 日間の無料試用 · その後は ¥980 買い切り（サブスクなし）／ブラウザ拡張は無料</p>
+
+        <!-- 付箋レールのイメージ -->
+        <div class="mock reveal" style="--delay: 380ms" aria-hidden="true">
+          <div class="rail">
+            <div class="rail-bar"><i></i><i></i><i></i><div class="url"></div></div>
+            <div class="rail-body"><span></span><span></span><span></span><span></span><span></span></div>
+            <div class="notes">
+              <div class="note n-yellow"><b>仕事用</b>PR レビュー待ち<br />#42 の設計メモ</div>
+              <div class="note n-blue"><b>仕事用</b>木曜までに見積もり</div>
+              <div class="note n-mint"><b>個人用</b>牛乳・卵・パン</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 機能 -->
+    <section id="features" aria-labelledby="features-title">
+      <div class="wrap">
+        <div class="sec-head">
+          <span class="kicker">Features</span>
+          <h2 id="features-title">思いついたその場に、貼っておける。</h2>
+          <p>付箋は画面の端に吸い付いて、ふだんは小さく格納。開けばそのままメモできます。</p>
+        </div>
+        <div class="grid">
+          <article class="card reveal">
+            <div class="icon amber" aria-hidden="true">🗂️</div>
+            <h3>プロファイルで使い分け</h3>
+            <p>「仕事用」「個人用」など用途ごとの束を作り、いま使うものを選ぶだけ。選んだ束の付箋が、どの画面でもそのまま出てきます。</p>
+            <div class="tags"><span>作成・改名</span><span>並べ替え</span><span>いくつでも</span></div>
+          </article>
+          <article class="card reveal" style="--delay: 60ms">
+            <div class="icon blue" aria-hidden="true">📌</div>
+            <h3>端に吸い付く付箋</h3>
+            <p>右・左・上・下の好きな端に磁石のように貼り付きます。背をドラッグすれば端に沿って移動でき、軸はロックされるので散らかりません。</p>
+          </article>
+          <article class="card reveal" style="--delay: 120ms">
+            <div class="icon green" aria-hidden="true">📝</div>
+            <h3>Markdown で書ける</h3>
+            <p>編集中は Markdown のまま、閉じると見出し・箇条書き・太字・表・リンクを整形して表示します。長文もスクロールできる普通の付箋です。</p>
+            <div class="tags"><span>見出し</span><span>表</span><span>リンク</span></div>
+          </article>
+          <article class="card reveal">
+            <div class="icon violet" aria-hidden="true">🎨</div>
+            <h3>色と絵文字で見分ける</h3>
+            <p>9 色のパレットと絵文字アイコン。畳んでいるときはアイコンだけが小さく見えるので、目的の付箋をすぐ選べます。</p>
+          </article>
+          <article class="card reveal" style="--delay: 60ms">
+            <div class="icon pink" aria-hidden="true">✍️</div>
+            <h3>書体も大きさも自分好みに</h3>
+            <p>ゴシック・等幅・手書き風など 12 書体を同梱。文字サイズや編集時の行番号表示も切り替えられます。</p>
+          </article>
+          <article class="card reveal" style="--delay: 120ms">
+            <div class="icon green" aria-hidden="true">🔒</div>
+            <h3>既定で外部送信ゼロ</h3>
+            <p>付箋も設定も、既定では端末の中だけに保存されます。アカウント登録は不要で、広告も解析も入っていません。</p>
+          </article>
+          <article class="card reveal">
+            <div class="icon blue" aria-hidden="true">⇄</div>
+            <h3>端末間で同期（任意）</h3>
+            <p>オンにしたときだけ、複数の端末で付箋を共有できます。本文もプロファイル名も端末側で暗号化してから送るので、中継サーバーからは読めません。</p>
+            <div class="tags"><span>E2E 暗号化</span><span>QR ペアリング</span></div>
+          </article>
+          <article class="card reveal" style="--delay: 60ms">
+            <div class="icon amber" aria-hidden="true">🗑️</div>
+            <h3>消しても戻せる</h3>
+            <p>剥がした付箋はゴミ箱へ。最新 100 件までは「付箋デスク」からいつでも元の場所に戻せます。</p>
+          </article>
+          <article class="card reveal" style="--delay: 120ms">
+            <div class="icon violet" aria-hidden="true">🔄</div>
+            <h3>いつでも最新版に</h3>
+            <p>Windows 版は署名済みインストーラーで配布し、更新は自動で届きます。ブラウザ拡張はストア経由で更新されます。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- 対応環境 -->
+    <section id="platforms" aria-labelledby="platforms-title" style="background: #fafafa;">
+      <div class="wrap">
+        <div class="sec-head">
+          <span class="kicker">Platforms</span>
+          <h2 id="platforms-title">デスクトップでも、ブラウザでも。</h2>
+          <p>どちらも同じ付箋・同じプロファイル。クラウド同期をオンにすれば、端末をまたいで共有できます。</p>
+        </div>
+        <div class="plat">
+          <article class="card reveal">
+            <div class="icon amber" aria-hidden="true">🖥️</div>
+            <p class="price-tag">14 日間無料試用 · 買い切り ¥980</p>
+            <h3>Windows デスクトップ版</h3>
+            <p>常駐して、どのアプリを使っていても画面の端から付箋を出せます。ブラウザを開いていなくても使えるのはこちらだけ。</p>
+            <ul>
+              <li>画面の端に常駐（ふだんは細い帯）</li>
+              <li>署名済みインストーラー・自動更新</li>
+              <li>台数の制限なし</li>
+            </ul>
+            <div class="cta">
+              <a class="btn btn-primary" href="/Petarin-win-Setup.exe" download>⬇ ダウンロード</a>
+              <a class="btn btn-ghost" href="#pricing">料金を見る</a>
+            </div>
+          </article>
+          <article class="card reveal" style="--delay: 80ms">
+            <div class="icon blue" aria-hidden="true">🧩</div>
+            <p class="price-tag">無料</p>
+            <h3>Chrome / Firefox 拡張</h3>
+            <p>Web ページを見ているあいだ、画面の端に付箋を出します。Chrome ウェブストアと Firefox アドオンの両方で配布中です。</p>
+            <ul>
+              <li>Chrome・Edge など Chromium 系に対応</li>
+              <li>Firefox にも対応</li>
+              <li>全機能を無料で利用可能</li>
+            </ul>
+            <div class="cta">
+              <a class="btn btn-primary" href="https://chromewebstore.google.com/detail/dgdffcdhlghngidilklaobaaedmacdph" target="_blank" rel="noopener noreferrer">Chrome に追加 ↗</a>
+              <a class="btn btn-ghost" href="https://addons.mozilla.org/ja/firefox/addon/%E3%81%BA%E3%81%9F%E3%82%8A%E3%82%93/" target="_blank" rel="noopener noreferrer">Firefox に追加 ↗</a>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- 料金 -->
+    <section id="pricing" aria-labelledby="pricing-title">
+      <div class="wrap">
+        <div class="sec-head">
+          <span class="kicker">Pricing</span>
+          <h2 id="pricing-title">ブラウザ拡張は無料。Windows 版は ¥980 買い切り。</h2>
+          <p>サブスクリプションはありません。アカウント登録もパスワードも不要で、購入時のメールアドレスと確認コードだけで有効になります。</p>
+        </div>
+        <div class="pricing">
+          <div class="price-card reveal">
+            <span class="plan">無料試用（Windows 版）</span>
+            <div class="price">14 日間</div>
+            <ul>
+              <li>すべての機能を制限なく試用</li>
+              <li>インストール後すぐ利用開始</li>
+              <li>アカウント登録不要</li>
+              <li>クレジットカード登録も不要</li>
+            </ul>
+            <div class="cta"><a class="btn btn-ghost" href="#download">無料で試す</a></div>
+          </div>
+          <div class="price-card featured reveal" style="--delay: 80ms">
+            <span class="badge-popular">買い切り · サブスクなし</span>
+            <span class="plan">ライセンス（Windows 版）</span>
+            <div class="price">¥980<small>税込 / 一度きり</small></div>
+            <ul>
+              <li>すべての機能をずっと利用</li>
+              <li>台数の制限なし</li>
+              <li>メールアドレスと確認コードだけの簡単認証</li>
+              <li>今後のアップデートも追加料金なし</li>
+            </ul>
+            <div class="cta"><a class="btn btn-primary" href="#download">アプリ内から購入</a></div>
+          </div>
+        </div>
+        <p class="price-note">
+          Chrome / Firefox 拡張は無料で、すべての機能を利用できます。ライセンスが必要なのは Windows デスクトップ版だけです。<br />
+          購入したら、アプリ内のライセンス画面で購入時のメールアドレスを入力し、届いた確認コードを入れるだけで完了します。
+          決済は Stripe。<a href="/tokushoho">特定商取引法に基づく表記</a>
+        </p>
+      </div>
+    </section>
+
+    <!-- 動作環境 -->
+    <section id="requirements" aria-labelledby="requirements-title" style="background: #fafafa;">
+      <div class="wrap">
+        <div class="sec-head">
+          <span class="kicker">Requirements</span>
+          <h2 id="requirements-title">動作環境</h2>
+        </div>
+        <div class="req">
+          <div class="card reveal"><b>Windows 版</b><span>Windows 10 / 11（64-bit・x64）</span></div>
+          <div class="card reveal" style="--delay: 60ms"><b>ブラウザ拡張</b><span>Chrome・Edge など Chromium 系／Firefox</span></div>
+          <div class="card reveal" style="--delay: 120ms"><b>ネットワーク</b><span>不要（クラウド同期をオンにしたときだけ通信します）</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ダウンロード -->
+    <section id="download" aria-labelledby="download-title">
+      <div class="wrap">
+        <div class="sec-head">
+          <span class="kicker">Download</span>
+          <h2 id="download-title">ぺたりんを始める</h2>
+          <p>Windows 版のインストーラーは署名済み。以後の更新は自動で届きます。</p>
+        </div>
+        <div class="dl-grid">
+          <a class="dl-card primary reveal" href="/Petarin-win-Setup.exe" download>
+            <span class="dl-glyph" aria-hidden="true">⬇</span>
+            <span><b>Windows インストーラー</b><small>x64 · Setup.exe · 自動更新あり</small></span>
+            <span class="arrow">→</span>
+          </a>
+          <a class="dl-card reveal" style="--delay: 60ms" href="/Petarin-win-Portable.zip" download>
+            <span class="dl-glyph" aria-hidden="true">🗜️</span>
+            <span><b>ポータブル版</b><small>インストール不要 · Portable.zip</small></span>
+            <span class="arrow">→</span>
+          </a>
+          <a class="dl-card reveal" style="--delay: 120ms" href="https://chromewebstore.google.com/detail/dgdffcdhlghngidilklaobaaedmacdph" target="_blank" rel="noopener noreferrer">
+            <span class="dl-glyph" aria-hidden="true">🧩</span>
+            <span><b>Chrome ウェブストア</b><small>Chrome / Edge · 無料</small></span>
+            <span class="arrow">↗</span>
+          </a>
+          <a class="dl-card reveal" style="--delay: 180ms" href="https://addons.mozilla.org/ja/firefox/addon/%E3%81%BA%E3%81%9F%E3%82%8A%E3%82%93/" target="_blank" rel="noopener noreferrer">
+            <span class="dl-glyph" aria-hidden="true">🦊</span>
+            <span><b>Firefox アドオン</b><small>Firefox · 無料</small></span>
+            <span class="arrow">↗</span>
+          </a>
+        </div>
+        <p class="price-note">
+          Windows 版はすべての機能を <b>14 日間無料</b>で試せます。継続利用には買い切りライセンス <b>¥980（税込）</b> が必要で、
+          アプリ内のライセンス画面で購入時のメールアドレスを入力し、届いた確認コードを入れるだけで有効になります。
+          <a href="/tokushoho">特定商取引法に基づく表記</a>
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer aria-labelledby="footer-title">
+    <h2 id="footer-title" class="sr-only">フッター</h2>
+    <div class="wrap foot">
+      <div>
+        <a class="brand" href="#top"><span class="brand-mark">🗒️</span>ぺたりん</a>
+        <p style="max-width: 30em; margin: 10px 0 0;">「仕事用」「個人用」で使い分ける付箋を、画面の端にそっと。Windows アプリとブラウザ拡張で使えます。</p>
+      </div>
+      <nav aria-label="プロジェクトリンク">
+        <h4>Project</h4>
+        <a href="https://github.com/1llum1n4t1s/Petarin" target="_blank" rel="noopener noreferrer">GitHub リポジトリ ↗</a>
+        <a href="https://github.com/1llum1n4t1s/Petarin/issues" target="_blank" rel="noopener noreferrer">不具合報告 / Issues ↗</a>
+        <a href="https://github.com/1llum1n4t1s/Petarin/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT ライセンス ↗</a>
+        <a href="https://github.com/1llum1n4t1s/Petarin/blob/main/docs/privacy-policy.md" target="_blank" rel="noopener noreferrer">プライバシーポリシー ↗</a>
+        <a href="/tokushoho">特定商取引法に基づく表記</a>
+      </nav>
+      <nav aria-label="ページ内リンク">
+        <h4>Site</h4>
+        <a href="#features">機能</a>
+        <a href="#platforms">対応環境</a>
+        <a href="#pricing">料金</a>
+        <a href="#download">ダウンロード</a>
+      </nav>
+    </div>
+    <p class="copyright">© 2026 1llum1n4t1s — ぺたりんは MIT ライセンスのオープンソースソフトウェアです。</p>
+  </footer>
+
+  <script>
+    // スクロール出現アニメーション（reduced-motion 環境では CSS 側で無効化）
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+      }
+    }, { threshold: 0.12 });
+    document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
+  </script>
+</body>
+</html>

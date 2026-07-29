@@ -7,6 +7,8 @@ temp-build/
 # デスクトップのローカル署名リリース成果物（desktop/scripts/release-local.ps1 の出力）。
 # 署名済みインストーラや nupkg が入るので Git には載せない（配信先は R2）。
 desktop/local-release/
+# wrangler のローカル状態・ビルド生成物（web/ と infra/cloudflare/relay/）
+.wrangler/
 .claude/
 .serena/
 .DS_Store
