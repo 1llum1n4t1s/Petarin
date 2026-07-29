@@ -128,19 +128,23 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s inherit_errexit
+          # curl 失敗を握って空にする。これが無いと set -e + curl -fsS で step ごと即死し、
+          # 下の「取得失敗 → publish step に委ねる」フォールバックが死にコードになる（実際に 400 で恒久失敗した）。
           token_response=$(curl -fsS \
             -X POST "https://oauth2.googleapis.com/token" \
             --data-urlencode "client_id=${CWS_CLIENT_ID}" \
             --data-urlencode "client_secret=${CWS_CLIENT_SECRET}" \
             --data-urlencode "refresh_token=${CWS_REFRESH_TOKEN}" \
-            --data-urlencode "grant_type=refresh_token")
+            --data-urlencode "grant_type=refresh_token") || token_response=""
           access_token=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' 2>/dev/null <<< "$token_response" || echo "")
           if [ -z "${access_token:-}" ]; then
             echo "::warning::CWS pre-flight: OAuth token 取得失敗 → publish step に判定を委ねる"
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "::add-mask::${token_response}"
+          # ⚠️ token_response（複数行 JSON）を add-mask に渡してはいけない。ワークフローコマンドは
+          #    行単位で解釈されるため 1 行目 "{" だけがマスク値として消費され、残りの行
+          #    （access_token を含む）が平文でログに出る。単一行の access_token だけをマスクする。
           echo "::add-mask::${access_token}"
           draft_response=$(curl -fsS \
             -H "Authorization: Bearer ${access_token}" \
@@ -182,13 +186,15 @@ jobs:
             --data-urlencode "client_id=${CWS_CLIENT_ID}" \
             --data-urlencode "client_secret=${CWS_CLIENT_SECRET}" \
             --data-urlencode "refresh_token=${CWS_REFRESH_TOKEN}" \
-            --data-urlencode "grant_type=refresh_token")
+            --data-urlencode "grant_type=refresh_token") || token_response=""
           access_token=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' 2>/dev/null <<< "$token_response" || echo "")
           if [ -z "${access_token:-}" ]; then
-            echo "::error::access_token のパースに失敗しました (OAuth refresh response が想定形式でない可能性)"
+            echo "::error::access_token の取得に失敗しました (OAuth refresh が拒否されたか、応答が想定形式でない)"
             exit 1
           fi
-          echo "::add-mask::${token_response}"
+          # ⚠️ token_response（複数行 JSON）を add-mask に渡してはいけない。ワークフローコマンドは
+          #    行単位で解釈されるため 1 行目 "{" だけがマスク値として消費され、残りの行
+          #    （access_token を含む）が平文でログに出る。単一行の access_token だけをマスクする。
           echo "::add-mask::${access_token}"
 
           # ----- ステップ 1: ZIP を Draft としてアップロード -----
