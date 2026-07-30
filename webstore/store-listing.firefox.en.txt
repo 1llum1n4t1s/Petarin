@@ -38,5 +38,4 @@ Only if you turn it on yourself in the manager, the notes for the profiles you c
 
 ■ Permissions
 - storage … to save notes and settings locally (and, only if you turn on optional multi-PC sync, via storage.sync through the browser's sync service)
-- alarms … only while Cloud Sync is on, to periodically re-establish the connection to the relay
 By default no network requests are made (only when you turn on multi-PC sync are the selected profiles' notes synced via the browser's sync service).

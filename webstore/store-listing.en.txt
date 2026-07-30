@@ -63,9 +63,6 @@ Stick notes to the edge of the screen, organized into profiles the user creates,
   storage:
   To save the notes (text, color, icon, placement) and user settings (placement, translucency, on-page toggle) in on-device storage (chrome.storage.local). Nothing is sent to any server operated by the developer. Only if the user turns on optional multi-PC sync, the notes for the selected profiles are synced across the user's devices through the browser's built-in sync storage (chrome.storage.sync); off by default.
 
-  alarms:
-  Only while Cloud Sync is on, to periodically re-establish the connection to the relay so updates are not missed when the service worker sleeps. Unused while sync is off.
-
 ■ Host permission justification
 
   http://*/* and https://*/*:

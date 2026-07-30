@@ -1,20 +1,21 @@
 # ぺたりん Android（Capacitor）
 
-PC 拡張の同期エンジンをそのまま再利用し、**クラウド同期（買い切り ¥500）**で PC とリアルタイム共有する Android アプリ。iOS の正式実装は Flutter / Dart へ移行し、[`../mobile_flutter/`](../mobile_flutter/) で管理する。
+PC 拡張のストレージ層をそのまま再利用した、端末内で完結する Android 付箋アプリ。iOS の正式実装は Flutter / Dart へ移行し、[`../mobile_flutter/`](../mobile_flutter/) で管理する。
+
+**端末間同期は無い**（唯一残った同期経路がブラウザ標準同期＝`chrome.storage.sync` で、この WebView には存在しないため）。自前リレー経由のクラウド同期と、その解禁用の買い切り IAP は 2026-07-30 に撤去した（ルートの [`CLAUDE.md`](../CLAUDE.md) §撤去したクラウド同期）。
 
 > これは開発者向けメモ。利用者向けの説明はストア掲載文／ルートの [`README.md`](../README.md) を参照。
 
 ## 構成
 
 - `index.html` … アプリシェル（レスポンシブ・モバイル UI）
-- `src/main.js` … エントリ。chrome.storage シムを差して同期エンジンを起動し、付箋一覧＋同期/ペアリング UI を描く
+- `src/main.js` … エントリ。chrome.storage シムを差して付箋一覧・エディタ・ゴミ箱・プロファイル管理を描く
 - `src/storage-shim.js` … `chrome.storage.local` / `onChanged` を 1 プロセス KV で再現（バックエンド注入式）
 - `src/preferences-backend.js` … シムの裏付け（Capacitor Preferences）
-- `src/sync-orchestrator.js` … 拡張 `background.js` のモバイル版（reconcile スケジューリング＋realtime WS）
-- `src/iap.js` … 買い切り課金の解禁ゲート（`@capgo/native-purchases` で StoreKit2 / Play Billing を実配線。所有判定はストア照会＋Preferences キャッシュ。web は dev 解錠フラグ）
-- `vite.config.js` … `@shared` → `../src/shared`（同期エンジンを**単一ソース**で参照）
+- `src/notes-meta.js` … 絵文字プールとグループキーの符号化
+- `vite.config.js` … `@shared` → `../src/shared`（ストレージ層を**単一ソース**で参照）
 
-同期エンジン（`vault.js`/`sync.js`/`relay-transport.js`/`storage.js`/`markdown.js`）はコピーせず拡張と共有する。
+ストレージ層（`storage.js`/`markdown.js` 等）はコピーせず拡張と共有する。
 
 ## ローカル開発（Windows）
 
@@ -24,7 +25,7 @@ pnpm -C mobile dev                  # http://127.0.0.1:5180 でブラウザ確�
 pnpm -C mobile build                # dist/ に web をビルド
 ```
 
-ブラウザ確認では IAP は dev 解錠（`localStorage['petarin:dev:unlocked']='1'`）。クラウド同期を試すには、PC 拡張で作成した「引き継ぎコード」をアプリの参加欄に貼る（逆も可）。同期検証は依存なしで `node ../scripts/_mobile_sync_repro.mjs`（実 relay 相手に 9 PASS）。
+データ経路の検証は依存なしで `node ../scripts/_mobile_crud_repro.mjs`（シム上で作成→編集→削除→ゴミ箱→復元）。
 
 ## Android プロジェクト生成（`cap add`）
 
@@ -52,7 +53,7 @@ nephilim.jp 消滅にともない、識別子を `jp.nephilim.petarin` → **`co
 - **移行済み**:
   - Bundle ID `com.kagayoi.petarin`＝ASC 上の id `P535GC4XJQ`（IN_APP_PURCHASE capability 付き）。
   - アプリレコード「ぺたりん」＝**App ID `6794754329`**・SKU `petarin-002`・プライマリ言語 ja。旧レコード 6786674191（`jp.nephilim.petarin`・SKU `petarin-001`）は Console で削除してアプリ名を解放した。**アプリレコードの作成・削除は ASC API に無く Console 専用**なのでここだけ手作業。SKU を旧値に戻さないのは、削除済みアプリの SKU が再利用を弾かれることがあるため。
-  - IAP `com.kagayoi.petarin.sync`＝**id `6794754289`**・non-consumable・参照名「クラウド同期」・ja ローカライズ・全 175 地域（新規地域も自動追加）・**¥500**・**READY_TO_SUBMIT**（＝TestFlight サンドボックスで購入テスト可）。審査用スクショは**プレースホルダ**＝本審査提出前に実機の課金画面スクショへ差し替えること。
+  - IAP `com.kagayoi.petarin.sync`（id `6794754289`・non-consumable・¥500）は ASC 上に作成済みだが、**クラウド同期の撤去でアプリ側から消した**（未リリース＝購入者ゼロ）。ASC 側のプロダクトは申請前に削除するか、そのまま未使用で放置してよい（アプリが参照しないので審査対象にならない）。
   - App Store 配布用 provisioning profile「**Petarin AppStore Kagayoi**」＝id `266SH394MC` / UUID `e57ac841-70e8-4ae6-8af1-f1e5881305a7`（証明書 `G9JWFCT2BA`・有効期限 2027-07-02）。実体は `Secret/apple_signing/petarin/Petarin_AppStore_Kagayoi.mobileprovision`、GitHub Secrets の `IOS_PROVISIONING_PROFILE_BASE64` も差し替え済み。ワークフローは profile の UUID を profile 自身から読むので、再発行時も Secrets 差し替えだけで済む。
 - **残り**:
   - TestFlight 内部テストグループとテスター招待（ビルドのアップロード後）。
@@ -74,9 +75,6 @@ nephilim.jp 消滅にともない、識別子を `jp.nephilim.petarin` → **`co
 5. 2 回目以降は `release=true` + `play_upload=true` で CI から自動配信できる。
 
 ## 残 TODO
-- ネイティブ実機の目視確認（iPhone/Android で付箋 CRUD・ペアリング・カメラ QR・購入フロー）。iOS Flutter 版は TestFlight 経由で旧 Capacitor 版からのデータ移行も確認。
-- IAP 審査用スクショを実機の課金画面スクショへ差し替え（App Store 本審査前）。現在はプレースホルダ画像。
+- ネイティブ実機の目視確認（iPhone/Android で付箋 CRUD）。iOS Flutter 版は TestFlight 経由で旧 Capacitor 版からのデータ移行も確認。
 - App Store 本申請（掲載文・スクリーンショット・プライバシー表示・`/vava` 連携）。
 - Play Console でのアプリ作成・SA 権限付与・初回 AAB 手動アップロード（上記「初回リリースの手順」）。
-- Play 側 product 登録: `com.kagayoi.petarin.sync` を non-consumable（¥500）で登録（App Store 側は登録済み）。
-- 課金 enforcement の強化（当面はクライアント側のストア所有判定＝`iap.js`、後段で relay 側 enforcement へ）。
