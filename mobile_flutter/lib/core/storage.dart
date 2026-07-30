@@ -46,68 +46,18 @@ class MemoryKeyValueStore implements KeyValueStore {
   Future<void> remove(String key) async => values.remove(key);
 }
 
-class SyncShadow {
-  const SyncShadow({
-    required this.notes,
-    required this.settings,
-    required this.settingsT,
-  });
-
-  final Map<String, List<NoteModel>> notes;
-  final Map<String, Object?>? settings;
-  final int settingsT;
-
-  Map<String, Object?> toJson() => <String, Object?>{
-    'notes': notes.map(
-      (String key, List<NoteModel> value) => MapEntry<String, Object?>(
-        key,
-        value.map((NoteModel note) => note.toJson()).toList(),
-      ),
-    ),
-    'settings': settings,
-    'settingsT': settingsT,
-  };
-
-  static SyncShadow empty() => const SyncShadow(
-    notes: <String, List<NoteModel>>{},
-    settings: null,
-    settingsT: 0,
-  );
-
-  static SyncShadow fromJson(Object? value) {
-    if (value is! Map) return empty();
-    return SyncShadow(
-      notes: _decodeNotes(value['notes']),
-      settings: value['settings'] is Map
-          ? Map<String, Object?>.from(value['settings'] as Map)
-          : null,
-      settingsT: value['settingsT'] is num
-          ? (value['settingsT'] as num).round()
-          : 0,
-    );
-  }
-}
-
 class PetarinStore {
   PetarinStore(this._store);
 
   final KeyValueStore _store;
   Map<String, List<NoteModel>> _notes = <String, List<NoteModel>>{};
   Map<String, Object?> _settings = defaultSettings();
-  Map<String, Map<String, int>> _localTombs = <String, Map<String, int>>{};
   List<TrashEntry> _trash = <TrashEntry>[];
-  Map<String, Object?>? _pairing;
   ProfileLedger _profiles = ProfileLedger.empty;
-  SyncShadow _shadow = SyncShadow.empty();
   Future<void> _writeTail = Future<void>.value();
-  int _revision = 0;
 
   Map<String, List<NoteModel>> get notes => _cloneNotes(_notes);
   Map<String, Object?> get settings => Map<String, Object?>.from(_settings);
-  Map<String, Map<String, int>> get localTombs => _localTombs.map(
-    (String domain, Map<String, int> tombs) =>
-        MapEntry(domain, Map<String, int>.from(tombs)),
-  );
   List<TrashEntry> get trash => List<TrashEntry>.unmodifiable(_trash);
   ProfileLedger get profiles => _profiles;
 
@@ -118,25 +68,11 @@ class PetarinStore {
     return _profiles.order.isEmpty ? '' : _profiles.order.first;
   }
 
-  Map<String, Object?>? get pairing =>
-      _pairing == null ? null : Map<String, Object?>.from(_pairing!);
-  SyncShadow get shadow => SyncShadow(
-    notes: _cloneNotes(_shadow.notes),
-    settings: _shadow.settings == null
-        ? null
-        : Map<String, Object?>.from(_shadow.settings!),
-    settingsT: _shadow.settingsT,
-  );
-  int get revision => _revision;
-
   Future<void> initialize() async {
     final List<String?> values = await Future.wait<String?>(<Future<String?>>[
       _store.getString(notesKey),
       _store.getString(settingsKey),
-      _store.getString(localTombsKey),
       _store.getString(trashKey),
-      _store.getString(vaultKey),
-      _store.getString(shadowKey),
       _store.getString(profilesKey),
     ]);
     _notes = _decodeNotes(_decodeJson(values[0]));
@@ -145,12 +81,17 @@ class PetarinStore {
       ...defaultSettings(),
       if (rawSettings is Map) ...Map<String, Object?>.from(rawSettings),
     };
-    _localTombs = _decodeLocalTombs(_decodeJson(values[2]));
-    _trash = _decodeTrash(_decodeJson(values[3]));
-    final Object? rawPairing = _decodeJson(values[4]);
-    _pairing = rawPairing is Map ? Map<String, Object?>.from(rawPairing) : null;
-    _shadow = SyncShadow.fromJson(_decodeJson(values[5]));
-    _profiles = ProfileLedger.fromJson(_decodeJson(values[6]));
+    _trash = _decodeTrash(_decodeJson(values[2]));
+    _profiles = ProfileLedger.fromJson(_decodeJson(values[3]));
+    await _purgeLegacyCloudSync();
+  }
+
+  /// 旧クラウド同期（撤去済み）が端末に残したキーを消す。冪等。
+  /// ペアリング鍵は秘密を含むので、用途が消えた以上は端末に残さない。
+  Future<void> _purgeLegacyCloudSync() async {
+    for (final String key in legacyCloudSyncKeys) {
+      await _store.remove(key);
+    }
   }
 
   /// プロファイル台帳の用意（初回 1 回だけの移行＋既定 1 件の保証）。追加のみで冪等。
@@ -228,7 +169,7 @@ class PetarinStore {
   });
 
   /// プロファイルを削除する。台帳へ墓石を立て、その付箋も通常削除と同じ経路で剥がす
-  /// （localTombs とゴミ箱へ退避され、他端末へも正しく伝播する）。
+  /// （剥がした付箋はゴミ箱へ退避され、そこから復元できる）。
   /// 最後の 1 件は削除しない。返り値: 剥がした付箋の枚数（null=削除しなかった）。
   Future<int?> deleteProfile(String key) => _locked(() async {
     if (!_profiles.order.contains(key) || _profiles.order.length <= 1) {
@@ -241,23 +182,12 @@ class PetarinStore {
     if (removed.isNotEmpty) {
       final Map<String, List<NoteModel>> nextNotes = _cloneNotes(_notes)
         ..remove(key);
-      final Map<String, Map<String, int>> tombs = _localTombs.map(
-        (String k, Map<String, int> v) => MapEntry(k, Map<String, int>.from(v)),
-      );
-      final Map<String, int> forKey = tombs.putIfAbsent(
-        key,
-        () => <String, int>{},
-      );
-      for (final NoteModel note in removed) {
-        forKey[note.id] = now;
-      }
       _notes = nextNotes;
-      _localTombs = _gcLocalTombs(tombs, now);
       _trash = mergeTrash(_trash, <TrashEntry>[
         for (final NoteModel note in removed)
           TrashEntry(domain: key, note: note, deletedAt: now, origin: 'user'),
       ]);
-      await _persistNotesTombsTrash();
+      await _persistNotesAndTrash();
     }
     final Map<String, ProfileEntry> meta = Map<String, ProfileEntry>.from(
       _profiles.meta,
@@ -327,18 +257,6 @@ class PetarinStore {
 
   Future<void> saveSettings(Map<String, Object?> patch) => _locked(() async {
     _settings = <String, Object?>{..._settings, ...patch};
-    await _write(settingsKey, _settings);
-  });
-
-  Future<void> savePairing(Map<String, Object?> pairing) => _locked(() async {
-    _pairing = Map<String, Object?>.from(pairing);
-    await _write(vaultKey, _pairing);
-  });
-
-  Future<void> clearPairing() => _locked(() async {
-    _pairing = null;
-    _settings = <String, Object?>{..._settings, 'syncEnabled': false};
-    await _store.remove(vaultKey);
     await _write(settingsKey, _settings);
   });
 
@@ -418,17 +336,11 @@ class PetarinStore {
     } else {
       nextNotes[domain] = current;
     }
-    final Map<String, Map<String, int>> tombs = _localTombs.map(
-      (String key, Map<String, int> value) =>
-          MapEntry(key, Map<String, int>.from(value)),
-    );
-    tombs.putIfAbsent(domain, () => <String, int>{})[id] = now;
     _notes = nextNotes;
-    _localTombs = _gcLocalTombs(tombs, now);
     _trash = mergeTrash(_trash, <TrashEntry>[
       TrashEntry(domain: domain, note: removed, deletedAt: now, origin: 'user'),
     ]);
-    await _persistNotesTombsTrash();
+    await _persistNotesAndTrash();
   });
 
   Future<void> restoreTrash(TrashEntry entry) => _locked(() async {
@@ -462,50 +374,11 @@ class PetarinStore {
     await _write(trashKey, const <Object>[]);
   });
 
-  Future<bool> applySyncResult({
-    required Map<String, List<NoteModel>> notes,
-    required List<TrashEntry> trash,
-    required SyncShadow shadow,
-    required int expectedRevision,
-    Map<String, Object?>? syncedSettings,
-    ProfileLedger? profiles,
-  }) => _locked(() async {
-    if (_revision != expectedRevision) return false;
-    _notes = _cloneNotes(notes);
-    _trash = List<TrashEntry>.from(trash);
-    _shadow = shadow;
-    if (syncedSettings != null) {
-      _settings = <String, Object?>{..._settings, ...syncedSettings};
-    }
-    await _write(notesKey, _encodeNotes(_notes));
-    await _write(
-      trashKey,
-      _trash.map((TrashEntry item) => item.toJson()).toList(),
-    );
-    await _write(shadowKey, _shadow.toJson());
-    // 台帳の pull も同じ revision 検査の内側で当てる（別 API にすると revision が進んで
-    // applySyncResult 側が毎回 local_changed_during_sync になる）。
-    if (profiles != null &&
-        !_jsonEquals(profiles.toJson(), _profiles.toJson())) {
-      _profiles = profiles;
-      await _write(profilesKey, _profiles.toJson());
-      await _normalizeActiveProfile();
-    }
-    if (syncedSettings != null) await _write(settingsKey, _settings);
-    return true;
-  });
-
-  Future<void> saveShadow(SyncShadow shadow) => _locked(() async {
-    _shadow = shadow;
-    await _write(shadowKey, shadow.toJson());
-  });
-
   Future<T> _locked<T>(Future<T> Function() operation) {
     final Completer<T> completer = Completer<T>();
     _writeTail = _writeTail.then((_) async {
       try {
         final T result = await operation();
-        _revision++;
         completer.complete(result);
       } catch (error, stackTrace) {
         completer.completeError(error, stackTrace);
@@ -514,9 +387,8 @@ class PetarinStore {
     return completer.future;
   }
 
-  Future<void> _persistNotesTombsTrash() async {
+  Future<void> _persistNotesAndTrash() async {
     await _write(notesKey, _encodeNotes(_notes));
-    await _write(localTombsKey, _localTombs);
     await _write(
       trashKey,
       _trash.map((TrashEntry item) => item.toJson()).toList(),
@@ -565,41 +437,6 @@ Map<String, List<NoteModel>> _cloneNotes(Map<String, List<NoteModel>> notes) =>
           MapEntry(key, List<NoteModel>.from(value)),
     );
 
-Map<String, Map<String, int>> _decodeLocalTombs(Object? value) {
-  if (value is! Map) return <String, Map<String, int>>{};
-  final Map<String, Map<String, int>> out = <String, Map<String, int>>{};
-  for (final MapEntry<Object?, Object?> entry in value.entries) {
-    if (entry.key is! String || entry.value is! Map) continue;
-    final Map<String, int> tombs = <String, int>{};
-    for (final MapEntry<Object?, Object?> tomb
-        in (entry.value! as Map).entries) {
-      if (tomb.key is String &&
-          tomb.value is num &&
-          (tomb.value! as num).isFinite) {
-        tombs[tomb.key! as String] = (tomb.value! as num).round();
-      }
-    }
-    if (tombs.isNotEmpty) out[entry.key! as String] = tombs;
-  }
-  return out;
-}
-
-Map<String, Map<String, int>> _gcLocalTombs(
-  Map<String, Map<String, int>> tombs,
-  int now,
-) {
-  final Map<String, Map<String, int>> out = <String, Map<String, int>>{};
-  for (final MapEntry<String, Map<String, int>> domain in tombs.entries) {
-    final Map<String, int> active = Map<String, int>.fromEntries(
-      domain.value.entries.where(
-        (MapEntry<String, int> entry) => now - entry.value <= tombTtlMs,
-      ),
-    );
-    if (active.isNotEmpty) out[domain.key] = active;
-  }
-  return out;
-}
-
 List<TrashEntry> _decodeTrash(Object? value) {
   if (value is! List) return <TrashEntry>[];
   return mergeTrash(
@@ -616,8 +453,6 @@ int _latestAt(List<NoteModel> notes) {
   }
   return latest;
 }
-
-bool _jsonEquals(Object? a, Object? b) => jsonEncode(a) == jsonEncode(b);
 
 int _compareNotes(NoteModel a, NoteModel b) {
   final int byCreated = a.createdAt.compareTo(b.createdAt);

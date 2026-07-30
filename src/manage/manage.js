@@ -25,9 +25,6 @@ import {
   fontFamilyCss,
   relTime,
   hashHue,
-  getVaultPairing,
-  saveVaultPairing,
-  clearVaultPairing,
   getProfiles,
   ensureProfiles,
   profileList,
@@ -42,8 +39,6 @@ import {
   MAX_PROFILE_NAME,
 } from "../shared/storage.js";
 import { isValidDomain } from "../shared/sync.js";
-import { DEFAULT_RELAY_URL } from "../shared/relay-transport.js";
-import { generateVault, importVault, exportPairingCode, parsePairingCode } from "../shared/vault.js";
 import { isGroupKey, decodeGroupName } from "../shared/groups.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -1271,12 +1266,12 @@ async function importNotes(e) {
 // ── 複数PC同期パネル（既定OFF）────────────────────────────────────
 // 同期ロジック本体は background（reconcile）に一元化。ここは設定の読み書きと、
 // 容量レポートの描画だけを担う。reconcile はメッセージで依頼する。
-let syncCfg = { syncEnabled: false, syncMode: "chrome", syncSettings: false, syncScope: "selected", syncDomains: [] };
+let syncCfg = { syncEnabled: false, syncSettings: false, syncScope: "selected", syncDomains: [] };
 let reportTimer = 0;
 
-// 排他3モード: off / chrome（ブラウザ標準同期）/ cloud（リレー）。syncEnabled + syncMode の二段で表現。
+// 排他2モード: off / chrome（ブラウザ標準同期）。syncEnabled で表現する。
 function curMode() {
-  return !syncCfg.syncEnabled ? "off" : (syncCfg.syncMode === "cloud" ? "cloud" : "chrome");
+  return syncCfg.syncEnabled ? "chrome" : "off";
 }
 
 function setupSync() {
@@ -1286,7 +1281,7 @@ function setupSync() {
   panel.addEventListener("click", (e) => { if (e.target === panel) closeSyncPanel(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !panel.hidden) closeSyncPanel(); });
 
-  for (const r of document.querySelectorAll('input[name="syncMode3"]')) {
+  for (const r of document.querySelectorAll('input[name="syncMode"]')) {
     r.addEventListener("change", (e) => onModeChange(e.target.value));
   }
   $("#syncSettings").addEventListener("change", async (e) => {
@@ -1301,17 +1296,6 @@ function setupSync() {
     });
   }
 
-  // クラウド同期のペアリング操作
-  $("#pairCreate").addEventListener("click", onPairCreate);
-  $("#pairJoinToggle").addEventListener("click", () => {
-    const box = $("#pairJoinBox");
-    box.hidden = !box.hidden;
-    if (!box.hidden) $("#pairInput").focus();
-  });
-  $("#pairJoin").addEventListener("click", onPairJoin);
-  $("#pairReveal").addEventListener("click", onPairReveal);
-  $("#pairCopy").addEventListener("click", onPairCopy);
-  $("#pairUnlink").addEventListener("click", onPairUnlink);
 }
 
 async function onModeChange(mode) {
@@ -1319,28 +1303,21 @@ async function onModeChange(mode) {
     await saveSyncCfg({ syncEnabled: false });
     // この端末が出した sync 投影（shadow）を撤去（プライバシー配慮・再接続時の誤判定防止）。
     try { await chrome.runtime.sendMessage({ type: "petarin:purgeSync" }); } catch {}
-  } else if (mode === "chrome") {
-    // 別バックエンド(cloud)の shadow を引きずって誤削除しないよう、モード確定前に投影をクリアし、
-    // 新バックエンドでは base=空から和集合マージさせる（shadow にあるが新 remote に無い＝削除と誤判定しない）。
+  } else {
+    // OFF の間に進んだローカル削除を shadow が知らないので、ON にする前に投影をクリアし、
+    // base=空から和集合マージさせる（shadow にあるが remote に無い＝削除、と誤判定しない）。
     try { await chrome.runtime.sendMessage({ type: "petarin:purgeSync" }); } catch {}
-    await saveSyncCfg({ syncEnabled: true, syncMode: "chrome" });
-  } else if (mode === "cloud") {
-    try { await chrome.runtime.sendMessage({ type: "petarin:purgeSync" }); } catch {}
-    await saveSyncCfg({ syncEnabled: true, syncMode: "cloud" });
+    await saveSyncCfg({ syncEnabled: true });
   }
   renderSyncPanel();
-  await renderPairing();
-  if (mode === "chrome") refreshSyncReport();
-  else if (mode === "cloud" && (await isPaired())) refreshSyncReport();
+  if (mode !== "off") refreshSyncReport();
 }
 
 async function openSyncPanel() {
   syncCfg = await loadSyncCfg();
   renderSyncPanel();
-  await renderPairing();
   $("#syncPanel").hidden = false;
-  const mode = curMode();
-  if (mode === "chrome" || (mode === "cloud" && (await isPaired()))) refreshSyncReport();
+  if (curMode() !== "off") refreshSyncReport();
 }
 function closeSyncPanel() { $("#syncPanel").hidden = true; }
 
@@ -1348,7 +1325,6 @@ async function loadSyncCfg() {
   const s = await getSettings();
   return {
     syncEnabled: !!s.syncEnabled,
-    syncMode: s.syncMode === "cloud" ? "cloud" : "chrome",
     syncSettings: !!s.syncSettings,
     syncScope: s.syncScope || "selected",
     syncDomains: Array.isArray(s.syncDomains) ? s.syncDomains : [],
@@ -1361,133 +1337,13 @@ async function saveSyncCfg(partial) {
 
 function renderSyncPanel() {
   const mode = curMode();
-  for (const r of document.querySelectorAll('input[name="syncMode3"]')) r.checked = (r.value === mode);
+  for (const r of document.querySelectorAll('input[name="syncMode"]')) r.checked = (r.value === mode);
   $("#syncBtn").classList.toggle("on", syncCfg.syncEnabled);
   $("#consentChrome").hidden = mode !== "chrome";
-  $("#consentCloud").hidden = mode !== "cloud";
-  $("#cloudPair").hidden = mode !== "cloud";
   $("#syncBody").hidden = mode === "off";
-  $("#syncGauge").hidden = mode !== "chrome"; // 100KB ゲージは容量上限のある chrome 標準同期のみ
   $("#syncSettings").checked = syncCfg.syncSettings;
   for (const r of document.querySelectorAll('input[name="syncScope"]')) r.checked = (r.value === syncCfg.syncScope);
   renderSyncDomains(null);
-}
-
-// ── クラウド同期ペアリング（鍵束は storage の local 専用キーに保存・never sync）─────────
-async function isPaired() { return !!(await getVaultPairing()); }
-function shortId(id) { return String(id || "").slice(0, 6) + "…"; }
-function setPairNote(msg, warn) {
-  const n = $("#pairNote");
-  n.textContent = msg || "";
-  n.classList.toggle("warn", !!warn);
-}
-
-// ペアリングコードを QR（data URL の GIF）にして表示。スマホのカメラで読み取れる＝長いコードの手打ち/コピペが不要。
-// vendor の qrcode-generator（window.qrcode）を使う。失敗してもコード文字列は使えるので img を隠すだけ。
-function renderPairQr(text) {
-  const img = $("#pairQr");
-  try {
-    if (!window.qrcode) throw new Error("qrcode unavailable");
-    const qr = window.qrcode(0, "L"); // 0=自動バージョン / L=低誤り訂正（画面スキャン向けに密度を抑える）
-    qr.addData(text);
-    qr.make();
-    img.src = qr.createDataURL(4, 16); // cellSize=4px, margin=16px（規格推奨の 4 モジュール分の余白＝読み取り安定）
-    img.hidden = false;
-  } catch {
-    img.hidden = true;
-  }
-}
-
-async function renderPairing() {
-  if (curMode() !== "cloud") return;
-  const pairing = await getVaultPairing();
-  const paired = !!pairing;
-  $("#pairSetup").hidden = paired;
-  $("#pairLinked").hidden = !paired;
-  $("#pairStatus").textContent = paired
-    ? `接続済み: グループ ${shortId(pairing.id)}`
-    : "まだどのグループにも接続していません。";
-  $("#pairStatus").classList.toggle("linked", paired);
-  if (paired) {
-    $("#pairCodeBox").hidden = true; // 引き継ぎコード/QR は「表示」操作のときだけ出す
-    $("#pairQr").hidden = true;
-  } else {
-    $("#pairJoinBox").hidden = true;
-    $("#pairInput").value = "";
-  }
-  setPairNote("");
-}
-
-async function onPairCreate() {
-  setPairNote("作成中…");
-  try {
-    const vault = await generateVault(DEFAULT_RELAY_URL);
-    await saveVaultPairing(vault.pairing);
-    await renderPairing();
-    // 作成直後に引き継ぎコード＋QR を出す（他端末をこのグループへ招くため）。
-    $("#pairCode").value = exportPairingCode(vault);
-    renderPairQr($("#pairCode").value);
-    $("#pairCodeBox").hidden = false;
-    setPairNote("同期グループを作成しました。スマホでこの QR を読み取るか、下のコードを貼り付けると同じグループに入れます。");
-    refreshSyncReport();
-  } catch (e) {
-    setPairNote("作成に失敗しました: " + (e && e.message), true);
-  }
-}
-
-async function onPairJoin() {
-  const code = $("#pairInput").value.trim();
-  if (!code) { setPairNote("コードを貼り付けてください。", true); return; }
-  setPairNote("参加中…");
-  try {
-    const pairing = parsePairingCode(code);
-    await importVault(pairing); // 形式・鍵を検証（不正なら throw）
-    await saveVaultPairing(pairing);
-    await renderPairing();
-    setPairNote("グループに参加しました。他の端末の付箋が順次同期されます。");
-    refreshSyncReport();
-  } catch {
-    setPairNote("参加に失敗しました。コードが正しいか確認してください。", true);
-  }
-}
-
-async function onPairReveal() {
-  const pairing = await getVaultPairing();
-  if (!pairing) return;
-  const box = $("#pairCodeBox");
-  if (box.hidden) {
-    try {
-      const vault = await importVault(pairing);
-      $("#pairCode").value = exportPairingCode(vault);
-      renderPairQr($("#pairCode").value);
-      box.hidden = false;
-    } catch {
-      setPairNote("コードの表示に失敗しました。", true);
-    }
-  } else {
-    box.hidden = true;
-  }
-}
-
-async function onPairCopy() {
-  const ta = $("#pairCode");
-  try {
-    await navigator.clipboard.writeText(ta.value);
-    setPairNote("コードをコピーしました。");
-  } catch {
-    ta.select();
-    try { document.execCommand("copy"); } catch { /* noop */ }
-    setPairNote("コードを選択しました。Ctrl+C でコピーしてください。");
-  }
-}
-
-async function onPairUnlink() {
-  if (!confirm("この端末のクラウド同期接続を解除します。\nこの端末の付箋は残りますが、以降このグループとは同期しません。よろしいですか？")) return;
-  await clearVaultPairing();
-  // この端末の sync 投影（shadow）も撤去し、再接続時に誤った削除/復活が起きないようにする。
-  try { await chrome.runtime.sendMessage({ type: "petarin:purgeSync" }); } catch {}
-  await renderPairing();
-  setPairNote("接続を解除しました。");
 }
 
 // 同期プロファイル一覧（scope=selected はチェックボックス、all は読み取り専用）。
@@ -1500,7 +1356,7 @@ function renderSyncDomains(report) {
       ...Object.keys(allNotes).filter((d) => (allNotes[d] || []).length),
     ]),
   ];
-  // レポートにしか出ないドメイン（最後の付箋を消したが削除が保留＝cloud に残り他端末ではまだ見える）も
+  // レポートにしか出ないドメイン（最後の付箋を消したが削除が保留＝同期ストレージに残り他端末ではまだ見える）も
   // 行として出す。allNotes 基準だけだと delete_deferred のドメインが一覧から消え、削除が未伝播なことを
   // ユーザーが把握できない（Codex）。少なくとも delete_deferred は report-only でも表示する。
   const reportOnly = report
@@ -1575,7 +1431,7 @@ function renderSyncReport(report) {
   $("#syncGaugeText").textContent = `${(used / 1024).toFixed(1)} / ${Math.round(quota / 1024)} KB`;
   $(".sp-gauge-bar").classList.toggle("warn", pct >= 85);
   // 「削除保留(delete_deferred)」は容量超過ではなく count:0 の一過性状態。容量警告サマリには数えないが、
-  // 「削除が他端末へまだ伝わっていない」ことは別途知らせる（cloud item を意図的に残しており、放置すると
+  // 「削除が他端末へまだ伝わっていない」ことは別途知らせる（同期ストレージの item を意図的に残しており、放置すると
   // ユーザーは削除が反映されたと誤解する。Codex）。
   const skipped = (report.domains || []).filter((d) => !d.synced && d.reason !== "delete_deferred");
   const deferred = (report.domains || []).filter((d) => d.reason === "delete_deferred");

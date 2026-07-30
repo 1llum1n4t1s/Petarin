@@ -297,7 +297,7 @@ async function scenarioS6() {
   B.localStore[KEY_SETTINGS].syncDomains = [];
   await reconcileAs(B, modB, { now: t1 });
 
-  // t2: A が X を削除して reconcile（cloud item 除去・墓石生成）
+  // t2: A が X を削除して reconcile（同期ストレージ item 除去・墓石生成）
   const t2 = t1 + DAY;
   A.localStore[KEY_NOTES] = {};
   await reconcileAs(A, modA, { now: t2 });
@@ -310,29 +310,29 @@ async function scenarioS6() {
   const bHas = (localNotes(B)["ex.com"] || []).some((n) => n.id === "X");
   ok(!bHas, "re-scope した B で削除済み X が復活しない", bHas ? "X が復活した（ゾンビ）" : "");
   const reSynced = Object.keys(sync).some((k) => k.startsWith("petarin:sync:n:"));
-  ok(!reSynced, "X が cloud へ再 push されない", reSynced ? JSON.stringify(Object.keys(sync)) : "");
+  ok(!reSynced, "X が 同期ストレージへ再 push されない", reSynced ? JSON.stringify(Object.keys(sync)) : "");
 }
 
 // ════════════════════════════════════════════════════════════════
-// S7（監査H5）: 単一端末で unscope 中に削除→re-scope しても、cloud 残存版から復活しない
+// S7（監査H5）: 単一端末で unscope 中に削除→re-scope しても、同期ストレージ 残存版から復活しない
 //   （unscope 時も shadow=remote を保ち、re-scope で deletedLocally を検出できる）。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS7() {
-  console.log("S7（監査H5）単一端末 unscope中削除→re-scope で cloud 残存版が復活しない:");
+  console.log("S7（監査H5）単一端末 unscope中削除→re-scope で 同期ストレージ 残存版が復活しない:");
   const sync = {};
   const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
 
   const t0 = 7_000_000;
   seedDevice(A, { notes: { "ex.com": [note("Y", "本文", t0)] }, settings: { syncScope: "selected", syncDomains: ["ex.com"] } });
-  await reconcileAs(A, mod, { now: t0 }); // cloud/shadow に Y
+  await reconcileAs(A, mod, { now: t0 }); // 同期ストレージ/shadow に Y
 
   // t1: ex.com を unscope（shadow は pre-seed で remote を保持するはず）
   const t1 = t0 + DAY;
   A.localStore[KEY_SETTINGS].syncDomains = [];
   await reconcileAs(A, mod, { now: t1 });
 
-  // t2: unscope 中に Y をローカル削除（スコープ外＝マージされず墓石も立たない・cloud 不変）
+  // t2: unscope 中に Y をローカル削除（スコープ外＝マージされず墓石も立たない・同期ストレージ 不変）
   const t2 = t1 + DAY;
   A.localStore[KEY_NOTES] = {};
   await reconcileAs(A, mod, { now: t2 });
@@ -343,9 +343,9 @@ async function scenarioS7() {
   await reconcileAs(A, mod, { now: t3 });
 
   const aHas = (localNotes(A)["ex.com"] || []).some((n) => n.id === "Y");
-  ok(!aHas, "re-scope で cloud 残存版 Y が復活しない", aHas ? "Y が復活した（ゾンビ）" : "");
-  const stillCloud = Object.keys(sync).some((k) => k.startsWith("petarin:sync:n:"));
-  ok(!stillCloud, "cloud の Y item も除去される", stillCloud ? JSON.stringify(Object.keys(sync)) : "");
+  ok(!aHas, "re-scope で 同期ストレージ 残存版 Y が復活しない", aHas ? "Y が復活した（ゾンビ）" : "");
+  const stillRemote = Object.keys(sync).some((k) => k.startsWith("petarin:sync:n:"));
+  ok(!stillRemote, "同期ストレージの Y item も除去される", stillRemote ? JSON.stringify(Object.keys(sync)) : "");
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -358,7 +358,7 @@ async function scenarioS8() {
   const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
 
-  // cloud meta に大量の墓石を仕込む（8KB 超）。TTL 内の新しめ時刻にして時間GCで消えないようにする。
+  // 同期ストレージの meta に大量の墓石を仕込む（8KB 超）。TTL 内の新しめ時刻にして時間GCで消えないようにする。
   const base = 8_000_000;
   const tomb = {};
   for (let i = 0; i < 400; i++) tomb[`d${i}.example.com${SEP}n_${i}`] = base - i * 1000;
@@ -403,8 +403,8 @@ async function scenarioS10() {
 
   const aHas = (localNotes(A)["z.com"] || []).some((n) => n.id === "Z1");
   ok(aHas, "A が z.com/Z1 を受信する（幻 base で消さない）", JSON.stringify(localNotes(A)));
-  const cloudHasZ = Object.keys(sync).some((k) => k.startsWith("petarin:sync:n:"));
-  ok(cloudHasZ, "cloud の z.com item が削除されない", JSON.stringify(Object.keys(sync)));
+  const remoteHasZ = Object.keys(sync).some((k) => k.startsWith("petarin:sync:n:"));
+  ok(remoteHasZ, "同期ストレージの z.com item が削除されない", JSON.stringify(Object.keys(sync)));
 
   // B 側も無傷（誤削除の墓石伝播を受けない）
   const t3 = t2 + 1000;
@@ -425,7 +425,7 @@ async function scenarioS11() {
 
   const t0 = 11_000_000;
   seedDevice(A, { notes: { "victim.com": [note("K", "残す", t0), note("V", "消す", t0)] } });
-  await reconcileAs(A, modA, { now: t0 }); // cloud victim=[K,V]
+  await reconcileAs(A, modA, { now: t0 }); // 同期ストレージ victim=[K,V]
 
   const t1 = t0 + DAY;
   A.localStore[KEY_NOTES]["victim.com"] = [note("K", "残す", t0)]; // V だけ削除（K 残存）
@@ -465,7 +465,7 @@ async function scenarioS9() {
 
 // ════════════════════════════════════════════════════════════════
 // S12（監査R1b）: selected で unscope 中に他端末がそのドメインへ「追加」しても、re-scope 時に
-//   追加が「削除」と誤判定されない（out-of-scope は live cloud に追従せず前回合意値で凍結）。
+//   追加が「削除」と誤判定されない（out-of-scope は live 同期ストレージに追従せず前回合意値で凍結）。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS12() {
   console.log("S12（監査R1b）unscope中の他端末の追加が re-scope で誤削除されない:");
@@ -480,19 +480,19 @@ async function scenarioS12() {
   seedDevice(A, { notes: { "ex.com": [note("X", "共有", t0)] }, settings: sel });
   seedDevice(B, { notes: { "ex.com": [note("X", "共有", t0)] }, settings: sel });
   await reconcileAs(A, modA, { now: t0 });
-  await reconcileAs(B, modB, { now: t0 + 100 }); // 合意（shadow=[X], cloud=[X]）
+  await reconcileAs(B, modB, { now: t0 + 100 }); // 合意（shadow=[X], 同期ストレージ=[X]）
 
   // t1: A が ex.com を unscope
   const t1 = t0 + DAY;
   A.localStore[KEY_SETTINGS].syncDomains = [];
   await reconcileAs(A, modA, { now: t1 });
 
-  // t2: B が Y を追加 → cloud=[X,Y]
+  // t2: B が Y を追加 → 同期ストレージ=[X,Y]
   const t2 = t1 + DAY;
   B.localStore[KEY_NOTES]["ex.com"].push(note("Y", "B追加", t2));
   await reconcileAs(B, modB, { now: t2 });
 
-  // t3: A は unscope のまま reconcile（ここで shadow が live cloud[X,Y] へ前進してはいけない）
+  // t3: A は unscope のまま reconcile（ここで shadow が live 同期ストレージ[X,Y] へ前進してはいけない）
   const t3 = t2 + DAY;
   await reconcileAs(A, modA, { now: t3 });
 
@@ -521,7 +521,7 @@ async function scenarioS13() {
   const mod = await loadSync();
   const TTL = 180 * DAY;
 
-  // cloud meta に 8KB 超の墓石を仕込む（base 時刻＝若い→当面 metaDeferred を誘発）
+  // 同期ストレージの meta に 8KB 超の墓石を仕込む（base 時刻＝若い→当面 metaDeferred を誘発）
   const base = 13_000_000;
   const tomb = {};
   for (let i = 0; i < 400; i++) tomb[`d${i}.example.com${SEP}n_${i}`] = base - i * 1000;
@@ -540,9 +540,9 @@ async function scenarioS13() {
   const t2 = base + TTL + 2 * DAY;
   const r2 = await reconcileAs(A, mod, { now: t2 });
   const tombKeyV = `victim.com${SEP}V`;
-  const cloudMeta = sync[KEY_META] || { tomb: {} };
-  ok(!r2.metaDeferred && !!(cloudMeta.tomb && cloudMeta.tomb[tombKeyV]),
-    "回復後に victim|V 墓石が cloud meta へ永続化される", JSON.stringify({ deferred: r2.metaDeferred, hasV: !!(cloudMeta.tomb && cloudMeta.tomb[tombKeyV]) }));
+  const remoteMeta = sync[KEY_META] || { tomb: {} };
+  ok(!r2.metaDeferred && !!(remoteMeta.tomb && remoteMeta.tomb[tombKeyV]),
+    "回復後に victim|V 墓石が 同期ストレージの meta へ永続化される", JSON.stringify({ deferred: r2.metaDeferred, hasV: !!(remoteMeta.tomb && remoteMeta.tomb[tombKeyV]) }));
 
   // 回復後に shadow 無し独立コピー [K,V] を持つ端末 C が参加 → V は復活しない
   const C = makeDevice(sync, "dev-C");
@@ -555,7 +555,7 @@ async function scenarioS13() {
 
 // ════════════════════════════════════════════════════════════════
 // S14（監査R2c）: metaDeferred 中に「ドメインの最後の1枚」を削除（サイト全消し）しても、墓石が
-//   恒久喪失しない。cloud item を消さず scope に残すので、meta 回復時に削除を再検出して永続化できる。
+//   恒久喪失しない。同期ストレージ item を消さず scope に残すので、meta 回復時に削除を再検出して永続化できる。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS14() {
   console.log("S14（監査R2c）metaDeferred 中のサイト全消しでも回復後に墓石が永続化される:");
@@ -583,9 +583,9 @@ async function scenarioS14() {
   const t2 = base + TTL + 2 * DAY;
   const r2 = await reconcileAs(A, mod, { now: t2 });
   const tombKeyS = `single.com${SEP}S`;
-  const cloudMeta = sync[KEY_META] || { tomb: {} };
-  ok(!r2.metaDeferred && !!(cloudMeta.tomb && cloudMeta.tomb[tombKeyS]),
-    "回復後に single|S 墓石が cloud meta へ永続化される", JSON.stringify({ deferred: r2.metaDeferred, hasS: !!(cloudMeta.tomb && cloudMeta.tomb[tombKeyS]) }));
+  const remoteMeta = sync[KEY_META] || { tomb: {} };
+  ok(!r2.metaDeferred && !!(remoteMeta.tomb && remoteMeta.tomb[tombKeyS]),
+    "回復後に single|S 墓石が 同期ストレージの meta へ永続化される", JSON.stringify({ deferred: r2.metaDeferred, hasS: !!(remoteMeta.tomb && remoteMeta.tomb[tombKeyS]) }));
 
   // 回復後に独立コピー [S] を持つ shadow 無し端末 C が参加 → S は復活しない
   const C = makeDevice(sync, "dev-C");
@@ -628,11 +628,11 @@ async function scenarioS15() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// S16（Codex #1）: FNV キー衝突する別ドメインの既存 cloud item を上書きで失わせない。
+// S16（Codex #1）: FNV キー衝突する別ドメインの既存 同期ストレージ item を上書きで失わせない。
 //   1i7pldlz.com と l5gfxc04.com は同じ petarin:sync:n:87354f19 に化ける。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS16() {
-  console.log("S16（Codex#1）FNV 衝突で既存 cloud item を上書きしない:");
+  console.log("S16（Codex#1）FNV 衝突で既存 同期ストレージ item を上書きしない:");
   const sync = {};
   const KEY = "petarin:sync:n:87354f19";
   const B = makeDevice(sync, "dev-B");
@@ -641,27 +641,27 @@ async function scenarioS16() {
   const modA = await loadSync();
 
   const t0 = 16_000_000;
-  // B が l5gfxc04.com を先に push（cloud のキー所有者になる）
+  // B が l5gfxc04.com を先に push（同期ストレージのキー所有者になる）
   seedDevice(B, { notes: { "l5gfxc04.com": [note("B1", "Bの付箋", t0)] } });
   await reconcileAs(B, modB, { now: t0 });
-  ok(sync[KEY] && sync[KEY].d === "l5gfxc04.com", "cloud キーは l5gfxc04.com が所有", JSON.stringify(sync[KEY] && sync[KEY].d));
+  ok(sync[KEY] && sync[KEY].d === "l5gfxc04.com", "同期ストレージ キーは l5gfxc04.com が所有", JSON.stringify(sync[KEY] && sync[KEY].d));
 
   // A が衝突する 1i7pldlz.com を持って reconcile（newer）→ B の slot を奪ってはいけない
   seedDevice(A, { notes: { "1i7pldlz.com": [note("A1", "Aの付箋", t0 + DAY)] } });
   const rA = await reconcileAs(A, modA, { now: t0 + DAY });
 
-  ok(sync[KEY] && sync[KEY].d === "l5gfxc04.com", "cloud item は上書きされず l5gfxc04.com のまま", JSON.stringify(sync[KEY] && sync[KEY].d));
+  ok(sync[KEY] && sync[KEY].d === "l5gfxc04.com", "同期ストレージ item は上書きされず l5gfxc04.com のまま", JSON.stringify(sync[KEY] && sync[KEY].d));
   const collided = rA.domains.find((d) => d.domain === "1i7pldlz.com");
   ok(collided && collided.synced === false && collided.reason === "hash_collision", "衝突ドメインは hash_collision で未同期", JSON.stringify(collided));
   ok((localNotes(A)["1i7pldlz.com"] || []).some((n) => n.id === "A1"), "A のローカル付箋は残る（消えない）", JSON.stringify(localNotes(A)["1i7pldlz.com"]));
 }
 
 // ════════════════════════════════════════════════════════════════
-// S17（Codex #2）: selected スコープで、スコープ外の既存 cloud item も総容量に算入し、
+// S17（Codex #2）: selected スコープで、スコープ外の既存 同期ストレージ item も総容量に算入し、
 //   収まらない自ドメインを write_failed ではなく決定的に quota_exceeded で skip する。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS17() {
-  console.log("S17（Codex#2）スコープ外 cloud item を総容量に算入し決定的に skip:");
+  console.log("S17（Codex#2）スコープ外 同期ストレージ item を総容量に算入し決定的に skip:");
   const sync = {};
   const O = makeDevice(sync, "dev-O");
   const A = makeDevice(sync, "dev-A");
@@ -717,14 +717,14 @@ async function scenarioS19() {
 
   const syncedCount = r.domains.filter((d) => d.synced).length;
   const itemLimited = r.domains.filter((d) => d.reason === "item_limit").length;
-  // 墓石なし＝meta item は cloud に存在せず今回も書かない（slot 予約しない）。note 512 item ちょうどまで収まる。
+  // 墓石なし＝meta item は 同期ストレージに存在せず今回も書かない（slot 予約しない）。note 512 item ちょうどまで収まる。
   ok(syncedCount === 512, "同期ドメイン item 数が上限 512 ちょうどまで（meta 不在なので予約しない）", `synced=${syncedCount}`);
   ok(itemLimited > 0, "超過ドメインは item_limit で決定的に skip", `item_limit=${itemLimited}`);
   ok(!r.error, "write_failed にならない（reject しない）", JSON.stringify(r.error));
 }
 
 // ════════════════════════════════════════════════════════════════
-// S20（Codex #7）: 墓石(set)が失敗した時は cloud item を remove しない（set→remove の順序保証）。
+// S20（Codex #7）: 墓石(set)が失敗した時は 同期ストレージ item を remove しない（set→remove の順序保証）。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS20() {
   console.log("S20（Codex#7）墓石 set 失敗時は item を remove しない（順序保証）:");
@@ -741,7 +741,7 @@ async function scenarioS20() {
   A.ctl.failSetOnly = true;
   const r = await reconcileAs(A, mod, { now: 20_000_000 + DAY });
   ok(!!r.error, "set 失敗が report.error に乗る", JSON.stringify(r.error));
-  ok(!!sync[noteKey], "set 失敗時に cloud item は remove されない（順序保証）", String(!!sync[noteKey]));
+  ok(!!sync[noteKey], "set 失敗時に 同期ストレージ item は remove されない（順序保証）", String(!!sync[noteKey]));
 
   // 回復後の再 reconcile で削除が確定し item が消える
   A.ctl.failSetOnly = false;
@@ -762,7 +762,7 @@ async function scenarioS21() {
   const mod = await loadSync();
   const t0 = 21_000_000;
   seedDevice(A, { notes: { "ex.com": [note("X", "元", t0)] } });
-  await reconcileAs(A, mod, { now: t0 }); // cloud/shadow に X@t0
+  await reconcileAs(A, mod, { now: t0 }); // 同期ストレージ/shadow に X@t0
 
   // 「割り込み編集」の最終状態を localStore に置く（X@t1 edited）
   A.localStore[KEY_NOTES] = { "ex.com": [note("X", "編集", t0 + 1000)] };
@@ -843,20 +843,20 @@ async function scenarioS24() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// S25（Codex #12）: 容量退避(domain_too_large)で残る既存 cloud item のバイトを会計に算入する。
+// S25（Codex #12）: 容量退避(domain_too_large)で残る既存 同期ストレージ item のバイトを会計に算入する。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS25() {
-  console.log("S25（Codex#12）退避で残る既存 cloud item を会計に算入する:");
+  console.log("S25（Codex#12）退避で残る既存 同期ストレージ item を会計に算入する:");
   const sync = {};
   const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
   const t0 = 25_000_000;
   seedDevice(A, { notes: { "big.com": [note("b1", "小さい付箋", t0)] } });
-  await reconcileAs(A, mod, { now: t0 }); // cloud に big.com の小さい item
+  await reconcileAs(A, mod, { now: t0 }); // 同期ストレージに big.com の小さい item
   const bigKey = Object.keys(sync).find((k) => k.startsWith("petarin:sync:n:"));
   const retainedBytes = new TextEncoder().encode(JSON.stringify({ [bigKey]: sync[bigKey] })).length;
 
-  // big.com を perItemBudget 超まで肥大化 → domain_too_large で退避（旧 item は cloud に残る）
+  // big.com を perItemBudget 超まで肥大化 → domain_too_large で退避（旧 item は 同期ストレージに残る）
   A.localStore[KEY_NOTES]["big.com"] = [note("b1", "z".repeat(400), t0 + DAY)];
   const r = await reconcileAs(A, mod, { now: t0 + DAY, perItemBudget: 50 });
   const big = r.domains.find((d) => d.domain === "big.com");
@@ -920,9 +920,9 @@ async function scenarioS28() {
   const notes = {};
   for (let i = 0; i < 511; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
   seedDevice(A, { notes });
-  await reconcileAs(A, mod, { now: t0 }); // 初回は墓石が空＝meta item は書かれず、cloud は note 511 item のみ
-  const cloudItems = Object.keys(sync).length;
-  ok(cloudItems === 511, "初回同期は墓石無しで meta 未書き込み＝cloud は note 511 item", `items=${cloudItems}`);
+  await reconcileAs(A, mod, { now: t0 }); // 初回は墓石が空＝meta item は書かれず、同期ストレージは note 511 item のみ
+  const remoteItems = Object.keys(sync).length;
+  ok(remoteItems === 511, "初回同期は墓石無しで meta 未書き込み＝同期ストレージは note 511 item", `items=${remoteItems}`);
 
   // d0 を空にして削除（removeKey）＋新規ドメインを追加。実 chrome 同様 set 時に MAX_ITEMS を判定させる。
   const next = structuredClone(notes);
@@ -936,7 +936,7 @@ async function scenarioS28() {
   ok(!r.error, "上限ちょうどの削除+追加で write_failed にならない", JSON.stringify(r.error));
   const nd = r.domains.find((d) => d.domain === "new.example.com");
   ok(nd && nd.synced, "新規ドメインが同期される", JSON.stringify(nd));
-  ok(!sync[mod.domainKey("d0.example.com")], "削除したドメインの cloud item が remove される", String(!!sync[mod.domainKey("d0.example.com")]));
+  ok(!sync[mod.domainKey("d0.example.com")], "削除したドメインの 同期ストレージ item が remove される", String(!!sync[mod.domainKey("d0.example.com")]));
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -952,10 +952,10 @@ async function scenarioS29() {
   seedDevice(A, { notes: { "ex.com": [note("X", "本文", t0)] } });
   await reconcileAs(A, mod, { now: t0 });
   const key = Object.keys(sync).find((k) => k.startsWith("petarin:sync:n:"));
-  // 削除して reconcile（墓石 deletedAt = t0+DAY、shadow と cloud から X が消える）
+  // 削除して reconcile（墓石 deletedAt = t0+DAY、shadow と 同期ストレージ から X が消える）
   A.localStore[KEY_NOTES] = {};
   await reconcileAs(A, mod, { now: t0 + DAY });
-  ok(!sync[key], "削除が同期され cloud から X が消える", String(!!sync[key]));
+  ok(!sync[key], "削除が同期され 同期ストレージ から X が消える", String(!!sync[key]));
 
   // (a) 古い updatedAt のまま復元 → 墓石(t0+DAY) > updatedAt(t0) で次 reconcile に再削除される（ハザード）
   A.localStore[KEY_NOTES] = { "ex.com": [note("X", "本文", t0)] };
@@ -966,12 +966,12 @@ async function scenarioS29() {
   A.localStore[KEY_NOTES] = { "ex.com": [note("X", "本文", t0 + 3 * DAY)] };
   const rb = await reconcileAs(A, mod, { now: t0 + 3 * DAY });
   ok((localNotes(A)["ex.com"] || []).some((n) => n.id === "X"), "updatedAt を now に更新した復元は墓石に勝って復活", JSON.stringify(localNotes(A)["ex.com"] || []));
-  ok(!!sync[key], "復活が cloud にも同期される", String(!!sync[key]));
+  ok(!!sync[key], "復活が 同期ストレージにも同期される", String(!!sync[key]));
 }
 
 // ════════════════════════════════════════════════════════════════
 // S30（敵対監査P1）: meta/settings/note のどれでもない未知 sync キー（旧スキーマ・将来の墓石
-//   シャーディング・改竄）も cloud に残り占有するので会計に算入し、上限近傍で write_failed させず
+//   シャーディング・改竄）も 同期ストレージに残り占有するので会計に算入し、上限近傍で write_failed させず
 //   決定的に skip する。未知キー自体は温存（消さない）。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS30() {
@@ -995,7 +995,7 @@ async function scenarioS30() {
   ok(r.domains.some((d) => d.reason === "item_limit"), "超過分は item_limit で決定的に skip", `item_limit=${r.domains.filter((d) => d.reason === "item_limit").length}`);
   const shardsLeft = Object.keys(sync).filter((k) => k.startsWith("petarin:sync:meta:shard")).length;
   ok(shardsLeft === 5, "未知キーは温存される（消さない）", `shards=${shardsLeft}`);
-  ok(Object.keys(sync).length <= 512, "実 cloud item 数が上限 512 を超えない", `items=${Object.keys(sync).length}`);
+  ok(Object.keys(sync).length <= 512, "実 同期ストレージ item 数が上限 512 を超えない", `items=${Object.keys(sync).length}`);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1037,8 +1037,8 @@ async function scenarioS31() {
   ok(!!aN && aN.text === "Bが削除後に編集",
     "実削除時刻(tDel<tEdit)で墓石を刻むので B の後発編集が復活する",
     aN ? `text=${JSON.stringify(aN.text)}` : "N が消えた（now 刻印なら delete-wins で握り潰し）");
-  const cloudKey = Object.keys(sync).find((k) => k.startsWith("petarin:sync:n:"));
-  ok(!!cloudKey && !!sync[cloudKey], "cloud にも編集版 N が残る（削除は伝播しない）", JSON.stringify(Object.keys(sync)));
+  const remoteKey = Object.keys(sync).find((k) => k.startsWith("petarin:sync:n:"));
+  ok(!!remoteKey && !!sync[remoteKey], "同期ストレージにも編集版 N が残る（削除は伝播しない）", JSON.stringify(Object.keys(sync)));
 
   // 対照: localTombs を残さない（=now 刻印フォールバック）同じ手順は delete-wins で編集が消える（旧バグ）
   const sync2 = {};
@@ -1060,16 +1060,16 @@ async function scenarioS31() {
 
 // ════════════════════════════════════════════════════════════════
 // S32（監査I4）: >180日オフライン後に削除を初観測する稀ケースでも、墓石が同回 gcTombstones で即 GC されず
-//   cloud meta に永続化される（実削除時刻が TTL 超でも初確立分は GC 除外＝shadow 無し端末の rejoin に備える）。
+//   同期ストレージの meta に永続化される（実削除時刻が TTL 超でも初確立分は GC 除外＝shadow 無し端末の rejoin に備える）。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS32() {
-  console.log("S32（監査I4）>180日前の削除を初観測しても墓石が即GCされず cloud に永続化する:");
+  console.log("S32（監査I4）>180日前の削除を初観測しても墓石が即GCされず 同期ストレージに永続化する:");
   const sync = {};
   const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
   const t0 = 32_000_000;
   seedDevice(A, { notes: { "ex.com": [note("N", "本文", t0)] } });
-  await reconcileAs(A, mod, { now: t0 }); // cloud に N、A shadow に N
+  await reconcileAs(A, mod, { now: t0 }); // 同期ストレージに N、A shadow に N
   // A がオフラインで削除（実削除時刻 t0+DAY）、その後 181 日 reconcile せず再接続（localTombs の deletedAt は TTL 超）
   const tDel = t0 + 1 * DAY;
   A.localStore[KEY_NOTES] = {};
@@ -1079,7 +1079,7 @@ async function scenarioS32() {
   const meta = sync["petarin:sync:meta"];
   // tombKey は domain+SEP+id（SEP は制御文字）。再構築せず「値 tDel が墓石に在る」かで検証する。
   const tombVals = meta && meta.tomb ? Object.values(meta.tomb) : [];
-  ok(tombVals.includes(tDel), "墓石が実削除時刻で cloud meta に永続化される（同回で即GCされない）", JSON.stringify(meta && meta.tomb));
+  ok(tombVals.includes(tDel), "墓石が実削除時刻で 同期ストレージの meta に永続化される（同回で即GCされない）", JSON.stringify(meta && meta.tomb));
   ok(!(localNotes(A)["ex.com"] || []).some((n) => n.id === "N"), "N は削除されたまま（並行編集なし＝delete-wins）", JSON.stringify(localNotes(A)["ex.com"] || []));
 }
 
@@ -1093,7 +1093,7 @@ async function scenarioS33() {
   const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
   const t0 = 33_000_000;
-  // 1) STALE を good.com として正規同期 → cloud に正規キーで「中身入り encoded item」ができる
+  // 1) STALE を good.com として正規同期 → 同期ストレージに正規キーで「中身入り encoded item」ができる
   seedDevice(A, { notes: { "good.com": [note("STALE", "古い本文", t0)] } });
   await reconcileAs(A, mod, { now: t0 });
   const goodKey = mod.domainKey("good.com");
@@ -1114,7 +1114,7 @@ async function scenarioS33() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// S34（Codex）: 破損 meta（配列）は sanitize されるが生 item は cloud に残るので、生サイズで会計し
+// S34（Codex）: 破損 meta（配列）は sanitize されるが生 item は 同期ストレージに残るので、生サイズで会計し
 //   容量超過を決定的に skip する（生を会計しないと undercount → write_failed）。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS34() {
@@ -1123,7 +1123,7 @@ async function scenarioS34() {
   const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
   const t0 = 34_000_000;
-  const badMeta = new Array(80).fill("zzzz"); // 配列＝破損。sanitize されるが生は cloud に残り占有
+  const badMeta = new Array(80).fill("zzzz"); // 配列＝破損。sanitize されるが生は 同期ストレージに残り占有
   sync["petarin:sync:meta"] = badMeta;
   const rawMetaBytes = new TextEncoder().encode(JSON.stringify({ "petarin:sync:meta": badMeta })).length;
   seedDevice(A, { notes: { "a.com": [note("n1", "x".repeat(50), t0)] } });
@@ -1192,7 +1192,7 @@ async function scenarioS37() {
   const sync = {}; const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
   seedDevice(A, { notes: { "ex.com": [note("N", "本文", t0)] } });
-  await reconcileAs(A, mod, { now: t0 });                 // cloud に N、A shadow に N
+  await reconcileAs(A, mod, { now: t0 });                 // 同期ストレージに N、A shadow に N
   A.localStore["petarin:sync:shadow"] = { notes: {}, settings: null, settingsT: 0 }; // OFF＝shadow 破棄(purge 相当)
   A.localStore[KEY_NOTES] = {};                            // OFF 中に N を削除
   A.localStore[KEY_LOCAL_TOMBS] = { "ex.com": { N: t0 + DAY } }; // 実削除時刻を記録
@@ -1210,11 +1210,11 @@ async function scenarioS37() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// S38（Codex）: metaDeferred 中の「部分削除」は短縮 item を publish せず旧 cloud item を温存する
+// S38（Codex）: metaDeferred 中の「部分削除」は短縮 item を publish せず旧 同期ストレージ item を温存する
 //   （墓石無しの短縮を見た shadow 無し端末が削除済みノートを再 publish するのを防ぐ。R2c の部分削除版）。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS38() {
-  console.log("S38（Codex#1）metaDeferred 中の部分削除は短縮 item を publish せず旧 cloud item を温存:");
+  console.log("S38（Codex#1）metaDeferred 中の部分削除は短縮 item を publish せず旧 同期ストレージ item を温存:");
   const sync = {}; const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
   const base = 38_000_000;
@@ -1231,7 +1231,7 @@ async function scenarioS38() {
   ok(ex && ex.synced === false && ex.reason === "delete_deferred", "部分削除は delete_deferred で保留", JSON.stringify(ex));
   const decoded = await mod.decodeDomainItem(sync[exKey]);
   const ids = decoded.map((n) => n.id).sort();
-  ok(ids.length === 2 && ids[0] === "K" && ids[1] === "V", "cloud item は短縮されず [K,V] を温存", JSON.stringify(ids));
+  ok(ids.length === 2 && ids[0] === "K" && ids[1] === "V", "同期ストレージ item は短縮されず [K,V] を温存", JSON.stringify(ids));
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1299,9 +1299,9 @@ async function scenarioS41() {
 // S42（Codex 改訂）: 満杯ストア(512 item・meta 未存在)で削除すると、初の墓石 meta に枠が要る。remove-first で
 //   枠を空けてから meta を書く旧方式は、meta-set が transient に失敗すると item 消去済み＋墓石未保存になり、
 //   "all" スコープ再マージが shadow だけの削除ドメインを拾えず墓石を再生成できない＝stale 端末が再 publish する。
-//   よって「満杯＋新規 meta が要る」回は削除を metaDeferred 扱いで保留（cloud item 温存＝データロス無し）。枠が
+//   よって「満杯＋新規 meta が要る」回は削除を metaDeferred 扱いで保留（同期ストレージ item 温存＝データロス無し）。枠が
 //   空けば次回 meta-first で安全に伝播する。
-//   load-bearing: 旧 remove-first 実装だと cloud item が即 remove される（保留にならず item が消える）。
+//   load-bearing: 旧 remove-first 実装だと 同期ストレージ item が即 remove される（保留にならず item が消える）。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS42() {
   console.log("S42（Codex改訂）満杯+meta未存在の削除は保留（remove-first で墓石喪失しない）→枠が空けば伝播:");
@@ -1313,9 +1313,9 @@ async function scenarioS42() {
   // note 511 を同期した上で未知 item を 1 個直接置いて 512 item に整える（meta はまだ無い）。
   for (let i = 0; i < 511; i++) notes[`d${i}.example.com`] = [note("n" + i, "x", t0)];
   seedDevice(A, { notes });
-  await reconcileAs(A, mod, { now: t0 }); // cloud=511 note item、墓石空＝meta 未書き込み
+  await reconcileAs(A, mod, { now: t0 }); // 同期ストレージ=511 note item、墓石空＝meta 未書き込み
   sync["petarin:sync:legacy-blob"] = { junk: "z" }; // 未知 item で 512 に満たす
-  ok(Object.keys(sync).length === 512 && !sync[KEY_META], "cloud を 512 item・meta 無しに整える", `items=${Object.keys(sync).length} meta=${!!sync[KEY_META]}`);
+  ok(Object.keys(sync).length === 512 && !sync[KEY_META], "同期ストレージを 512 item・meta 無しに整える", `items=${Object.keys(sync).length} meta=${!!sync[KEY_META]}`);
   const d0Key = mod.domainKey("d0.example.com");
   // d0 を削除（初の墓石＝meta 新規 item が必要だが満杯）→ 保留される。
   const next = structuredClone(notes);
@@ -1327,16 +1327,16 @@ async function scenarioS42() {
   ok(r.metaDeferred === true, "満杯+新規 meta は metaDeferred 扱い", JSON.stringify(r.metaDeferred));
   const d0 = r.domains.find((d) => d.domain === "d0.example.com");
   ok(d0 && d0.synced === false && d0.reason === "delete_deferred", "d0 の削除は delete_deferred で保留", JSON.stringify(d0));
-  ok(!!sync[d0Key], "保留中は cloud item を温存（remove-first で墓石喪失しない＝データロス無し）", String(!!sync[d0Key]));
+  ok(!!sync[d0Key], "保留中は 同期ストレージ item を温存（remove-first で墓石喪失しない＝データロス無し）", String(!!sync[d0Key]));
   ok(!sync[KEY_META], "meta はまだ書かれない（枠が無い）", String(!!sync[KEY_META]));
   // 枠が空けば（未知 item を撤去＝511 に）次回 reconcile で meta-first で安全に伝播する。
   delete sync["petarin:sync:legacy-blob"];
   const r2 = await reconcileAs(A, mod, { now: t0 + 2 * DAY });
   A.ctl.maxItems = null;
   ok(!r2.error, "枠が空いた回も write_failed にならない", JSON.stringify(r2.error));
-  ok(!sync[d0Key], "枠が空けば d0 の cloud item が remove される（削除伝播）", String(!!sync[d0Key]));
-  ok(!!sync[KEY_META], "墓石 meta item が cloud に書かれる", String(!!sync[KEY_META]));
-  ok(Object.keys(sync).length <= 512, "実 cloud item 数が上限 512 を超えない", `items=${Object.keys(sync).length}`);
+  ok(!sync[d0Key], "枠が空けば d0 の 同期ストレージ item が remove される（削除伝播）", String(!!sync[d0Key]));
+  ok(!!sync[KEY_META], "墓石 meta item が 同期ストレージに書かれる", String(!!sync[KEY_META]));
+  ok(Object.keys(sync).length <= 512, "実 同期ストレージ item 数が上限 512 を超えない", `items=${Object.keys(sync).length}`);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1415,7 +1415,7 @@ async function scenarioS45() {
 
 // ════════════════════════════════════════════════════════════════
 // S46（Codex）: 2 台目が初回（shadow 無し）に設定同期を ON にしたとき、既存 remote 設定を pull する
-//   （base 無しだと local 既定値も「変化」に見え、cloud を新端末の既定値で上書きして同期済み見た目を消す）。
+//   （base 無しだと local 既定値も「変化」に見え、同期ストレージを新端末の既定値で上書きして同期済み見た目を消す）。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS46() {
   console.log("S46（Codex）2台目の初回設定同期は既存 remote を pull（既定値で上書きしない）:");
@@ -1428,26 +1428,26 @@ async function scenarioS46() {
   seedDevice(A, { notes: {}, settings: { syncSettings: true, side: "left", creatorRatio: 0.3 } });
   await reconcileAs(A, modA, { now: t0 });
   const sKey = modA.SYNC_KEYS.settings;
-  ok(sync[sKey] && sync[sKey].s && sync[sKey].s.side === "left", "A の見た目設定(side=left)が cloud に push される", JSON.stringify(sync[sKey] && sync[sKey].s));
+  ok(sync[sKey] && sync[sKey].s && sync[sKey].s.side === "left", "A の見た目設定(side=left)が 同期ストレージに push される", JSON.stringify(sync[sKey] && sync[sKey].s));
   seedDevice(B, { notes: {}, settings: { syncSettings: true, side: "right" } });
   await reconcileAs(B, modB, { now: t0 + 1000 });
   ok(B.localStore[KEY_SETTINGS].side === "left", "B は A の同期済み設定(side=left)を pull する", `side=${B.localStore[KEY_SETTINGS].side}`);
-  ok(sync[sKey].s.side === "left", "cloud の設定が B の既定値(side=right)で上書きされない", JSON.stringify(sync[sKey].s));
+  ok(sync[sKey].s.side === "left", "同期ストレージの設定が B の既定値(side=right)で上書きされない", JSON.stringify(sync[sKey].s));
 }
 
 // ════════════════════════════════════════════════════════════════
-// S47（Codex）: metaDeferred でも、墓石が既に cloud meta に永続済み（newTombDomains 非該当＝durable
-//   backstop 在り）のドメインは cloud item を削除する（残すと bytes/slot を無駄に占有し quota を空けられない）。
+// S47（Codex）: metaDeferred でも、墓石が既に 同期ストレージの meta に永続済み（newTombDomains 非該当＝durable
+//   backstop 在り）のドメインは 同期ストレージ item を削除する（残すと bytes/slot を無駄に占有し quota を空けられない）。
 //   load-bearing: 旧 `!report.metaDeferred` ゲートだと metaDeferred 時に常に温存＝item が残り FAIL。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS47() {
-  console.log("S47（Codex）永続済み墓石なら metaDeferred でも cloud item を削除（quota を空ける）:");
+  console.log("S47（Codex）永続済み墓石なら metaDeferred でも 同期ストレージ item を削除（quota を空ける）:");
   const sync = {}; const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
   const base = 47_000_000;
   const exKey = mod.domainKey("ex.com");
   const tk = "ex.com" + SEP + "V";
-  const tomb = { [tk]: base - 1000 }; // ex.com/V の墓石は「既に cloud meta に永続済み」
+  const tomb = { [tk]: base - 1000 }; // ex.com/V の墓石は「既に 同期ストレージの meta に永続済み」
   for (let i = 0; i < 400; i++) tomb[`d${i}.example.com${SEP}n_${i}`] = base - i * 1000; // 8KB 超で metaDeferred
   sync[KEY_META] = { v: 1, tomb };
   sync[exKey] = { d: "ex.com", n: [mod.compactNote(note("V", "消", base - 2000))] }; // 以前 deferred された stale item
@@ -1457,7 +1457,7 @@ async function scenarioS47() {
   ok(r.metaDeferred === true, "metaDeferred 状態（墓石 8KB 超）", JSON.stringify(r.metaDeferred));
   const ex = r.domains.find((d) => d.domain === "ex.com");
   ok(ex && ex.synced === true && ex.reason !== "delete_deferred", "永続済み墓石の削除は保留せず synced", JSON.stringify(ex));
-  ok(!sync[exKey], "cloud item が削除される（quota が空く）", String(!!sync[exKey]));
+  ok(!sync[exKey], "同期ストレージ item が削除される（quota が空く）", String(!!sync[exKey]));
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1544,7 +1544,7 @@ async function scenarioS51() {
   ok(r.domains.filter((d) => d.reason === "item_limit").length === 0, "orphan 二重計上が無く item_limit にならない", JSON.stringify(r.domains.filter((d) => d.reason === "item_limit").map((d) => d.domain)));
   const ex = r.domains.find((d) => d.domain === "ex.com");
   ok(ex && ex.synced, "ex.com が同期される（orphan slot を上書き）", JSON.stringify(ex));
-  ok(Object.keys(sync).length <= 512, "cloud item は 512 以内", `items=${Object.keys(sync).length}`);
+  ok(Object.keys(sync).length <= 512, "同期ストレージ item は 512 以内", `items=${Object.keys(sync).length}`);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1595,7 +1595,7 @@ async function scenarioS53() {
 
 // ════════════════════════════════════════════════════════════════
 // S54（Codex 再）: orphan の key が in-scope ドメインの domainKey と一致しても、そのドメインが skip
-//   （domain_too_large 等）されると orphan は cloud に残る。会計から先に一律除外すると undercount→write_failed
+//   （domain_too_large 等）されると orphan は 同期ストレージに残る。会計から先に一律除外すると undercount→write_failed
 //   になるので、orphan は baseline に残し「書き込みが accept された key だけ」差し引く。skip 時は残ったまま。
 //   load-bearing: round4 の一律除外だと skip 時に orphan が会計から落ちて diff=0 になる。
 // ════════════════════════════════════════════════════════════════
@@ -1695,7 +1695,7 @@ async function scenarioS57() {
 // ════════════════════════════════════════════════════════════════
 // S58（Codex）: 予約名 id（__proto__）の削除でも localTombs に own 記録が残る（storage.js の書き込み経路）。
 //   素の dom[id]=now だと id="__proto__" は own を作らず prototype 差し替えになり削除記録が消える → 再 ON 時に
-//   reconcile が tomb 不在で stale な cloud ノートを復活させる。defineProperty で own+enumerable を保証する。
+//   reconcile が tomb 不在で stale な 同期ストレージ ノートを復活させる。defineProperty で own+enumerable を保証する。
 //   load-bearing: ownSet が無いと own プロパティが作られず hasOwnProperty が偽になる。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS58() {
@@ -1746,10 +1746,10 @@ async function scenarioS59() {
 // S60（Codex）: push 直前に syncEnabled=false なら external な sync 書き込みを中止する（opt-out 尊重）。
 //   関数冒頭で syncEnabled=true を読んだ後、merge/gzip の await を跨ぐ間にユーザーが OFF にした競合。
 //   set/remove 直前に再読し無効化済みなら push 相を中止する（OFF 後に編集を送信しない）。
-//   load-bearing: 再読・中止が無いと冒頭スナップショットのまま cloud へ push してしまう。
+//   load-bearing: 再読・中止が無いと冒頭スナップショットのまま 同期ストレージへ push してしまう。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS60() {
-  console.log("S60（Codex）push 直前に syncEnabled=false なら cloud 書き込みを中止する:");
+  console.log("S60（Codex）push 直前に syncEnabled=false なら 同期ストレージ 書き込みを中止する:");
   const sync = {};
   const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
@@ -1768,11 +1768,11 @@ async function scenarioS60() {
   const report = await reconcileAs(A, mod, { now: t0 });
   ok(report.abortedByOptOut === true, "report.abortedByOptOut が立つ", JSON.stringify({ a: report.abortedByOptOut }));
   const wrote = Object.keys(sync).some((k) => k.startsWith("petarin:sync:n:"));
-  ok(!wrote, "opt-out 後は cloud に付箋 item を書かない", JSON.stringify(Object.keys(sync)));
+  ok(!wrote, "opt-out 後は 同期ストレージに付箋 item を書かない", JSON.stringify(Object.keys(sync)));
 }
 
 // ════════════════════════════════════════════════════════════════
-// S61（Codex）: meta slot は「meta item が cloud に実在」or「今回 meta を書く」ときだけ数える。
+// S61（Codex）: meta slot は「meta item が 同期ストレージに実在」or「今回 meta を書く」ときだけ数える。
 //   meta 不在かつ今回書かない通常回で 1 を予約すると、512 item を上限ちょうどで in-place 更新する回に最後の
 //   ドメインが item_limit と誤報告され 1 ドメインが未同期に落ちる。load-bearing: 予約有無で 512↔511 が変わる。
 // ════════════════════════════════════════════════════════════════
@@ -1790,7 +1790,7 @@ async function scenarioS61() {
     const synced = r.domains.filter((d) => d.synced).length;
     ok(synced === 512, "meta 不在なら 512 ドメインがちょうど収まる（phantom slot を予約しない）", `synced=${synced}`);
   }
-  // (b) cloud に meta item が実在 → slot を数え 511 まで・1 が item_limit
+  // (b) 同期ストレージに meta item が実在 → slot を数え 511 まで・1 が item_limit
   {
     const sync = { "petarin:sync:meta": { v: 1, tomb: {} } };
     const A = makeDevice(sync, "dev-A");
@@ -1955,7 +1955,7 @@ async function scenarioS66() {
 
 // ════════════════════════════════════════════════════════════════
 // S67（ゴミ箱）: ある端末の削除がゴミ箱として同期され、他端末では notes から消えつつ（墓石伝播）
-//   ゴミ箱に出る（同期 pull ＋ 消失退避）。ゴミ箱は cloud item として publish される。
+//   ゴミ箱に出る（同期 pull ＋ 消失退避）。ゴミ箱は 同期ストレージ item として publish される。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS67() {
   console.log("S67（ゴミ箱）削除がゴミ箱として同期され、他端末で notes から消えつつゴミ箱に出る:");
@@ -1975,7 +1975,7 @@ async function scenarioS67() {
   A.localStore[KEY_LOCAL_TOMBS] = { "ex.com": { X: t1 } };
   A.localStore[KEY_TRASH] = [{ domain: "ex.com", note: note("X", "本文", t0), deletedAt: t1, origin: "user" }];
   await reconcileAs(A, modA, { now: t1 });
-  ok(!!sync[modA.SYNC_KEYS.trash], "cloud に trash item が publish される", JSON.stringify(Object.keys(sync)));
+  ok(!!sync[modA.SYNC_KEYS.trash], "同期ストレージに trash item が publish される", JSON.stringify(Object.keys(sync)));
   // t2: B が pull
   const t2 = t1 + 1000;
   await reconcileAs(B, modB, { now: t2 });
@@ -1995,7 +1995,7 @@ async function scenarioS68() {
   const B = makeDevice(sync, "dev-B");
   const modB = await loadSync();
   const t0 = 68_000_000, t1 = t0 + DAY;
-  sync[modB.SYNC_KEYS.meta] = { v: 1, tomb: { ["ex.com" + SEP + "X"]: t1 } }; // cloud は X 削除済み
+  sync[modB.SYNC_KEYS.meta] = { v: 1, tomb: { ["ex.com" + SEP + "X"]: t1 } }; // 同期ストレージは X 削除済み
   seedDevice(B, { notes: {} });
   B.localStore[KEY_LOCAL_TOMBS] = { "ex.com": { X: t1 } };
   B.localStore[KEY_TRASH] = [{ domain: "ex.com", note: note("X", "本文", t0), deletedAt: t1, origin: "user" }];
@@ -2010,10 +2010,10 @@ async function scenarioS68() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// S69（ゴミ箱）: 同期 OFF（既定）ではゴミ箱を cloud に一切送らない（外部送信ゼロを維持）。
+// S69（ゴミ箱）: 同期 OFF（既定）ではゴミ箱を 同期ストレージに一切送らない（外部送信ゼロを維持）。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS69() {
-  console.log("S69（ゴミ箱）同期 OFF ではゴミ箱を cloud に送らない（外部送信ゼロ）:");
+  console.log("S69（ゴミ箱）同期 OFF ではゴミ箱を 同期ストレージに送らない（外部送信ゼロ）:");
   const sync = {};
   const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
@@ -2022,7 +2022,7 @@ async function scenarioS69() {
   A.localStore[KEY_TRASH] = [{ domain: "ex.com", note: note("X", "本文", t0), deletedAt: t0, origin: "user" }];
   const r = await reconcileAs(A, mod, { now: t0 });
   ok(r.enabled === false, "OFF なら reconcile は即終了", JSON.stringify({ e: r.enabled }));
-  ok(Object.keys(sync).length === 0, "cloud には何も書かれない（trash も）", JSON.stringify(Object.keys(sync)));
+  ok(Object.keys(sync).length === 0, "同期ストレージには何も書かれない（trash も）", JSON.stringify(Object.keys(sync)));
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -2042,11 +2042,11 @@ async function scenarioS70() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// S71（ゴミ箱）: cloud trash item が per-item 予算を超えるとき最古から間引いて収める（local は全件保持）。
+// S71（ゴミ箱）: 同期ストレージ trash item が per-item 予算を超えるとき最古から間引いて収める（local は全件保持）。
 //   局所的な graceful degrade（notes の domain_too_large と同方針）。最新エントリ優先で残す。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS71() {
-  console.log("S71（ゴミ箱）cloud item が per-item 予算超なら最古から間引いて収める（local は全件保持・最新優先）:");
+  console.log("S71（ゴミ箱）同期ストレージ item が per-item 予算超なら最古から間引いて収める（local は全件保持・最新優先）:");
   const sync = {};
   const A = makeDevice(sync, "dev-A");
   const mod = await loadSync();
@@ -2061,17 +2061,17 @@ async function scenarioS71() {
   await reconcileAs(A, mod, { now: t0 + 100, perItemBudget: budget });
   ok((A.localStore[KEY_TRASH] || []).length === 20, "local のゴミ箱は全件保持される", String((A.localStore[KEY_TRASH] || []).length));
   const item = sync[mod.SYNC_KEYS.trash];
-  ok(item, "cloud に trash item がある（間引いて収めた）", JSON.stringify(Object.keys(sync)));
-  ok(mod.bytesOf({ [mod.SYNC_KEYS.trash]: item }) <= budget, "cloud trash item は per-item 予算内", `bytes=${mod.bytesOf({ [mod.SYNC_KEYS.trash]: item })} budget=${budget}`);
-  const cloud = await mod.decodeTrashItem(item);
-  const ids = cloud.map((e) => e.note.id);
-  ok(cloud.length > 0 && cloud.length < 20, "cloud は一部だけ（最新優先で残す）", String(cloud.length));
+  ok(item, "同期ストレージに trash item がある（間引いて収めた）", JSON.stringify(Object.keys(sync)));
+  ok(mod.bytesOf({ [mod.SYNC_KEYS.trash]: item }) <= budget, "同期ストレージ trash item は per-item 予算内", `bytes=${mod.bytesOf({ [mod.SYNC_KEYS.trash]: item })} budget=${budget}`);
+  const 同期ストレージ = await mod.decodeTrashItem(item);
+  const ids = 同期ストレージ.map((e) => e.note.id);
+  ok(同期ストレージ.length > 0 && 同期ストレージ.length < 20, "同期ストレージは一部だけ（最新優先で残す）", String(同期ストレージ.length));
   ok(ids.includes("n19") && !ids.includes("n0"), "最新 n19 は残り最古 n0 は落ちる", JSON.stringify(ids));
 }
 
 // ════════════════════════════════════════════════════════════════
 // S72（ゴミ箱・consent／監査 high）: all→selected の in-flight 切替で、非選択(trash-only・live note なし)
-//   ドメインの削除済み本文を cloud へ送らない。scopeNarrowed は live-note ドメインの増減でしか立たないため、
+//   ドメインの削除済み本文を 同期ストレージへ送らない。scopeNarrowed は live-note ドメインの増減でしか立たないため、
 //   trash は push 直前に freshScope で独立再検査する。load-bearing: 再検査が無いと secret.com の本文が漏れる。
 // ════════════════════════════════════════════════════════════════
 async function scenarioS72() {
@@ -2093,8 +2093,8 @@ async function scenarioS72() {
   };
   await reconcileAs(A, mod, { now: t0 });
   const item = sync[mod.SYNC_KEYS.trash];
-  const cloud = item ? await mod.decodeTrashItem(item) : [];
-  ok(!cloud.some((e) => e.domain === "secret.com"), "非選択ドメイン secret.com の削除済み本文を cloud に送らない", JSON.stringify(cloud.map((e) => e.domain)));
+  const 同期ストレージ = item ? await mod.decodeTrashItem(item) : [];
+  ok(!同期ストレージ.some((e) => e.domain === "secret.com"), "非選択ドメイン secret.com の削除済み本文を 同期ストレージに送らない", JSON.stringify(同期ストレージ.map((e) => e.domain)));
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -2119,7 +2119,7 @@ async function scenarioS73() {
   const r = await reconcileAs(A, mod, { now: t0 });
   ok(r.abortedByOptOut === true, "opt-out で push 中止", JSON.stringify({ a: r.abortedByOptOut }));
   ok(r.trash && r.trash.synced === false, "report.trash.synced が false（送れていない実態に一致）", JSON.stringify(r.trash));
-  ok(!sync[mod.SYNC_KEYS.trash], "cloud に trash item を書かない", JSON.stringify(Object.keys(sync)));
+  ok(!sync[mod.SYNC_KEYS.trash], "同期ストレージに trash item を書かない", JSON.stringify(Object.keys(sync)));
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -2256,7 +2256,7 @@ async function scenarioS78() {
   await stA.ensureProfiles();
   await stA.createProfile("仕事用");
   await reconcileAs(A, modA);
-  ok(!!syncStore["petarin:sync:profiles"], "台帳が cloud item として push される");
+  ok(!!syncStore["petarin:sync:profiles"], "台帳が 同期ストレージ item として push される");
 
   await reconcileAs(B, modB);
   const ledB = B.localStore[KEY_PROFILES];
@@ -2290,10 +2290,10 @@ async function scenarioS79() {
   await reconcileAs(A, mod);
   const item = syncStore["petarin:sync:profiles"];
   const dumped = JSON.stringify(item || {});
-  ok(!dumped.includes("ひみつ"), "非選択プロファイルの名前は cloud に出ない");
+  ok(!dumped.includes("ひみつ"), "非選択プロファイルの名前は 同期ストレージに出ない");
   const { decodeProfilesItem } = mod;
   const led = item ? await decodeProfilesItem(item) : null;
-  ok(led && !led.order.includes(secretKey), "非選択プロファイルのキーも cloud に出ない");
+  ok(led && !led.order.includes(secretKey), "非選択プロファイルのキーも 同期ストレージに出ない");
   ok(led && led.order.includes("ex.com"), "選択済みプロファイルは送られる", JSON.stringify(led && led.order));
 }
 

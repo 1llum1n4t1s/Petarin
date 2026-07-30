@@ -54,29 +54,14 @@
         border-radius: 18px 18px 0 0; padding: 18px 16px calc(24px + env(safe-area-inset-bottom));
       }
       .sheet h2 { font-size: 18px; margin: 0 0 12px; display: flex; justify-content: space-between; align-items: center; }
-      .modes { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: 12px; padding: 8px; }
-      .mode { display: flex; gap: 10px; align-items: flex-start; padding: 10px 8px; border-radius: 9px; }
-      .mode input { width: 18px; height: 18px; margin-top: 1px; accent-color: var(--accent); }
-      .mode small { display: block; color: var(--ink-soft); font-weight: 400; font-size: 12px; }
-      .mode b { font-size: 15px; }
       .wrap { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
-      .pair-status { font-weight: 700; color: var(--ink-soft); font-size: 13px; }
       .row { display: flex; flex-wrap: wrap; gap: 8px; }
-      .lbl { font-size: 12px; color: var(--ink-soft); }
       textarea {
         width: 100%; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5;
         border: 1px solid var(--line); border-radius: 9px; padding: 9px; background: #fff; resize: vertical;
         word-break: break-all;
       }
-      .pair-qr { display: block; max-width: 100%; height: auto; margin: 2px auto 6px; padding: 8px; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
-      .note { font-size: 12px; color: var(--ink-soft); line-height: 1.6; }
-      .note.warn { color: var(--danger); }
-      .buy-card { border: 1px dashed var(--accent); border-radius: 12px; padding: 14px; background: #fff8ea; }
-      .scan-sheet { width: 100%; background: #1a1410; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); border-radius: 18px 18px 0 0; }
-      #scanVideo { width: 100%; max-width: 420px; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 14px; background: #000; }
-      .scan-hint { color: #f7f0df; font-size: 13px; text-align: center; margin: 0; }
       .hbtns { display: flex; gap: 8px; }
-      .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
       .fab { position: fixed; right: calc(20px + env(safe-area-inset-right)); bottom: calc(20px + env(safe-area-inset-bottom)); width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--accent); color: #fff; font-size: 30px; line-height: 1; box-shadow: 0 4px 14px rgba(0,0,0,0.28); cursor: pointer; z-index: 8; }
       .card { cursor: pointer; }
       .ed-row { display: flex; align-items: center; justify-content: space-between; }
@@ -115,7 +100,6 @@
       <div class="hbtns">
         <button class="btn" id="profilesBtn" type="button" aria-label="プロファイル">🗂</button>
         <button class="btn" id="trashBtn" type="button" aria-label="ゴミ箱">🗑</button>
-        <button class="btn" id="syncBtn" type="button">⇄ 同期</button>
       </div>
     </header>
 
@@ -170,57 +154,6 @@
       <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="groupPickPanelTitle">
         <h2 id="groupPickPanelTitle">どこに作る？ <button class="btn" id="groupClose" type="button" aria-label="閉じる">✕</button></h2>
         <div class="wrap" id="groupList"></div>
-      </div>
-    </div>
-
-    <!-- 同期設定 / ペアリング -->
-    <div class="panel" id="syncPanel" hidden>
-      <div class="sheet" role="dialog" aria-modal="true">
-        <h2>同期 <button class="btn" id="syncClose" type="button" aria-label="閉じる">✕</button></h2>
-
-        <div class="modes">
-          <label class="mode"><input type="radio" name="m-mode" value="off" /><span><b>同期しない</b><small>端末内のみ（既定）</small></span></label>
-          <label class="mode"><input type="radio" name="m-mode" value="cloud" /><span><b>クラウド同期</b><small>PC・他の端末とリアルタイム共有・暗号化（買い切り）</small></span></label>
-        </div>
-
-        <div class="wrap" id="cloudWrap" hidden>
-          <!-- 未購入: 購入導線 -->
-          <div class="buy-card" id="buyWrap" hidden>
-            <p class="lbl">クラウド同期は買い切り（¥500）で解禁できます。一度購入すれば追加課金はありません。</p>
-            <button class="btn primary" id="buyBtn" type="button">同期機能を購入（¥500）</button>
-          </div>
-
-          <!-- 購入済み: ペアリング -->
-          <div class="wrap" id="pairWrap" hidden>
-            <div class="pair-status" id="pairStatus">未接続</div>
-            <div class="wrap" id="pairSetup">
-              <button class="btn primary" id="pairCreate" type="button">新しい同期グループを作成</button>
-              <button class="btn" id="pairScan" type="button">📷 QRをスキャンして参加</button>
-              <label class="lbl" for="pairInput">または PC で表示したコードを貼り付けて参加</label>
-              <textarea id="pairInput" rows="3" placeholder="ここにコードを貼り付け"></textarea>
-              <button class="btn" id="pairJoin" type="button">このグループに参加</button>
-            </div>
-            <div class="wrap" id="pairLinked" hidden>
-              <label class="lbl">PC でこの QR を読み取るか、下のコードを貼り付けると同じグループに入れます（第三者に見せない）。</label>
-              <img id="pairQr" class="pair-qr" alt="ペアリングQR" hidden />
-              <textarea id="pairCode" rows="3" readonly></textarea>
-              <div class="row">
-                <button class="btn" id="pairCopy" type="button">コードをコピー</button>
-                <button class="btn danger" id="pairUnlink" type="button">接続を解除</button>
-              </div>
-            </div>
-          </div>
-          <p class="note" id="pairNote"></p>
-        </div>
-      </div>
-    </div>
-
-    <!-- QR カメラスキャン（getUserMedia + jsQR・HTTPS 必須） -->
-    <div class="panel" id="scanPanel" hidden>
-      <div class="scan-sheet">
-        <video id="scanVideo" playsinline muted></video>
-        <p class="scan-hint">相手の端末（PC 拡張）の QR をこの枠に写してください</p>
-        <button class="btn" id="scanCancel" type="button">キャンセル</button>
       </div>
     </div>
 

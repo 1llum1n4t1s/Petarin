@@ -1,8 +1,8 @@
 // ぺたりん モバイル（Capacitor）エントリ。
-// 拡張の同期エンジン（@shared）を chrome.storage シム（Capacitor Preferences 裏付け）の上で動かす。
-// 無課金でスタンドアローンに使える付箋アプリ: 作成/編集/削除/プロファイル/ゴミ箱はローカルで完結。
+// 拡張のストレージ層（@shared）を chrome.storage シム（Capacitor Preferences 裏付け）の上で動かす。
+// スタンドアローンの付箋アプリ: 作成/編集/削除/プロファイル/ゴミ箱はすべて端末内で完結する。
 // 付箋の保存単位は拡張・デスクトップと共通の「プロファイル」（旧称: グループ）。台帳は @shared/storage.js。
-// IAP（買い切り¥500）は「クラウド同期」モードだけのゲート（同期 OFF=外部送信ゼロ）。
+// 端末間同期は持たない（唯一の同期経路だったブラウザ標準同期は、この WebView には存在しない）。
 
 import { createChromeStorageShim } from "./storage-shim.js";
 import { createPreferencesBackend } from "./preferences-backend.js";
@@ -13,21 +13,13 @@ globalThis.chrome = createChromeStorageShim(createPreferencesBackend());
 
 import "@shared/markdown.js"; // globalThis.PetaMD を生やす（副作用 import）
 import {
-  getAllNotes, getSettings, saveSettings,
-  getVaultPairing, saveVaultPairing, clearVaultPairing,
+  getAllNotes,
   makeId, colorOf, COLORS, MAX_CHARS,
   restoreNotes, updateNote, deleteNote,
   getTrash, restoreFromTrash, purgeFromTrash, emptyTrash,
   ensureProfiles, getProfiles, profileList, profileLabel, createProfile,
   renameProfile, deleteProfile, reorderProfiles, MAX_PROFILE_NAME,
 } from "@shared/storage.js";
-import { DEFAULT_RELAY_URL } from "@shared/relay-transport.js";
-import { generateVault, importVault, exportPairingCode, parsePairingCode } from "@shared/vault.js";
-import { startSync, stopSync, attachStorageListener, setOnChange } from "./sync-orchestrator.js";
-import { initIap, isUnlocked, purchase } from "./iap.js";
-import { App } from "@capacitor/app";
-import qrcode from "qrcode-generator";
-import jsQR from "jsqr";
 import { ICONS, pickIcon, clamp, decodeGroupName } from "./notes-meta.js";
 
 const $ = (s) => document.querySelector(s);
@@ -39,29 +31,8 @@ let activeView = "notes"; // "notes" | "trash"
 let composing = false;    // IME 変換中ガード
 
 async function boot() {
-  await initIap();
   // プロファイル台帳の用意（既存の「グループ」キーはそのまま台帳へ登録される＝データは動かない）。
   await ensureProfiles();
-  attachStorageListener();
-  // 同期 OFF（無課金既定）では reconcile が即 return＝この経由の再描画は来ない。よって全 CRUD は末尾で
-  // 自分で renderNotes() する。setOnChange は cloud ON 時の他端末反映の付録（編集中は一覧だけ差し替え）。
-  setOnChange(() => { if (activeView !== "trash") renderNotes(); });
-  await startSync();
-
-  App.addListener("resume", () => startSync());
-  App.addListener("pause", () => stopSync());
-
-  // 同期/ペアリング
-  $("#syncBtn").addEventListener("click", openSync);
-  $("#syncClose").addEventListener("click", () => ($("#syncPanel").hidden = true));
-  $("#pairCreate").addEventListener("click", onCreate);
-  $("#pairScan").addEventListener("click", openScanner);
-  $("#scanCancel").addEventListener("click", closeScanner);
-  $("#pairJoin").addEventListener("click", onJoin);
-  $("#pairUnlink").addEventListener("click", onUnlink);
-  $("#pairCopy").addEventListener("click", onCopy);
-  $("#buyBtn").addEventListener("click", onBuy);
-  for (const r of document.querySelectorAll('input[name="m-mode"]')) r.addEventListener("change", onMode);
 
   // 付箋 CRUD
   $("#addBtn").addEventListener("click", openGroupPick);
@@ -398,187 +369,6 @@ async function renderTrash() {
   const emptyBtn = el("button", "btn danger", "ゴミ箱を空にする");
   emptyBtn.addEventListener("click", async () => { if (window.confirm("ゴミ箱を空にしますか？（元に戻せません）")) { await emptyTrash(); await renderNotes(); } });
   root.replaceChildren(...sections, emptyBtn);
-}
-
-// ── 同期設定 / ペアリング ───────────────────────────────────────
-async function openSync() {
-  const s = await getSettings();
-  const mode = !s.syncEnabled ? "off" : "cloud"; // モバイルは chrome 標準同期は無いので off / cloud のみ
-  for (const r of document.querySelectorAll('input[name="m-mode"]')) r.checked = r.value === mode;
-  $("#cloudWrap").hidden = mode !== "cloud";
-  await renderPairing();
-  $("#syncPanel").hidden = false;
-}
-
-async function onMode(e) {
-  const mode = e.target.value;
-  if (mode === "cloud" && !isUnlocked()) {
-    e.target.checked = false;
-    document.querySelector('input[name="m-mode"][value="off"]').checked = true;
-    $("#cloudWrap").hidden = false;
-    await renderPairing();
-    setNote("クラウド同期は買い切り（¥500）で解禁できます。", true);
-    return;
-  }
-  if (mode === "off") await saveSettings({ syncEnabled: false });
-  else await saveSettings({ syncEnabled: true, syncMode: "cloud" });
-  $("#cloudWrap").hidden = mode !== "cloud";
-  await renderPairing();
-}
-
-async function renderPairing() {
-  $("#buyWrap").hidden = isUnlocked();
-  $("#pairWrap").hidden = !isUnlocked();
-  if (!isUnlocked()) return;
-  const pairing = await getVaultPairing();
-  const paired = !!pairing;
-  $("#pairSetup").hidden = paired;
-  $("#pairLinked").hidden = !paired;
-  $("#pairStatus").textContent = paired ? "接続済み: グループ " + String(pairing.id).slice(0, 6) + "…" : "未接続";
-  if (paired) {
-    // ペアリング済みでも保存済み pairing からコード/QR を再生成して表示する
-    // （別端末を追加で招待でき、onCopy が空文字をコピーする不具合も防ぐ）。
-    const code = exportPairingCode({ pairing });
-    $("#pairCode").value = code;
-    renderPairQr(code);
-  }
-  setNote("");
-}
-
-async function onBuy() {
-  setNote("購入処理中…");
-  try {
-    const ok = await purchase();
-    if (!ok) return setNote("購入が確認できませんでした。", true); // 未解錠で「解禁」と誤表示しない
-    await renderPairing();
-    setNote("クラウド同期を解禁しました。グループを作成するか、PC で表示したコードで参加してください。");
-  } catch {
-    setNote("購入に失敗しました（キャンセルまたはエラー）。", true);
-  }
-}
-
-async function onCreate() {
-  setNote("作成中…");
-  try {
-    const vault = await generateVault(DEFAULT_RELAY_URL);
-    await saveVaultPairing(vault.pairing);
-    // mobile はドメイン選択 UI が無いので scope=all を明示（既定 "selected"＋空 syncDomains だと同期対象ゼロ）。
-    await saveSettings({ syncEnabled: true, syncMode: "cloud", syncScope: "all" });
-    await renderPairing();
-    $("#pairCode").value = exportPairingCode(vault);
-    renderPairQr($("#pairCode").value);
-    setNote("グループを作成しました。PC 拡張でこの QR を読み取るか、コードを貼り付けると同期されます。");
-  } catch (e) {
-    setNote("作成に失敗しました: " + (e && e.message), true);
-  }
-}
-
-async function onJoin() {
-  const code = $("#pairInput").value.trim();
-  if (!code) return setNote("コードを貼り付けてください。", true);
-  setNote("参加中…");
-  try {
-    const pairing = parsePairingCode(code);
-    await importVault(pairing);
-    await saveVaultPairing(pairing);
-    // mobile はドメイン選択 UI が無いので scope=all を明示（既定 "selected"＋空 syncDomains だと同期対象ゼロ）。
-    await saveSettings({ syncEnabled: true, syncMode: "cloud", syncScope: "all" });
-    await renderPairing();
-    setNote("グループに参加しました。付箋が順次同期されます。");
-  } catch {
-    setNote("参加に失敗しました。コードを確認してください。", true);
-  }
-}
-
-async function onUnlink() {
-  await clearVaultPairing();
-  // vault 喪失で同期は実質停止するので、設定上も OFF にして「同期ON・未接続」の矛盾表示を防ぐ。
-  await saveSettings({ syncEnabled: false });
-  await renderPairing();
-  setNote("接続を解除しました。");
-}
-
-async function onCopy() {
-  try {
-    await navigator.clipboard.writeText($("#pairCode").value);
-    setNote("コードをコピーしました。");
-  } catch {
-    setNote("コピーできませんでした。手動で選択してください。", true);
-  }
-}
-
-// ── QR カメラスキャン（getUserMedia + jsQR）。検出したコードで onJoin を自動実行 ──
-// Web(Safari)は HTTPS＝secure context で動く。iOS の WKWebView は 14.3+ で getUserMedia 対応＝
-// Info.plist の NSCameraUsageDescription があれば自前アプリの WebView でカメラが使える（CI で注入・
-// deployment target 15.0）。Android は AndroidManifest の CAMERA 権限が要る（CI で注入）。
-// ※ WebKit bug #208667 は「Chrome/Firefox 等サードパーティ WKWebView ブラウザ」の話で自前アプリには当たらない。
-let scanStream = null;
-let scanRAF = 0;
-async function openScanner() {
-  const video = $("#scanVideo");
-  try {
-    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
-  } catch {
-    setNote("カメラを起動できませんでした（HTTPS とカメラ権限を確認してください）。", true);
-    return;
-  }
-  video.srcObject = scanStream;
-  await video.play().catch(() => {});
-  $("#scanPanel").hidden = false;
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  const tick = () => {
-    if (video.readyState >= 2 && video.videoWidth) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0);
-      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const res = jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
-      if (res && res.data) {
-        onScanned(res.data);
-        return; // ループ停止（onScanned が closeScanner する）
-      }
-    }
-    scanRAF = requestAnimationFrame(tick);
-  };
-  scanRAF = requestAnimationFrame(tick);
-}
-function closeScanner() {
-  if (scanRAF) cancelAnimationFrame(scanRAF);
-  scanRAF = 0;
-  if (scanStream) {
-    scanStream.getTracks().forEach((t) => t.stop());
-    scanStream = null;
-  }
-  const v = $("#scanVideo");
-  try { v.pause(); } catch { /* noop */ }
-  v.srcObject = null;
-  $("#scanPanel").hidden = true;
-}
-async function onScanned(text) {
-  closeScanner();
-  $("#pairInput").value = text;
-  await onJoin(); // 既存の参加処理（parsePairingCode→importVault 検証→保存）を再利用
-}
-
-function setNote(msg, warn) {
-  const n = $("#pairNote");
-  n.textContent = msg || "";
-  n.classList.toggle("warn", !!warn);
-}
-
-// ペアリングコードを QR にして表示（PC 拡張が読み取れる）。
-function renderPairQr(text) {
-  const img = $("#pairQr");
-  try {
-    const qr = qrcode(0, "L");
-    qr.addData(text);
-    qr.make();
-    img.src = qr.createDataURL(4, 16); // 規格推奨の 4 モジュール余白で読み取り安定
-    img.hidden = false;
-  } catch {
-    img.hidden = true;
-  }
 }
 
 function el(tag, cls, text) {

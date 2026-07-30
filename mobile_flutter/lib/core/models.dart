@@ -14,18 +14,18 @@ const String unitSeparator = '\u001f';
 
 const String notesKey = 'petarin:notes';
 const String settingsKey = 'petarin:settings';
-const String vaultKey = 'petarin:sync:vault';
-const String localTombsKey = 'petarin:sync:localTombs';
 const String trashKey = 'petarin:trash';
-const String shadowKey = 'petarin:sync:shadow';
 const String profilesKey = 'petarin:profiles';
 const String profilesMigratedKey = 'petarin:profiles:migrated';
-const String syncSettingsKey = 'petarin:sync:settings';
-const String syncMetaKey = 'petarin:sync:meta';
-const String syncNotePrefix = 'petarin:sync:n:';
-const String syncTrashKey = 'petarin:sync:trash';
-const String syncProfilesKey = 'petarin:sync:profiles';
-const String defaultRelayUrl = 'https://fudaba.kagayoi.com';
+
+/// 撤去済みのクラウド同期が**端末内に**残したキー。起動時に消す（PetarinStore.initialize）。
+/// 先頭のペアリング鍵は秘密を含むので、用途が消えた以上は端末に残さない。
+/// （中継サーバー側のミラー item は Worker ごと削除済みで、ここには存在しない。）
+const List<String> legacyCloudSyncKeys = <String>[
+  'petarin:sync:vault',
+  'petarin:sync:localTombs',
+  'petarin:sync:shadow',
+];
 
 const Set<String> fontIds = <String>{
   'system',
@@ -238,56 +238,6 @@ class ProfileLedger {
       names: names,
       meta: meta,
       orderAt: _finiteInt(value['orderAt']),
-    );
-  }
-
-  /// 2 つの台帳を突き合わせる（可換・冪等・副作用なし）。
-  ///  - エントリ: 打刻 at の LWW。同値は「削除優先 → 表示名の辞書順」で決定的に割る。
-  ///  - order:    orderAt の LWW。同値は order の内容で決定的に割り、生存キーへ畳む。
-  static ProfileLedger merge(ProfileLedger a, ProfileLedger b) {
-    final Map<String, ProfileEntry> meta = <String, ProfileEntry>{};
-    final Map<String, String> names = <String, String>{};
-    for (final String key in <String>{...a.meta.keys, ...b.meta.keys}) {
-      final ProfileEntry? ea = a.meta[key];
-      final ProfileEntry? eb = b.meta[key];
-      final ProfileEntry win;
-      final ProfileLedger src;
-      if (ea == null) {
-        win = eb!;
-        src = b;
-      } else if (eb == null) {
-        win = ea;
-        src = a;
-      } else if (ea.at != eb.at) {
-        win = eb.at > ea.at ? eb : ea;
-        src = eb.at > ea.at ? b : a;
-      } else if (ea.deleted != eb.deleted) {
-        // 同時刻の「削除 vs 生存」は削除を採る。逆にすると削除を観測していない端末の
-        // 生存エントリが毎回勝って永久に復活し続ける（収束しない）。
-        win = ea.deleted ? ea : eb;
-        src = ea.deleted ? a : b;
-      } else {
-        final String na = a.names[key] ?? '';
-        final String nb = b.names[key] ?? '';
-        win = nb.compareTo(na) < 0 ? eb : ea;
-        src = nb.compareTo(na) < 0 ? b : a;
-      }
-      meta[key] = win;
-      if (!win.deleted) names[key] = src.names[key] ?? '';
-    }
-    final ProfileLedger base;
-    if (b.orderAt > a.orderAt) {
-      base = b;
-    } else if (a.orderAt > b.orderAt) {
-      base = a;
-    } else {
-      base = b.order.join('\n').compareTo(a.order.join('\n')) < 0 ? b : a;
-    }
-    return ProfileLedger(
-      order: _orderedLive(base.order, meta),
-      names: names,
-      meta: meta,
-      orderAt: a.orderAt > b.orderAt ? a.orderAt : b.orderAt,
     );
   }
 
@@ -529,27 +479,10 @@ Map<String, Object?> defaultSettings() => <String, Object?>{
   'fontSize': 11,
   'lineNumbers': false,
   'defaultColor': 'yellow',
-  // いま見ているプロファイル（端末ごとの設定＝syncableSettings には含めない）。
-  // 台帳に無いキーだったら order[0] へフォールバックする（PetarinStore.activeProfile）。
+  // いま見ているプロファイル。台帳に無いキーだったら order[0] へフォールバックする
+  // （PetarinStore.activeProfile）。
   'activeProfile': '',
-  'syncEnabled': false,
-  'syncMode': 'cloud',
-  'syncSettings': false,
-  'syncScope': 'all',
-  'syncDomains': <String>[],
 };
-
-const List<String> syncableSettings = <String>[
-  'side',
-  'collapsedTranslucent',
-  'translucentOpacity',
-  'showOnPage',
-  'creatorRatio',
-  'font',
-  'fontSize',
-  'lineNumbers',
-  'defaultColor',
-];
 
 List<TrashEntry> mergeTrash(Iterable<TrashEntry> a, Iterable<TrashEntry> b) {
   final Map<String, TrashEntry> byKey = <String, TrashEntry>{};
@@ -587,25 +520,6 @@ String pickIcon(Iterable<NoteModel> notes, [Random? random]) {
   final List<String> pool = available.isEmpty ? noteIcons : available;
   return pool[(random ?? Random.secure()).nextInt(pool.length)];
 }
-
-String fnv1a(String value) {
-  int hash = 0x811c9dc5;
-  for (final int codeUnit in value.codeUnits) {
-    hash ^= codeUnit;
-    hash =
-        (hash +
-            ((hash << 1) +
-                (hash << 4) +
-                (hash << 7) +
-                (hash << 8) +
-                (hash << 24))) &
-        0xffffffff;
-  }
-  return hash.toRadixString(16).padLeft(8, '0');
-}
-
-String domainKey(String domain) => '$syncNotePrefix${fnv1a(domain)}';
-String tombKey(String domain, String id) => '$domain$unitSeparator$id';
 
 bool isValidDomain(Object? value) {
   if (value is! String || value.isEmpty || value.length >= 256) return false;

@@ -1,8 +1,8 @@
 // ぺたりん モバイル（Capacitor）用の chrome.storage.local シム。
 //
-// 肝: 拡張で鍛えた同期エンジン（shared/storage.js・sync.js・relay-transport.js・vault.js）を
-// モバイルでも「無改造」で動かすため、エンジンが触る `chrome.storage.local` と `chrome.storage.onChanged`
-// を 1 プロセス内の KV で再現する。バックエンドは注入式（Capacitor は Preferences、テストはインメモリ）。
+// 肝: 拡張で鍛えたストレージ層（shared/storage.js ほか）をモバイルでも「無改造」で動かすため、
+// それが触る `chrome.storage.local` と `chrome.storage.onChanged` を 1 プロセス内の KV で再現する。
+// バックエンドは注入式（Capacitor は Preferences、テストはインメモリ）。
 //
 // chrome.storage.local の API 契約に合わせる:
 //   - get(null) で全件 / get("k") や get(["k1","k2"]) で部分取得 / get({k:default}) で既定値付き

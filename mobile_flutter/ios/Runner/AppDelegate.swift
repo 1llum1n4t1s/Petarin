@@ -26,14 +26,12 @@ import UIKit
     let marker = "petarin:flutter:migrated:v1"
     guard !defaults.bool(forKey: marker) else { return }
 
+    // クラウド同期は撤去したので、引き継ぐのは付箋・設定・ゴミ箱だけ（同期用の鍵や
+    // 影データは持ち込まず、残っていれば PetarinStore.initialize が端末側を掃除する）。
     let keys = [
       "petarin:notes",
       "petarin:settings",
       "petarin:trash",
-      "petarin:sync:localTombs",
-      "petarin:sync:shadow",
-      "petarin:sync:vault",
-      "petarin:iap:unlocked",
     ]
     for key in keys where defaults.object(forKey: key) == nil {
       if let value = defaults.object(forKey: "CapacitorStorage.\(key)") {

@@ -8,7 +8,6 @@ import 'app_controller.dart';
 import 'core/models.dart';
 import 'ui/ad_banner.dart';
 import 'ui/note_editor.dart';
-import 'ui/sync_sheet.dart';
 
 const Color _paper = Color(0xfff7f0df);
 const Color _card = Color(0xfffffdf6);
@@ -49,9 +48,6 @@ class _PetarinAppState extends State<PetarinApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(widget.controller.onResume());
-    } else if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
-      unawaited(widget.controller.onPause());
     }
   }
 
@@ -163,17 +159,6 @@ class _HomePageState extends State<HomePage> {
             ],
           ),
           actions: <Widget>[
-            if (controller.syncing)
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 8),
-                child: SizedBox.square(
-                  dimension: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: _accent,
-                  ),
-                ),
-              ),
             IconButton(
               tooltip: 'プロファイル',
               onPressed: () => _openProfiles(context),
@@ -195,16 +180,6 @@ class _HomePageState extends State<HomePage> {
                 onPressed: controller.ads.showPrivacyOptionsForm,
                 icon: const Icon(Icons.privacy_tip_outlined),
               ),
-            IconButton(
-              tooltip: '同期とペアリング',
-              onPressed: () => _openSync(context),
-              icon: Badge(
-                isLabelVisible: controller.syncEnabled && controller.paired,
-                backgroundColor: const Color(0xff5b9d80),
-                smallSize: 8,
-                child: const Icon(Icons.sync_rounded),
-              ),
-            ),
             const SizedBox(width: 8),
           ],
         ),
@@ -223,22 +198,10 @@ class _HomePageState extends State<HomePage> {
                 onPressed: () => _startNewNote(context),
                 child: const Icon(Icons.add_rounded, size: 31),
               ),
-        bottomNavigationBar: controller.unlocked
-            ? null
-            : AdBanner(ads: controller.ads),
+        bottomNavigationBar: AdBanner(ads: controller.ads),
       );
     },
   );
-
-  Future<void> _openSync(BuildContext context) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (BuildContext context) =>
-          SyncSheet(controller: widget.controller),
-    );
-  }
 
   // プロファイル管理（改名・並べ替え・削除）。新規付箋の宛先を選ぶ _ProfilePicker とは
   // 別の入口にしてある: 付箋ごと消える削除を、付箋を作る導線と同じ場所に置かないため。

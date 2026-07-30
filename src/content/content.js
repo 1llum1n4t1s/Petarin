@@ -343,7 +343,7 @@
         const log = raw[KEY_LOCAL_TOMBS] || {};
         if (removed.length) {
           // 継承プロパティ名（__proto__ 等）の id でも own な記録を残す（素の dom[id]=now だと
-          // id="__proto__" は own を作らず削除記録が消え、再 ON 時に stale cloud ノートが復活する。Codex）。
+          // id="__proto__" は own を作らず削除記録が消え、再 ON 時に stale な同期ストレージのノートが復活する。Codex）。
           if (!Object.prototype.hasOwnProperty.call(log, key)) ownSet(log, key, {});
           const dom = log[key];
           for (const id of removed) ownSet(dom, id, now);

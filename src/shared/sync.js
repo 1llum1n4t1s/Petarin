@@ -354,7 +354,7 @@ export function mergeDomainNotes(base, local, remote, domain, tomb, now, domTomb
     // 削除時刻より未来でも削除を優先する。これをしないと、時計が進んだ端末で作られた未編集ノートを他端末
     // から削除できない（未来日時のまま復活し続ける）。復活は base から実際に編集された版に限る（Codex/5c 指摘）。
     // 墓石 deletedAt が壊れて非有限（オブジェクト/文字列等）だと、`>=` 比較が NaN になり「stale remote が
-    // 削除に勝った」と誤判定→truthy 墓石を delete してノートを復活＋cloud meta から backstop を消す（Codex）。
+    // 削除に勝った」と誤判定→truthy 墓石を delete してノートを復活＋同期ストレージ meta から backstop を消す（Codex）。
     // 非有限なら now に修復して永続化し、削除の意図を尊重する（壊れた墓石でも「削除済み」を維持）。
     if (tomb[tk] !== undefined && (typeof tomb[tk] !== "number" || !Number.isFinite(tomb[tk]))) {
       tomb[tk] = now;
@@ -480,26 +480,17 @@ export function gcTombstones(tomb, now, exempt) {
 //  chrome.storage I/O 層（副作用あり）
 // ════════════════════════════════════════════════════════════════
 
-// ─── リモート transport 抽象（差し替え境界）─────────────────────────
-// chrome.storage.sync の直叩きを transport インターフェース（isAvailable / getAll / set /
-// remove）へ括り出す。既定は ChromeSyncTransport＝メソッド内で呼び出し時に chrome を解決し、
-// 現状と完全同一に振る舞う（モジュール読込時に参照をキャプチャしない＝テストの後付けモック互換）。
-// 将来 RelayTransport（Cloudflare Worker 経由の HTTP）へ setSyncTransport で差し替えるための境界。
-const chromeSyncTransport = {
+// ─── リモート transport（ブラウザ標準同期）─────────────────────────
+// chrome.storage.sync の直叩きを isAvailable / getAll / set / remove の 4 メソッドへ括り出す。
+// メソッド内で呼び出し時に chrome を解決する（モジュール読込時に参照をキャプチャしない＝テストの
+// 後付けモック互換）。同期先はブラウザ標準同期の 1 つだけなので、差し替え口は持たない。
+const syncTransport = {
   isAvailable: () => typeof chrome !== "undefined" && chrome.storage && chrome.storage.sync,
   getAll: () => chrome.storage.sync.get(null),
   set: (obj) => chrome.storage.sync.set(obj),
   remove: (keys) => chrome.storage.sync.remove(keys),
 };
-let _transport = chromeSyncTransport;
-// transport を差し替える（falsy を渡すと既定の ChromeSyncTransport へ戻る）。テスト・別実装の注入点。
-export function setSyncTransport(t) {
-  _transport = t || chromeSyncTransport;
-}
-export function getSyncTransport() {
-  return _transport;
-}
-const hasSync = () => _transport.isAvailable();
+const hasSync = () => syncTransport.isAvailable();
 
 async function getLocalNotes() {
   const raw = await chrome.storage.local.get(STORAGE_KEYS.notes);
@@ -534,7 +525,7 @@ async function getLocalProfiles() {
 async function readSync(transport) {
   const all = await transport.getAll();
   // settings item は「キーが在るか」で会計する（truthy かではない）。破損で false/0/"" 等の falsy 値に
-  // なっても cloud に物理的に残り slot/バイトを占有するため、`|| null` で存在を握り潰すと会計から漏れ、
+  // なっても同期ストレージに物理的に残り slot/バイトを占有するため、`|| null` で存在を握り潰すと会計から漏れ、
   // 上限近傍で「実 quota 超過なのに gate 通過→write_failed」になる（決定的 item_limit に倒せない。Codex）。
   const settingsExists = SYNC_KEYS.settings in all;
   const settingsItem = settingsExists ? all[SYNC_KEYS.settings] : null;
@@ -554,7 +545,7 @@ async function readSync(transport) {
   const byDomain = {};
   const rawByDomain = {};
   const corrupt = new Set();
-  // cloud に残るが取り込めない item（不正 note・未知キー）も slot/バイトを占有する。会計から漏らすと
+  // 同期ストレージに残るが取り込めない item（不正 note・未知キー）も slot/バイトを占有する。会計から漏らすと
   // 上限近傍で「実 quota は超過なのに gate を通過」→ sync.set が write_failed に倒れ、本来落とすべき低
   // 優先ドメインを決定的に item_limit で skip できない（Codex#4 + 敵対監査P1）。残置を集計し reconcile の
   // 会計初期値へ算入する（値は理解できないので温存）。
@@ -582,7 +573,7 @@ async function readSync(transport) {
       continue;
     }
     // ここに来るのは「notePrefix だが d 不正/型不正の note item」または「meta/settings/note の
-    // どれでもない未知キー（旧スキーマ・将来の墓石シャーディング・改竄）」。どちらも cloud に残り
+    // どれでもない未知キー（旧スキーマ・将来の墓石シャーディング・改竄）」。どちらも同期ストレージに残り
     // slot/バイトを占有するので残置として算入する。未知キーは notePrefix でない＝domainKey と衝突
     // しないので上書き事故は無い（notePrefix の不正 note が in-scope の domainKey と FNV 衝突する場合は、
     // そのキーの正当な所有者＝当該ドメインが実データで上書きするのが正しい＝失う実データは無い）。
@@ -613,13 +604,13 @@ async function readSync(transport) {
     settingsT: settingsItem ? settingsItem.t || 0 : 0,
     trashRemote,    // 復号済みの remote ゴミ箱エントリ（和集合マージの入力）
     trashRaw,       // 生 item（再 push 要否を符号化形同士で比較するため）
-    trashExists,    // cloud に trash item が在るか（会計）
+    trashExists,    // 同期ストレージに trash item が在るか（会計）
     rawTrashBytes,  // その実バイト（会計）
     profilesRemote,    // 復号済みの remote 台帳（LWW マージの入力。破損/未存在は null）
     profilesRaw,       // 生 item（再 push 要否を符号化形同士で比較するため）
-    profilesExists,    // cloud に profiles item が在るか（会計）
+    profilesExists,    // 同期ストレージに profiles item が在るか（会計）
     rawProfilesBytes,  // その実バイト（会計）
-    // 生の settings item（破損で settingsS=null に sanitize しても cloud には残り占有するので、会計は
+    // 生の settings item（破損で settingsS=null に sanitize しても同期ストレージには残り占有するので、会計は
     // sanitize 後ではなく実在で数える。Codex#1）。falsy 値（false/0/""）も占有するので存在フラグで会計する。
     rawSettings: settingsItem,
     settingsExists,
@@ -628,10 +619,10 @@ async function readSync(transport) {
     orphanKeyBytes, // key→bytes。in-scope domainKey と衝突する orphan は会計から除外する（上書きされる。Codex）
 
     // 生の meta item の実バイト（sanitize 前にスナップショット済み）。破損（非オブジェクト/配列/部分破損）
-    // で meta を sanitize しても生が cloud に残り占有するので、今回書き換えない限りこの実サイズで会計する
+    // で meta を sanitize しても生が同期ストレージに残り占有するので、今回書き換えない限りこの実サイズで会計する
     // （Codex#5）。未存在は 0。
     rawMetaBytes,
-    // meta item が cloud に既存か／現在の cloud item 総数。push 順序の判断に使う（初の墓石 item を満杯
+    // meta item が同期ストレージに既存か／現在の同期ストレージ item 総数。push 順序の判断に使う（初の墓石 item を満杯
     // ストアへ追加するとき、remove で先に枠を空けないと MAX_ITEMS で set が落ち削除が永久に伝播しない。Codex）。
     metaExists: SYNC_KEYS.meta in all,
     itemCountNow: Object.keys(all).length,
@@ -700,9 +691,7 @@ export function reconcile(opts = {}) {
 }
 
 async function _reconcile(opts) {
-  // 実行中に setSyncTransport() で差し替わっても read と write が別バックエンドに割れないよう、
-  // この reconcile の冒頭で transport を 1 つ確定し、以降ローカル参照で使い切る（cloud↔chrome 切替の race 防止）。
-  const transport = getSyncTransport();
+  const transport = syncTransport;
   const settings = await getSettings();
   // 既定OFF: 同期無効なら sync API を一切触らず即終了（＝現状と同一挙動）
   if (!settings.syncEnabled || !transport.isAvailable()) {
@@ -765,7 +754,7 @@ async function _reconcile(opts) {
     now
   );
   // 今回新規に立った墓石。実削除時刻(localTombs 由来)が TTL より古くても「初確立」なので、同回の
-  // gcTombstones で即消されないよう除外する。即消すと墓石が cloud meta に永続化されず、shadow 無し端末の
+  // gcTombstones で即消されないよう除外する。即消すと墓石が同期ストレージ meta に永続化されず、shadow 無し端末の
   // rejoin でゾンビ復活しうる（>180日オフライン後に削除を初観測する稀ケース。監査 I4）。
   const freshTombKeys = new Set(Object.keys(tomb).filter((k) => !tombKeysBefore.has(k)));
   gcTombstones(tomb, now, freshTombKeys);
@@ -802,11 +791,11 @@ async function _reconcile(opts) {
   const metaJSON = JSON.stringify(metaItem);
   const metaChanged = sync.metaBefore !== metaJSON;
   const metaFits = bytesOf({ [SYNC_KEYS.meta]: metaItem }) <= perItemBudget;
-  // 初の墓石 item（cloud に meta 未存在）を満杯ストア(512 item)へ足すと、meta-set が 513 item 目で MAX_ITEMS に
+  // 初の墓石 item（同期ストレージに meta 未存在）を満杯ストア(512 item)へ足すと、meta-set が 513 item 目で MAX_ITEMS に
   // 当たる。以前は「先に remove で枠を空けてから meta」で凌いだが、その meta-set が transient に失敗すると item
   // 消去済み＋墓石未保存になり、"all" スコープの再マージは local/remote 由来＝shadow だけになった削除ドメインを
   // 拾えず墓石を再生成できない＝stale/shadow 無し端末が再 publish する（Codex）。よって remove-first はやめ、
-  // 「満杯＋新規 meta が要る」回は削除を metaDeferred と同じ仕組みで保留する（cloud item 温存・shadow 凍結＝
+  // 「満杯＋新規 meta が要る」回は削除を metaDeferred と同じ仕組みで保留する（同期ストレージ item 温存・shadow 凍結＝
   // 次回 base チャネルで再検出。枠が空けば meta-first で安全に書ける）。byte 超過の metaDeferred と統一。
   const metaSlotBlocked = metaChanged && !sync.metaExists && sync.itemCountNow >= SYNC_LIMITS.MAX_ITEMS;
   if (!metaFits || metaSlotBlocked) report.metaDeferred = true;
@@ -814,30 +803,30 @@ async function _reconcile(opts) {
   const willWriteMeta = metaFits && !metaSlotBlocked && metaChanged;
 
   // ドメイン item の組み立て＋容量見積もり（updatedAt 新しいドメイン優先で詰める）。
-  // 会計に使う meta サイズは「実際に cloud へ残るもの」＝今回書くなら metaItem、書かない（未変更/
-  // metaDeferred）なら既存の生 meta item の実サイズ。破損で sanitize された meta も生が cloud に残り
+  // 会計に使う meta サイズは「実際に同期ストレージへ残るもの」＝今回書くなら metaItem、書かない（未変更/
+  // metaDeferred）なら既存の生 meta item の実サイズ。破損で sanitize された meta も生が同期ストレージに残り
   // 占有するので、sanitize 後の小さい値ではなく生サイズで数える（Codex#5）。間引き廃止で『used 計上後に
   // meta が縮む』不整合は無い（監査 R3/R4）。
   const metaBytes = willWriteMeta ? bytesOf({ [SYNC_KEYS.meta]: metaItem }) : sync.rawMetaBytes;
-  // settings item の会計は「cloud に残るか」で決める。今回書くなら setOps、書かないが既存ならその item。
-  // 設定同期を後で OFF にしても以前の settings item は cloud に残り item/バイトを占有する（cfg.syncSettings
+  // settings item の会計は「同期ストレージに残るか」で決める。今回書くなら setOps、書かないが既存ならその item。
+  // 設定同期を後で OFF にしても以前の settings item は同期ストレージに残り item/バイトを占有する（cfg.syncSettings
   // ではなく実在で数える。Codex 指摘）。
   let settingsBytes = 0, settingsItems = 0;
   if (setOps[SYNC_KEYS.settings]) {
     settingsBytes = bytesOf({ [SYNC_KEYS.settings]: setOps[SYNC_KEYS.settings] }); settingsItems = 1;
   } else if (sync.settingsExists) {
-    // 今回書かないが既存の settings item は cloud に残る。破損で sanitize された（sync.settings===null）
+    // 今回書かないが既存の settings item は同期ストレージに残る。破損で sanitize された（sync.settings===null）
     // ものも、falsy 値（false/0/""）に破損したものも item/バイトを占有するので、sanitize 後の値や truthy
     // 判定ではなく「キーが在るか」で数え、生 item の実サイズで会計する（Codex#1）。
     settingsBytes = bytesOf({ [SYNC_KEYS.settings]: sync.rawSettings }); settingsItems = 1;
   }
-  // 取り込めなかった note item（orphan）も cloud に残り総容量と item 数を占有する（Codex#4）。まず全 orphan を
+  // 取り込めなかった note item（orphan）も同期ストレージに残り総容量と item 数を占有する（Codex#4）。まず全 orphan を
   // baseline に計上する。orphan の key が in-scope ドメインの domainKey と一致しても、そのドメインが実際に書かれる
-  // とは限らない（domain_too_large/item_limit/quota_exceeded/delete_deferred で skip されると orphan は cloud に
+  // とは限らない（domain_too_large/item_limit/quota_exceeded/delete_deferred で skip されると orphan は同期ストレージに
   // 残る）。先に一律除外すると skip 時に baseline から落ちたまま orphan が残り undercount→write_failed になる。
   // よって「書き込みが実際に accept された key の orphan だけ」をループ内で差し引く（Codex 再指摘）。
   let used = metaBytes + settingsBytes + sync.orphanBytes;
-  // 今回スコープ外で手を付けない既存 cloud item も storage.sync の総容量(100KB)を占有する。これを
+  // 今回スコープ外で手を付けない既存同期ストレージ item も storage.sync の総容量(100KB)を占有する。これを
   // used に算入しないと、selected スコープで他端末/他サイトの同期データを見落として実 quota を超える
   // 書き込みを試み write_failed を繰り返す（本来は低優先ドメインを決定的に skip すべき。Codex 指摘）。
   const domainSet = new Set(domains);
@@ -848,7 +837,7 @@ async function _reconcile(opts) {
   // バイト予算を通過して setOps に積まれ、バッチが item 超過で write_failed になる。残る item 数も
   // 数えて、超える低優先ドメインは決定的に skip する（Codex 指摘）。meta=1・settings・スコープ外
   // 既存 item を初期計上し、in-scope で同期する／退避で残るドメインごとに +1。
-  // meta slot は「cloud に meta item が実在する」か「今回 meta を書く」ときだけ 1 数える。meta 不在かつ今回も
+  // meta slot は「同期ストレージに meta item が実在する」か「今回 meta を書く」ときだけ 1 数える。meta 不在かつ今回も
   // 書かない通常の no-tombstone 回で 1 を予約すると、512 item を上限ちょうどで in-place 更新する回に最後の
   // ドメインが item_limit と誤報告され、結果バッチは 512 keys のままなのに 1 ドメインが未同期に落ちる（Codex）。
   const metaItems = sync.metaExists || willWriteMeta ? 1 : 0;
@@ -856,19 +845,19 @@ async function _reconcile(opts) {
   for (const d of Object.keys(sync.rawByDomain)) if (!domainSet.has(d)) itemCount += 1;
 
   // ── ゴミ箱 item（追加だけ同期）を notes ループ前に予約する ──
-  // cloud item は per-item 予算(8KB)に収める＝収まらなければ末尾(最古)から間引く（local は全件保持）。
+  // 同期ストレージ item は per-item 予算(8KB)に収める＝収まらなければ末尾(最古)から間引く（local は全件保持）。
   // スコープ: selected は選択ドメインのゴミ箱だけ送る（インフォームドコンセント）／all は全件。
-  let forCloudTrash = nextTrash;
+  let forRemoteTrash = nextTrash;
   if (cfg.syncScope === "selected") {
     const sel = new Set(cfg.syncDomains || []);
-    forCloudTrash = nextTrash.filter((e) => sel.has(e.domain));
+    forRemoteTrash = nextTrash.filter((e) => sel.has(e.domain));
   }
-  let trashItem = forCloudTrash.length ? await encodeTrashItem(forCloudTrash) : null;
-  while (trashItem && forCloudTrash.length > 1 && bytesOf({ [SYNC_KEYS.trash]: trashItem }) > perItemBudget) {
-    forCloudTrash = forCloudTrash.slice(0, -1); // 末尾＝最古から落として 8KB に収める
-    trashItem = await encodeTrashItem(forCloudTrash);
+  let trashItem = forRemoteTrash.length ? await encodeTrashItem(forRemoteTrash) : null;
+  while (trashItem && forRemoteTrash.length > 1 && bytesOf({ [SYNC_KEYS.trash]: trashItem }) > perItemBudget) {
+    forRemoteTrash = forRemoteTrash.slice(0, -1); // 末尾＝最古から落として 8KB に収める
+    trashItem = await encodeTrashItem(forRemoteTrash);
   }
-  // 1 件でも per-item 予算を超えるなら今回は書けない（極端な巨大付箋）。据え置く＝既存 cloud item を温存。
+  // 1 件でも per-item 予算を超えるなら今回は書けない（極端な巨大付箋）。据え置く＝既存同期ストレージ item を温存。
   if (trashItem && bytesOf({ [SYNC_KEYS.trash]: trashItem }) > perItemBudget) trashItem = null;
   let willWriteTrash = false;
   if (trashItem && JSON.stringify(trashItem) !== JSON.stringify(sync.trashRaw)) {
@@ -882,17 +871,17 @@ async function _reconcile(opts) {
       setOps[SYNC_KEYS.trash] = trashItem;
     }
   }
-  // 今回 trash を書かないが既存 cloud item が在るなら、その占有を会計に積む（cloud に残るので二重計上しない）。
+  // 今回 trash を書かないが既存同期ストレージ item が在るなら、その占有を会計に積む（同期ストレージに残るので二重計上しない）。
   if (!willWriteTrash && sync.trashExists) { used += sync.rawTrashBytes; itemCount += 1; }
 
   // ── プロファイル台帳 item も notes ループ前に予約する ──
   // スコープ: selected は選んだプロファイルの名前だけ送る（ゴミ箱と同じインフォームドコンセント）／all は全件。
-  let forCloudProfiles = nextProfiles;
+  let forRemoteProfiles = nextProfiles;
   if (cfg.syncScope === "selected") {
-    forCloudProfiles = filterProfiles(nextProfiles, new Set(cfg.syncDomains || []));
+    forRemoteProfiles = filterProfiles(nextProfiles, new Set(cfg.syncDomains || []));
   }
-  let profilesItem = isEmptyProfiles(forCloudProfiles) ? null : await encodeProfilesItem(forCloudProfiles);
-  // per-item 予算(8KB)に収まらなければ今回は書かない（既存 cloud item を温存＝和集合 LWW なので次回で追いつく）。
+  let profilesItem = isEmptyProfiles(forRemoteProfiles) ? null : await encodeProfilesItem(forRemoteProfiles);
+  // per-item 予算(8KB)に収まらなければ今回は書かない（既存同期ストレージ item を温存＝和集合 LWW なので次回で追いつく）。
   if (profilesItem && bytesOf({ [SYNC_KEYS.profiles]: profilesItem }) > perItemBudget) profilesItem = null;
   let willWriteProfiles = false;
   if (profilesItem && JSON.stringify(profilesItem) !== JSON.stringify(sync.profilesRaw)) {
@@ -914,15 +903,15 @@ async function _reconcile(opts) {
 
   // shadow（合意点）の引き継ぎ方を、ドメインの立場で 3 通りに分ける。
   const nextShadowNotes = {};
-  // (a) in-scope: live cloud(remote) を base に据える（直後のループで synced→merged 上書き／全消し→delete／
-  //     容量退避→この値のまま保持）。初見ドメイン（cloud に無い）は入れず base 空＝和集合 pull の正常経路。
+  // (a) in-scope: live同期ストレージ(remote) を base に据える（直後のループで synced→merged 上書き／全消し→delete／
+  //     容量退避→この値のまま保持）。初見ドメイン（同期ストレージに無い）は入れず base 空＝和集合 pull の正常経路。
   for (const d of domains) {
     if (d in sync.byDomain) nextShadowNotes[d] = sync.byDomain[d];
   }
-  // (b) out-of-scope だが以前合意した(shadow に在る)ドメイン: 前回合意値で「凍結」する（live cloud に
+  // (b) out-of-scope だが以前合意した(shadow に在る)ドメイン: 前回合意値で「凍結」する（live同期ストレージに
   //     追従させない）。追従させると他端末がそのドメインに付箋を追加したとき shadow だけ増えて local と
   //     ズレ、後で re-scope した瞬間に「追加」を「削除」と誤判定して全端末から消す（監査 R1b）。凍結すれば
-  //     3-way マージが base 比較で cloud の増（=pull）も減（=delete）も正しく扱える（S6/S7 を維持）。
+  //     3-way マージが base 比較で同期ストレージの増（=pull）も減（=delete）も正しく扱える（S6/S7 を維持）。
   for (const d of Object.keys(shadow.notes || {})) {
     if (!domains.includes(d) && !(d in nextShadowNotes)) nextShadowNotes[d] = shadow.notes[d];
   }
@@ -933,7 +922,7 @@ async function _reconcile(opts) {
   }
   // FNV-1a 衝突で複数ドメインが同一 sync キーに化けるのを検知する（#7）。
   const usedKeys = new Map();
-  // 既存 cloud item が占有している sync キーの所有ドメイン。別ドメインの slot を上書きしないため
+  // 既存同期ストレージ item が占有している sync キーの所有ドメイン。別ドメインの slot を上書きしないため
   // （衝突相手が今回スコープ外でも保護する。Codex 指摘）。
   const remoteKeyOwner = new Map();
   for (const d of Object.keys(sync.rawByDomain)) remoteKeyOwner.set(domainKey(d), d);
@@ -943,7 +932,7 @@ async function _reconcile(opts) {
     const key = domainKey(domain);
     const remoteOwner = remoteKeyOwner.get(key);
     if ((usedKeys.has(key) && usedKeys.get(key) !== domain) || (remoteOwner && remoteOwner !== domain)) {
-      // ハッシュ衝突: 今回の先着ドメイン、または cloud で既にこのキーを所有する別ドメインがいる →
+      // ハッシュ衝突: 今回の先着ドメイン、または同期ストレージで既にこのキーを所有する別ドメインがいる →
       // このドメインは同期しない（既存 remote item を上書きで失わせない。未同期報告）。
       report.domains.push({ domain, count: merged.length, synced: false, reason: "hash_collision" });
       continue;
@@ -953,15 +942,15 @@ async function _reconcile(opts) {
       // 空になった → sync から削除。削除を保留するのは「metaDeferred かつ今回この回に新しく立った墓石
       // （newTombDomains）」のときだけ。消すと "all" スコープでこのドメインが local も remote も持たなくなり
       // scope から脱落、meta 回復後も mergeDomainNotes が再呼出されず削除墓石を永続化できない＝独立コピー
-      // rejoin で恒久ゾンビ化する（監査 R2c）。逆に墓石が既に cloud meta に永続化済み（newTombDomains 非該当＝
+      // rejoin で恒久ゾンビ化する（監査 R2c）。逆に墓石が既に同期ストレージ meta に永続化済み（newTombDomains 非該当＝
       // durable backstop 在り）なら、metaDeferred でも item を消してよい。残すと bytes/slot を無駄に占有し、
-      // 削除しても quota が空かない（Codex 指摘）。保留する場合のみ cloud item を残し shadow も R2b 凍結で
+      // 削除しても quota が空かない（Codex 指摘）。保留する場合のみ同期ストレージ item を残し shadow も R2b 凍結で
       // 削除前 base を保つので、meta が縮んだ回に削除を再検出して墓石を書ける。
       const deferDelete = report.metaDeferred && newTombDomains.has(domain);
       if (sync.byDomain[domain] && !deferDelete) {
         removeKeys.push(key);
       } else if (sync.byDomain[domain]) {
-        // 保留で温存する孤児 cloud item は item/バイトとも会計に残す（cloud に残るものを反映し、後続ドメインの
+        // 保留で温存する孤児同期ストレージ item は item/バイトとも会計に残す（同期ストレージに残るものを反映し、後続ドメインの
         // quota/item 判定を実体と揃える＝未計上による write_failed を防ぐ。監査 R2c-1/Codex#12）。
         used += bytesOf({ [key]: sync.rawByDomain[domain] });
         itemCount += 1;
@@ -978,10 +967,10 @@ async function _reconcile(opts) {
       continue;
     }
     // 部分削除の墓石を今回 meta に書けない（metaDeferred かつ今回この domain で墓石が立った）場合、
-    // 短縮 item を publish すると shadow 無し/stale 端末が「削除済みノートが cloud から消えたのに墓石無し」を
+    // 短縮 item を publish すると shadow 無し/stale 端末が「削除済みノートが同期ストレージ から消えたのに墓石無し」を
     // 見て自分の stale コピーを再 publish しうる（全消しは上の R2c で温存。その部分削除版。Codex 指摘）。
-    // 既存 cloud item を温存して削除伝播を保留する（shadow も下の R2b が newTombDomains を凍結＝次回 base
-    // チャネルで再検出、meta が縮んだ回に短縮 item＋墓石を書く）。既存 cloud item が無ければ温存対象も
+    // 既存同期ストレージ item を温存して削除伝播を保留する（shadow も下の R2b が newTombDomains を凍結＝次回 base
+    // チャネルで再検出、meta が縮んだ回に短縮 item＋墓石を書く）。既存同期ストレージ item が無ければ温存対象も
     // 復活元も無いので通常書き込みに進む。
     if (report.metaDeferred && newTombDomains.has(domain) && sync.byDomain[domain]) {
       used += bytesOf({ [key]: sync.rawByDomain[domain] });
@@ -994,11 +983,11 @@ async function _reconcile(opts) {
     const item = await encodeDomainItem(domain, merged, key);
     const size = bytesOf({ [key]: item });
     // この key に orphan が居れば、書き込みはその slot を上書きする＝差し引きで純増は size-ov バイト・1-ovSlot
-    // item。orphan は baseline に計上済みなので、accept された時だけ差し引く（skip 時は orphan が cloud に残る
+    // item。orphan は baseline に計上済みなので、accept された時だけ差し引く（skip 時は orphan が同期ストレージに残る
     // ので差し引かない＝undercount しない。Codex 再指摘）。
     const ov = sync.orphanKeyBytes.get(key) || 0;
     const ovSlot = sync.orphanKeyBytes.has(key) ? 1 : 0;
-    // skip するドメインでも、既存 cloud item があれば remove せず残る＝item/バイトを占有し続ける。
+    // skip するドメインでも、既存同期ストレージ item があれば remove せず残る＝item/バイトを占有し続ける。
     // 後続ドメインの判定が実体とズレて write_failed に倒れないよう、残存分を会計に積む（Codex#12）。
     const retainExisting = () => {
       if (sync.rawByDomain[domain]) { used += bytesOf({ [key]: sync.rawByDomain[domain] }); itemCount += 1; }
@@ -1035,8 +1024,8 @@ async function _reconcile(opts) {
   // corrupt（復号失敗）ドメインも未同期としてUIに見せる
   for (const d of sync.corrupt) report.domains.push({ domain: d, count: 0, synced: false, reason: "decode_error" });
   report.usedBytes = used;
-  report.trash = { count: nextTrash.length, synced: willWriteTrash }; // ゴミ箱の件数と今回 cloud へ送ったか
-  report.profiles = { count: nextProfiles.order.length, synced: willWriteProfiles }; // 台帳の件数と今回 cloud へ送ったか
+  report.trash = { count: nextTrash.length, synced: willWriteTrash }; // ゴミ箱の件数と今回同期ストレージへ送ったか
+  report.profiles = { count: nextProfiles.order.length, synced: willWriteProfiles }; // 台帳の件数と今回同期ストレージへ送ったか
 
   // meta を setOps に載せる（収まる かつ 変化ありの willWriteMeta 時のみ。metaDeferred 時は据え置き＝
   // 下で shadow も前進させない）。変化検出は「読み取り時のスナップショット metaBefore」と行う（tomb は
@@ -1119,9 +1108,9 @@ async function _reconcile(opts) {
   //   6a: 失敗を握りつぶさず report.error に載せ、reject させない。さらに「synced:true としたドメイン」を
   //   未同期へ落とす。自己エコー記録は push 成功時だけ行う（失敗時に記録すると次の onChanged を取りこぼす）。
   //   順序（削除がある回）: 墓石 meta set ／ remove ／ 残り item set の 3 相。meta の前後関係は meta item が
-  //   cloud に既存かで分岐する:
+  //  同期ストレージに既存かで分岐する:
   //   ・通常（既存 meta 更新 or 新規 meta だが枠に余裕あり）→ ① meta set → ② remove。① を先に置くと
-  //     「cloud item は消えたが墓石は未保存」の窓を作らない。①(set) が失敗すれば catch に落ち ② に到達しない
+  //     「同期ストレージ item は消えたが墓石は未保存」の窓を作らない。①(set) が失敗すれば catch に落ち ② に到達しない
   //     ＝item は remove されず次回再 reconcile で再検出・再 push される（Codex#7 / S20）。新規 meta でも枠が
   //     在れば 513 item 目を足せるのでこの順序を保てる＝S20 を維持。
   //   ・満杯ストア(512 item)＋初の墓石 item のときだけ ② remove で枠を空けてから ① meta set。meta-first だと
@@ -1176,23 +1165,23 @@ async function _reconcile(opts) {
     if (row && row.synced) { row.synced = false; row.reason = "scope_changed"; }
   }
   if (scopeNarrowed) _dirty = true; // 新 config で再 reconcile（凍結・再 push 判断をやり直す）
-  // ゴミ箱 item は scopeNarrowed と独立に freshScope で再検査する。forCloudTrash は関数冒頭の stale cfg で
+  // ゴミ箱 item は scopeNarrowed と独立に freshScope で再検査する。forRemoteTrash は関数冒頭の stale cfg で
   // 組まれており（all なら無フィルタ）、in-flight で all→selected やドメイン除外が起きると非選択ドメインの
   // 削除済み本文を送りうる。scopeNarrowed は live-note ドメインの増減でしか立たないので gate にできない
   // （all→selected で live-note ドメインが全て残るケースは scopeNarrowed=false のまま漏れる。監査・consent）。
   if (setOps[SYNC_KEYS.trash] !== undefined && freshCfg.syncScope === "selected") {
     const fsel = new Set(freshCfg.syncDomains || []);
-    if (forCloudTrash.some((e) => !fsel.has(e.domain))) {
+    if (forRemoteTrash.some((e) => !fsel.has(e.domain))) {
       delete setOps[SYNC_KEYS.trash]; // 非選択ドメインの削除済み本文を含む → 今回は送らない
       if (report.trash) report.trash.synced = false;
-      _dirty = true; // 次回 reconcile が新スコープで forCloudTrash を組み直して push
+      _dirty = true; // 次回 reconcile が新スコープで forRemoteTrash を組み直して push
     }
   }
   // プロファイル台帳も同様に freshCfg で再検査する（in-flight で all→selected やキー除外が起きると、
   // 選んでいないプロファイルの**名前**を送ってしまう。名前は利用者のコンテンツ＝consent の対象）。
   if (setOps[SYNC_KEYS.profiles] !== undefined && freshCfg.syncScope === "selected") {
     const fsel = new Set(freshCfg.syncDomains || []);
-    if (forCloudProfiles.order.some((k) => !fsel.has(k))) {
+    if (forRemoteProfiles.order.some((k) => !fsel.has(k))) {
       delete setOps[SYNC_KEYS.profiles];
       if (report.profiles) report.profiles.synced = false;
       _dirty = true; // 次回 reconcile が新スコープで組み直して push
@@ -1240,8 +1229,8 @@ async function _reconcile(opts) {
   //   差分なし」になって失敗した push が二度と再試行されず、サイレントに同期が止まる（6a の核心）。
   //   据え置けば次回 reconcile で base≠local が再検出され、自動で再 push される。
   if (pushOk) {
-    // metaDeferred（墓石 8KB 超で meta 未書き込み）の回は、「この回に立てた墓石が cloud に書けなかった
-    // ドメイン」だけ shadow を据え置く（削除前 base を保つ）。前進させると削除墓石が cloud に無いまま base
+    // metaDeferred（墓石 8KB 超で meta 未書き込み）の回は、「この回に立てた墓石が同期ストレージに書けなかった
+    // ドメイン」だけ shadow を据え置く（削除前 base を保つ）。前進させると削除墓石が同期ストレージに無いまま base
     // から消え、以後 deletedLocally/Remotely が再発火せず墓石を二度と再生成・永続化できない（shadow 無し
     // 端末の rejoin で恒久ゾンビ復活）。据え置けば次回 base チャネルで削除を再検出し、meta が TTL で縮めば
     // 墓石を書ける（監査 R2b）。墓石を立てていないドメイン（初回同期・追加・pull）は通常どおり前進させる。

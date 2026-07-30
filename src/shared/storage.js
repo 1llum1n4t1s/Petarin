@@ -110,7 +110,9 @@ export const DEFAULT_SETTINGS = {
   // 勝手に有効化しない＝インフォームドコンセントを維持するため。
   // syncEnabled=false の間は sync API を一切呼ばず、現状と完全に同一の挙動。
   syncEnabled: false,         // 同期そのものの ON/OFF（既定 OFF＝外部送信ゼロを維持）
-  syncMode: "chrome",         // 同期 ON 時の経路（排他）: "chrome"（ブラウザ標準同期）| "cloud"（relay）。OFF は syncEnabled=false。transport 選択は background が syncMode で行い sync.js は不変
+  // 同期 ON 時の経路は "chrome"（ブラウザ標準同期）だけ。旧バージョンには自前リレー経由の "cloud" があったが
+  // 撤去済みで、出荷済み端末に残る "cloud" は getSettings で "chrome" へ正規化する（下の normalizeSyncMode）。
+  syncMode: "chrome",
   syncSettings: false,        // 見た目設定（side/色味/表示）も同期するか
   syncScope: "selected",      // "selected"（選択プロファイルのみ）| "all"（容量内で全部）
   // syncScope==="selected" のとき同期するプロファイルキーの配列。フィールド名は syncDomains のまま据え置く
@@ -126,26 +128,37 @@ export function colorOf(id) {
   return COLORS.find((c) => c.id === id) || COLORS[0];
 }
 
+// 旧「クラウド同期」（自前リレー）を選んでいた端末の設定を、撤去後の 2 モード（off / chrome）へ寄せる。
+// **同期 ON のままモードだけ chrome へ倒さない**: 利用者が同意したのは「ぺたりん独自の中継サーバー」への
+// 送信であって、Google/Firefox アカウントのブラウザ標準同期への送信ではない。黙って送信先を差し替える
+// のは同意の前提を変えるので、いったん同期 OFF に落とし、必要なら本人に選び直してもらう。
+function normalizeSyncMode(s) {
+  if (s.syncMode === "chrome") return s;
+  return { ...s, syncMode: "chrome", syncEnabled: false };
+}
+
 export async function getSettings() {
   const raw = await chrome.storage.local.get(STORAGE_KEYS.settings);
-  return { ...DEFAULT_SETTINGS, ...(raw[STORAGE_KEYS.settings] || {}) };
+  return normalizeSyncMode({ ...DEFAULT_SETTINGS, ...(raw[STORAGE_KEYS.settings] || {}) });
 }
 
-// ── クラウド同期 vault（端末ローカル専用・never sync）─────────────────
-// 同期グループの鍵束（pairing payload: vaultId/relayUrl/vaultKey/署名鍵 JWK）。秘密を含むため
-// chrome.storage.local にのみ保存し、chrome.storage.sync には一切出さない（鍵は端末から出さない）。
-// 別端末への引き継ぎは QR/コード（exportPairingCode）で行う。SYNCABLE_SETTINGS にも含めない。
-export const VAULT_KEY = "petarin:sync:vault";
+// ── 旧クラウド同期の残骸掃除（撤去マイグレーション・冪等）─────────────────
+// 旧バージョンが端末ローカルに置いていたペアリング鍵束（vaultId/リレー URL/暗号鍵/署名鍵 JWK）。
+// リレーが無くなり用途が消えたので、秘密を端末に残さないよう削除する。あわせて上の normalizeSyncMode
+// と同じ正規化を設定へ永続化する（読み取り時の正規化だけだと、保存し直すまで古い値が残るため）。
+const LEGACY_VAULT_KEY = "petarin:sync:vault";
 
-export async function getVaultPairing() {
-  const raw = await chrome.storage.local.get(VAULT_KEY);
-  return raw[VAULT_KEY] || null;
-}
-export async function saveVaultPairing(pairing) {
-  await chrome.storage.local.set({ [VAULT_KEY]: pairing });
-}
-export async function clearVaultPairing() {
-  await chrome.storage.local.remove(VAULT_KEY);
+export async function purgeLegacyCloudSync() {
+  const raw = await chrome.storage.local.get([LEGACY_VAULT_KEY, STORAGE_KEYS.settings]);
+  const hadVault = raw[LEGACY_VAULT_KEY] !== undefined;
+  const s = raw[STORAGE_KEYS.settings];
+  const needsFix = s && typeof s === "object" && s.syncMode !== undefined && s.syncMode !== "chrome";
+  if (hadVault) await chrome.storage.local.remove(LEGACY_VAULT_KEY);
+  if (needsFix) {
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.settings]: { ...s, syncMode: "chrome", syncEnabled: false },
+    });
+  }
 }
 
 // ── 書き込みの直列化（read-modify-write の競合＝ロストアップデート防止）──
@@ -254,7 +267,7 @@ export const LOCAL_TOMB_TTL = 180 * 24 * 60 * 60 * 1000; // sync.js の TOMB_TTL
 // 継承プロパティ名（__proto__ / constructor / toString 等）の id・domain でも own な JSON 直列化可能
 // エントリを作る。素の obj[key]=v だと key="__proto__" は own プロパティを作らず prototype 差し替えに
 // なり（値が数値なら無視され）削除記録が永続化されない → 再 ON 時に reconcile が tomb 不在で stale な
-// cloud ノートを復活させる。defineProperty なら own+enumerable で残り、JSON 往復も汚染なく保たれる（Codex）。
+// 同期ストレージのノートを復活させる。defineProperty なら own+enumerable で残り、JSON 往復も汚染なく保たれる（Codex）。
 function ownSet(obj, key, val) {
   Object.defineProperty(obj, key, { value: val, writable: true, enumerable: true, configurable: true });
 }
@@ -276,7 +289,7 @@ export function gcLocalTombs(log, now) {
 // 同期対象だが「追加だけ」＝sync.js が和集合マージで配り、除去（復元/完全削除/キャップ溢れ）は伝播しない
 // （墓石層を作らず軽量に保つ）。content.js は import 不可のため同キー・同ロジックをリテラル複製する。
 export const TRASH_KEY = "petarin:trash";
-export const TRASH_MAX = 100; // 全ドメイン共通の保持件数（local 約10MB / cloud 8KB item を意識した上限）
+export const TRASH_MAX = 100; // 全ドメイン共通の保持件数（local 約10MB / 同期ストレージ 8KB item を意識した上限）
 const TRASH_SEP = String.fromCharCode(0x1f); // (domain, id) 連結の区切り。不可視 literal を避け fromCharCode で組む
 
 export function makeTrashEntry(domain, note, deletedAt, origin) {

@@ -2,13 +2,11 @@ import { defineConfig } from "vite";
 import { fileURLToPath } from "node:url";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 
-// 同期エンジンは拡張と単一ソース（../src/shared）を `@shared` で参照する＝モバイルへコピーせず二重管理を避ける。
+// ストレージ層は拡張と単一ソース（../src/shared）を `@shared` で参照する＝モバイルへコピーせず二重管理を避ける。
 export default defineConfig(({ mode }) => ({
   // 実機(iPhone/Android)を LAN で試すための dev サーバ設定。
-  // crypto.subtle(vault.js の暗号化)は secure context 限定で、LAN IP への素の HTTP は secure 扱いされない
-  // ＝ペアリング/暗号化がこける。そこで自己署名 HTTPS を張る（iPhone は証明書警告を一度許可すれば secure context に）。
-  // `--mode preview`（Claude Preview 等の localhost 確認）は自己署名証明書がモーダルで詰まるため素の HTTP にする
-  //（localhost は HTTP でも secure context なので crypto.subtle は動く）。
+  // 自己署名 HTTPS を張る（iPhone は証明書警告を一度許可すれば通る）。
+  // `--mode preview`（localhost での確認）は自己署名証明書がモーダルで詰まるため素の HTTP にする。
   plugins: mode === "preview" ? [] : [basicSsl()],
   resolve: {
     alias: {

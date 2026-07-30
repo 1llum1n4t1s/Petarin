@@ -64,20 +64,6 @@ jobs:
       - name: Capacitor sync
         run: pnpm exec cap sync android
 
-      - name: AndroidManifest へ権限注入 (CAMERA=QRスキャナ / BILLING=アプリ内課金)
-        working-directory: mobile/android
-        run: |
-          # CAMERA: 生 getUserMedia でカメラを使うため注入（Capacitor は自動付与しない）。無いと QR スキャンが
-          #         実行時にパーミッションエラーで失敗する。
-          # BILLING: @capgo/native-purchases の課金に com.android.vending.BILLING が要る。Play Billing ライブラリが
-          #          merge するはずだが、library 依存に頼らず明示注入して確実化（manifest merge は重複を 1 つに畳む）。
-          manifest=app/src/main/AndroidManifest.xml
-          grep -q 'android.permission.CAMERA' "$manifest" || \
-            sed -i 's#</manifest>#    <uses-permission android:name="android.permission.CAMERA" />\n</manifest>#' "$manifest"
-          grep -q 'com.android.vending.BILLING' "$manifest" || \
-            sed -i 's#</manifest>#    <uses-permission android:name="com.android.vending.BILLING" />\n</manifest>#' "$manifest"
-          echo "--- AndroidManifest.xml の権限 ---"; grep -n 'uses-permission' "$manifest" || true
-
       - name: Gradle assembleDebug
         working-directory: mobile/android
         run: ./gradlew assembleDebug --no-daemon
@@ -125,16 +111,6 @@ jobs:
 
       - name: Capacitor sync
         run: pnpm exec cap sync android
-
-      - name: AndroidManifest へ権限注入 (CAMERA=QRスキャナ / BILLING=アプリ内課金)
-        working-directory: mobile/android
-        run: |
-          manifest=app/src/main/AndroidManifest.xml
-          grep -q 'android.permission.CAMERA' "$manifest" || \
-            sed -i 's#</manifest>#    <uses-permission android:name="android.permission.CAMERA" />\n</manifest>#' "$manifest"
-          grep -q 'com.android.vending.BILLING' "$manifest" || \
-            sed -i 's#</manifest>#    <uses-permission android:name="com.android.vending.BILLING" />\n</manifest>#' "$manifest"
-          grep -n 'uses-permission' "$manifest"
 
       # cap add が生成する app/build.gradle は versionCode 1 / versionName "1.0" 固定かつ署名設定なし。
       # Play は versionCode の重複を拒否するので run_number を採番し、versionName は package.json を正本にする。

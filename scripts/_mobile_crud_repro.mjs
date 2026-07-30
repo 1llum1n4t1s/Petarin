@@ -1,7 +1,8 @@
-// モバイル「無課金スタンドアローン付箋 CRUD」のデータ経路 e2e（依存なし・chrome.storage シム上）。
-//   UI（main.js の saveEditor/deleteCurrent/renderTrash）が呼ぶ storage.js の経路そのものを、
-//   vault/同期なし（無課金既定）で通し、作成→編集→削除→ゴミ箱→復元が完結することを確認する。
-//   グループキー（group:base64url）が sync.js の isValidDomain を通る＝後でクラウド同期を買っても安全、も検証。
+// モバイル「スタンドアローン付箋 CRUD」のデータ経路 e2e（依存なし・chrome.storage シム上）。
+//   UI（main.js の saveEditor/deleteCurrent/renderTrash）が呼ぶ storage.js の経路そのものを
+//   通し、作成→編集→削除→ゴミ箱→復元が完結することを確認する。
+//   グループキー（group:base64url）が sync.js の isValidDomain を通ることも検証する
+//   （同じ storage.js を使う拡張側で、そのキーがブラウザ標準同期に載っても壊れないこと）。
 //
 // 実行: node scripts/_mobile_crud_repro.mjs
 
@@ -16,19 +17,16 @@ function ok(cond, name, detail) {
 // シムを差してからエンジン/補助を動的 import（call-time 解決前提だが順序を保証）。
 globalThis.chrome = createChromeStorageShim(createMemoryBackend());
 
-const { getAllNotes, restoreNotes, updateNote, deleteNote, getTrash, restoreFromTrash, purgeFromTrash, makeId, colorOf, getVaultPairing } =
+const { getAllNotes, restoreNotes, updateNote, deleteNote, getTrash, restoreFromTrash, purgeFromTrash, makeId, colorOf } =
   await import("../src/shared/storage.js");
 const { encodeGroupKey, decodeGroupName, isGroupKey, pickIcon } = await import("../mobile/src/notes-meta.js");
 const { isValidDomain } = await import("../src/shared/sync.js");
-
-// 無課金スタンドアローン＝vault は無い
-ok((await getVaultPairing()) == null, "既定で vault 無し（無課金・同期 OFF）");
 
 // グループキーの安全性
 const key = encodeGroupKey("仕事 / 買い物");
 ok(isGroupKey(key), "group: prefix が付く");
 ok(decodeGroupName(key) === "仕事 / 買い物", "グループ名がデコードで往復一致（スラッシュ含む）");
-ok(isValidDomain(key) === true, "group キーが isValidDomain を通る（クラウド同期安全）");
+ok(isValidDomain(key) === true, "group キーが isValidDomain を通る（同期しても安全）");
 ok(isValidDomain("仕事") === true, "（参考）日本語生キーも isValidDomain は通る（が https 連結事故あり→prefix 方式採用）");
 
 // 作成（saveEditor の新規経路＝restoreNotes 挿入）

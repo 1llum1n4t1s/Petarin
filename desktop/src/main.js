@@ -9,7 +9,6 @@
 
 import { ensureProfiles } from "@shared/storage.js";
 import { installChromeShim } from "./bootstrap.js";
-import { startDesktopSync } from "./sync.js";
 import { tauriBackend } from "./tauri-backend.js";
 import { createLicenseService, LicenseState } from "./license.js";
 import { mountLicenseGate, openLicensePanel } from "./license-ui.js";
@@ -64,10 +63,6 @@ async function main() {
 
   // content.js の初期化完了（host の生成）を待ってから追従を張る。
   await bindRailWindow();
-
-  // 同期はレール窓（常駐）だけが回す。付箋デスクからの要求もここが受ける。
-  // 失敗しても付箋自体はローカルで完結するので、レールの起動は止めない。
-  startDesktopSync().catch((e) => console.warn("[petarin] 同期の開始に失敗:", e));
 }
 
 main().catch(async (e) => {

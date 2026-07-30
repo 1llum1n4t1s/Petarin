@@ -7,7 +7,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createChromeStorageShim } from "../../mobile/src/storage-shim.js";
 import { tauriBackend } from "./tauri-backend.js";
-import { requestMessage } from "./bridge.js";
 
 /// 拡張のページが触る chrome API を再現して globalThis へ据える。
 /// storage 系はモバイルと同じシム（Preferences の代わりに tauri-plugin-store）。
@@ -18,9 +17,11 @@ export function installChromeShim() {
     ...(shim.runtime ?? {}),
     // popup の「付箋デスク」ボタン。拡張では options ページ、ここではデスク窓を開く。
     openOptionsPage: () => invoke("open_desk").catch(() => {}),
-    // manage の同期操作（petarin:purgeSync / petarin:reconcile）。同期エンジンは常駐している
-    // レール窓だけが持つので、そちらへ渡して結果を待つ（§bridge.js）。
-    sendMessage: (msg) => requestMessage(msg),
+    // 拡張の background へ投げる要求（petarin:purgeSync / petarin:reconcile）の受け皿。
+    // デスクトップに同期バックエンド（chrome.storage.sync）は無く、同期 UI も出さないので
+    // 呼ばれない想定だが、拡張のページ側は応答形を見て分岐するため null を返しておく
+    // （manage.js は `res && res.ok` のときだけレポートを描く＝描画を見送らせる）。
+    sendMessage: async () => null,
   };
 
   shim.tabs = {

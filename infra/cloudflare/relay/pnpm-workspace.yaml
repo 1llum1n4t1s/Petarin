@@ -1,7 +1,0 @@
-# pnpm のビルドスクリプト許可（供給網リスク低減＝`dangerouslyAllowAllBuilds` で全許可せず、postinstall
-# ビルドが要る依存だけ true にする）。pnpm v11 は allowBuilds で許可/拒否を明示し、未列挙はデフォルト拒否。
-# relay は wrangler が内部で esbuild / workerd を使う＝どちらも postinstall でネイティブ binary を配置する。
-# (sharp はルートの icon 生成用で relay には無いので含めない。)
-allowBuilds:
-  esbuild: true
-  workerd: true

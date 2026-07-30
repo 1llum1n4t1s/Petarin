@@ -2,7 +2,7 @@
 #
 # GitHub Actions の SHA ピン留め推奨 (https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions)
 # に従い、Actions を SHA + タグコメントの形に保つための自動 PR 設定。
-# 依存の単位はリポジトリ内に 6 つある（npm 4 つ + Cargo + pub）ので、すべてを見張る。
+# 依存の単位はリポジトリ内に 5 つある（npm 3 つ + Cargo + pub）ので、すべてを見張る。
 version: 2
 updates:
   # GitHub Actions の SHA ピン留め維持
@@ -22,13 +22,12 @@ updates:
         update-types: ["minor", "patch"]
 
   # npm 依存の脆弱性 / マイナーバージョン追随
-  # / = 拡張のビルドツール / mobile = Capacitor / desktop = Tauri / relay = Workers
+  # / = 拡張のビルドツール / mobile = Capacitor / desktop = Tauri
   - package-ecosystem: "npm"
     directories:
       - "/"
       - "/mobile"
       - "/desktop"
-      - "/infra/cloudflare/relay"
     schedule:
       interval: "weekly"
       day: "monday"
