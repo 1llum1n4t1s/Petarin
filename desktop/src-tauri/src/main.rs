@@ -157,6 +157,15 @@ fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn main() {
+    // Velopack のインストール/更新フックを最初に処理する。
+    //
+    // Velopack はインストール直後などに本体を `--veloapp-install <ver>` 等の引数付きで起動し、
+    // **その終了を待つ**。ここが無いとアプリは引数を無視して常駐 GUI を立ち上げたまま終了せず、
+    // インストーラが「インストールが部分的に成功しました」と報告する（ショートカットは作られる
+    // ので一見ちゃんと入っているように見え、原因に気付きにくい）。
+    // GUI の構築より前＝main の先頭に置く必要がある。
+    velopack::VelopackApp::build().run();
+
     tauri::Builder::default()
         // 2 重起動は既存ウィンドウを前面に出して終わる（常駐アプリなので多重起動は無意味）。
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
