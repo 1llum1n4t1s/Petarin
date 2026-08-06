@@ -554,17 +554,24 @@
 
     host = el("div", { id: "petarin-host" });
     host.style.cssText = "all: initial; position: fixed; inset: 0; z-index: 2147483600; pointer-events: none;";
-    root = host.attachShadow({ mode: "open" });
+    // **拡張では closed**。open だと閲覧中のページのスクリプトが
+    // `document.getElementById("petarin-host").shadowRoot` から付箋本文をそのまま読める。
+    // Shadow DOM は CSS の隔離であって秘密の隔離ではないので、敵対的なページに全付箋を晒すことになる。
+    // content script は隔離ワールドで動く＝ページ側が Element.prototype.attachShadow を差し替えても
+    // こちらの attachShadow には届かないため、closed は実際の境界として機能する。
+    // デスクトップ版は自分のページしか読み込まない（CSP は default-src 'self'）うえ、window.js が
+    // 帯の追従で shadowRoot を外から見る必要があるので、surface がある場合だけ open のままにする。
+    root = host.attachShadow({ mode: surface ? "open" : "closed" });
 
-    const style = document.createElement("style");
+    let css = "";
     try {
       const res = await fetch(assetUrl("src/content/rail.css"));
-      style.textContent = await res.text();
+      css = await res.text();
     } catch (e) {
       // 失敗してもレールは動く（無スタイル）。原因追跡のため握りつぶさず必ず記録する。
       console.warn("[petarin] rail.css の取得に失敗（無スタイルで描画）:", e);
     }
-    root.append(style);
+    if (css) injectRailCss(css);
 
     layer = el("div", { class: "layer" });
     root.append(layer);
@@ -572,6 +579,34 @@
     mount();
     render();
     bindGlobal();
+  }
+
+  // rail.css を shadow root へ当てる。**構築可能スタイルシート（adoptedStyleSheets）を第一手にする**。
+  //
+  // `<style>` 要素での注入はデスクトップ版（Tauri v2）で CSP に落とされる。Tauri は自前が注入する
+  // スタイルのため `style-src` へ nonce を足すが、CSP の仕様では nonce/hash が 1 つでも並ぶと
+  // `'unsafe-inline'` は**無視される**。動的に作った `<style>` に nonce は付かないので、要素は DOM に
+  // 入り textContent も持つのに `style.sheet === null`＝1 行も適用されない。結果、レールが素の
+  // ブロック要素になって帯の左上に潰れ、透過ウィンドウ上では「何も表示されない」ように見える
+  // （＋ボタンが出ないという症状の実体）。
+  // adoptedStyleSheets は `style-src` の対象外なのでこの経路を避けられる。インラインの style **属性**は
+  // nonce が付けられない性質上 `'unsafe-inline'` が効き続けるため、位置指定（place）は従来どおり動く。
+  // 拡張では `<style>` でも問題ないが、実装を 2 本に分けない（＝単一ソースを保つ）ためこちらへ寄せる。
+  function injectRailCss(css) {
+    if (root.adoptedStyleSheets && typeof CSSStyleSheet === "function") {
+      try {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync(css);
+        root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
+        return;
+      } catch (e) {
+        console.warn("[petarin] adoptedStyleSheets が使えないため <style> へ退避:", e);
+      }
+    }
+    // 旧環境向けの退避（CSP が nonce を足していない環境では従来どおり効く）。
+    const style = document.createElement("style");
+    style.textContent = css;
+    root.append(style);
   }
 
   // SPA が body を作り替えても付箋が消えないよう documentElement 直下に挿し、外れたら再挿入
