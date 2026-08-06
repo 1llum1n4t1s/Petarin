@@ -1,6 +1,6 @@
 [package]
 name = "petarin-desktop"
-version = "1.0.7"
+version = "1.0.8"
 description = "ぺたりん デスクトップ版（画面の端から付箋が生える常駐アプリ）"
 authors = ["Kagayoi"]
 edition = "2021"
@@ -16,6 +16,15 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 velopack = "1.2.0"
+
+# 前面アプリが全画面かを判定するためだけの Win32 束縛（フルスクリーン中は最前面を降りる）。
+# tauri が既に同じ crate を推移依存で持っているので、新しくダウンロードされるものは無い。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 [features]
 # 既定は production。`cargo build --features custom-protocol` は tauri build が付ける。

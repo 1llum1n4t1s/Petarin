@@ -30,6 +30,16 @@ for (const zone of document.querySelectorAll('.zone[data-side="left"], .zone[dat
   zone.style.bottom = "0";
 }
 
+// 「ページ上に付箋を表示」も出さない。デスクトップでは**起動していればレールは必ず出ている**のが
+// 約束で（トレイからも隠せないようにした）、オフにすると常駐しているのに何も出ない状態を作れてしまう。
+// 邪魔なときは半透明で避けるか終了する。全画面アプリの前で退くのは Rust 側が自動でやる。
+//
+// **要素は消さずに hidden にする**: popup.js の syncToggles / setupEvents が #showOnPageToggle を
+// 非 null 前提で触るので、removeChild するとポップアップの初期化ごと例外で止まる（デスクの
+// #syncBtn と同じ事情。manage-entry.js を参照）。
+const showRow = document.querySelector("#showOnPageToggle")?.closest(".switch-row");
+if (showRow) showRow.hidden = true;
+
 // 拡張では <script> で先読みされる依存。順序も拡張と同じにする。
 await import("@shared/markdown.js");
 await import("../../src/popup/popup.js");
