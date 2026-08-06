@@ -202,9 +202,16 @@
   let geom = Object.create(null);
   // 展開ボックスのドラッグ移動／リサイズ中フラグ（window.resize の自動追従と競合させない）。
   let interacting = false;
-  // 自分の書き込みによる onChanged を無視するための時刻（キー別に分離）
-  let notesWriteAt = 0;
-  let settingsWriteAt = 0;
+  // 自分の書き込みによる onChanged を無視するための「直前に自分が書いた中身」（キー別に分離）。
+  //
+  // **時間窓（直近 500ms なら自分の書き込み）にしてはいけない。** 自分が保存した直後 500ms 以内に
+  // 付箋デスク・ポップアップ・別タブ・同期 pull が同じキーを書くと、それを自エコーと誤判定して
+  // 落とし、レールが次の外部変更まで古い内容を出し続ける（pendingSync も編集中しか立たない）。
+  // 同期 pull はこちらの書き込みが引き金で走るので、この窓に入るのはむしろ起きやすい。
+  // geom が同じ理由で時間窓をやめている（Codex#1355）ので、notes/settings もそちらへ揃える。
+  // 中身が一致したときだけ自エコーとみなす＝取り違えが原理的に起きない。
+  let notesEcho = null;
+  let settingsEcho = null;
   // ドラッグ/リサイズ中に来た KEY_GEOM 外部変更を取りこぼした印。操作を抜けたら取り込む（pendingSync の geom 版）。
   // geom の自エコー抑止は時間打刻でなく withWrite 直列化で担うため geomWriteAt は持たない（Codex#1355）。
   let geomPendingReload = false;
@@ -309,7 +316,7 @@
         // set 直前に再読。ベースが変わっていたら（reconcile 割り込み）最新で当て直す（最終試行は強行）。
         const cur = JSON.stringify((await chrome.storage.local.get(KEY_NOTES))[KEY_NOTES] || {});
         if (cur !== baseJSON && attempt < MAX - 1) continue;
-        notesWriteAt = Date.now(); // set の前に打刻：onChanged が set 完了と同期発火しても自エコーを確実に無視
+        notesEcho = JSON.stringify(all); // set の前に控える：onChanged が set と同期発火しても取り違えない
         await chrome.storage.local.set({ [KEY_NOTES]: all });
         break;
       }
@@ -362,7 +369,7 @@
         const fresh = await chrome.storage.local.get([KEY_NOTES, KEY_LOCAL_TOMBS, KEY_TRASH]);
         const cur = JSON.stringify({ n: fresh[KEY_NOTES] || {}, t: fresh[KEY_TRASH] || null, l: fresh[KEY_LOCAL_TOMBS] || null });
         if (cur !== baseJSON && attempt < MAX - 1) continue;
-        notesWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
+        notesEcho = JSON.stringify(all); // set の前に控える（自エコー抑止）
         await chrome.storage.local.set({ [KEY_NOTES]: all, [KEY_LOCAL_TOMBS]: log, [KEY_TRASH]: trash });
         break;
       }
@@ -381,7 +388,7 @@
       const next = { ...DEFAULTS, ...cur, [field]: value };
       const fresh = JSON.stringify((await chrome.storage.local.get(KEY_SETTINGS))[KEY_SETTINGS] || {});
       if (fresh !== baseJSON && attempt < MAX - 1) continue; // 割り込みあり → 最新で当て直す
-      settingsWriteAt = Date.now(); // set の前に打刻（自エコー抑止）
+      settingsEcho = JSON.stringify(next); // set の前に控える（自エコー抑止）
       await chrome.storage.local.set({ [KEY_SETTINGS]: next });
       break;
     }
@@ -1504,10 +1511,16 @@
 
     const onStorageChanged = async (changes, area) => {
       if (area !== "local") return;
-      // 自分の書き込みエコー（直近 500ms の自書き込み）は無視し、外部変更だけを対象にする。
-      const now = Date.now();
-      const notesExternal = changes[KEY_NOTES] && now - notesWriteAt >= 500;
-      const settingsExternal = changes[KEY_SETTINGS] && now - settingsWriteAt >= 500;
+      // 自分の書き込みエコー（直前に自分が書いた中身と一致する変更）は無視し、外部変更だけを対象にする。
+      // 一度消費したら控えを捨てる＝他コンテキストが同じ中身へ戻したときに取りこぼさない。
+      const isEcho = (change, expected) =>
+        expected !== null && !!change && JSON.stringify(change.newValue) === expected;
+      const notesEchoed = isEcho(changes[KEY_NOTES], notesEcho);
+      const settingsEchoed = isEcho(changes[KEY_SETTINGS], settingsEcho);
+      if (notesEchoed) notesEcho = null;
+      if (settingsEchoed) settingsEcho = null;
+      const notesExternal = !!changes[KEY_NOTES] && !notesEchoed;
+      const settingsExternal = !!changes[KEY_SETTINGS] && !settingsEchoed;
       // 台帳の変化（プロファイルの作成/改名/削除・同期 pull）は自エコー抑止の対象にしない。content.js は
       // 台帳を書かないので、ここに来るのは常に外部変更。
       const profilesExternal = !!changes[KEY_PROFILES];

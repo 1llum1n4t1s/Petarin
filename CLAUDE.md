@@ -41,7 +41,7 @@ scripts/
 docs/preview-*.html      開発プレビュー（chrome API をモックし rail / popup / manage を実ページ風に確認。scripts/_preview_server.py で配信）
 ```
 
-設定や付箋の変更は **`chrome.storage.onChanged`** で各タブのコンテンツスクリプト／ポップアップ／デスクへ伝播する（メッセージ中継は使わない）。自分の書き込みは `notesWriteAt` / `settingsWriteAt`（キー別の打刻）で 500ms 無視し、編集中のちらつきを防ぐ。編集中（`editingId` あり）は外部由来の全面再描画自体を見送り、入力・フォーカス・IME を壊さない。
+設定や付箋の変更は **`chrome.storage.onChanged`** で各タブのコンテンツスクリプト／ポップアップ／デスクへ伝播する（メッセージ中継は使わない）。自分の書き込みは `notesEcho` / `settingsEcho`（キー別に「直前に自分が書いた中身」を控える）と一致したときだけ無視し、編集中のちらつきを防ぐ。**時間窓（直近 500ms）にしない**のが要点で、窓方式だと自分の保存直後にデスク・ポップアップ・別タブ・同期 pull が書いた変更を自エコーと誤判定して落とし、レールが古いまま残る（`geom` が先に同じ理由で時間窓をやめている）。編集中（`editingId` あり）は外部由来の全面再描画自体を見送り、入力・フォーカス・IME を壊さない。
 
 ## データ仕様（chrome.storage.local）
 
