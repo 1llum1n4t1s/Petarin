@@ -1,7 +1,7 @@
 {
   "name": "petarin-desktop",
   "private": true,
-  "version": "1.0.6",
+  "version": "1.0.7",
   "type": "module",
   "description": "ぺたりん デスクトップ版（Tauri v2）。拡張と同一の同期エンジンを @shared で共有する。",
   "scripts": {
