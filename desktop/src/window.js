@@ -53,9 +53,48 @@ function requiredWidth(host) {
   return max;
 }
 
+/// 当たり判定に足す余白（論理 px）。region の外は描画も切られるので、影（8px offset + 28px blur）が
+/// 欠けて見えない程度に広げる。タブは 30px 幅なので、この余白で帯の全幅ぶんは当たり判定になる。
+const HIT_PAD = 24;
+
+/// 窓の当たり判定に残す矩形を集める。
+///
+/// 帯は画面端の全高を占めるため、**透明な部分がクリックを吸うと最大化ウィンドウの閉じるボタンや
+/// 右端のスクロールバーが押せなくなる**。そこで「実際に触れる部分」だけを Rust へ渡して
+/// 窓の形を削る（`set_hit_regions`）。
+///
+/// 拾う基準は **`pointer-events` が効いているか**＝レール側の CSS を正本にする（`.layer` は
+/// `pointer-events: none` の器で、`.note` とピッカーだけが auto）。レールの DOM 構造が変わっても
+/// セレクタの列挙を追いかけ直さずに済むし、「見えているのに押せない」矩形も作らない。
+/// 数を絞るため `.layer` の直下だけを見る（展開した箱は `.note` の矩形に含まれる）。
+///
+/// 空配列は「制限なし」＝窓全体が当たり判定。ライセンス面（Shadow DOM の外に生える）や
+/// レール未描画のときは、窓いっぱい押せる従来の挙動に戻す。
+function hitRects(host) {
+  if (document.querySelector(PANEL_SELECTOR)) return [];
+  const layer = host?.shadowRoot?.querySelector(".layer");
+  if (!layer) return [];
+  const rects = [];
+  for (const el of layer.children) {
+    if (getComputedStyle(el).pointerEvents === "none") continue;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    rects.push({
+      x: r.x - HIT_PAD,
+      y: r.y - HIT_PAD,
+      w: r.width + HIT_PAD * 2,
+      h: r.height + HIT_PAD * 2,
+    });
+  }
+  return rects;
+}
+
 /// ライセンス面（ロック／設定）は帯の幅では読めないので、出ているあいだだけウィンドウを広げる。
 /// レールの追従（bindRailWindow）とは別経路で、こちらは面が閉じるまで固定する。
 export async function expandForPanel(width = 460) {
+  // 当たり判定の制限を先に外す。付箋を開いた状態のまま面を出すと、**残った region が面を
+  // 切り抜いてしまい**（region の外は描画も当たり判定も無い）、ロック面が読めず操作もできない。
+  await invoke("set_hit_regions", { rects: [] }).catch(() => {});
   await invoke("resize_rail", { side: railSide(boundHost), width }).catch((e) =>
     console.warn("[petarin] ライセンス面のためのリサイズに失敗:", e),
   );
@@ -90,16 +129,46 @@ function waitForHost(timeoutMs = 10_000) {
 export async function bindRailWindow() {
   let host = null;
   let last = ""; // 直近に送った「サイド:幅」。幅だけで握ると、同幅のままサイドだけ変えたときに追従できない
+  let lastRects = "";
+  let queued = false;
+
+  // 当たり判定は幅と同じ握り方では足りない（タブをドラッグで上下に動かすと、幅は変わらないまま
+  // 位置だけ変わる）。1 tick ぶんまとめて、内容が変わったときだけ送る。
+  // **rAF は使わない**: 起動時サイレント更新のあいだレール窓は非表示で、隠れている窓では
+  // rAF が止まり得る（当たり判定が初回から送られない事故になる）。矩形はどうせ
+  // getBoundingClientRect で同期に取るので、まとめる目的ならタイマーで足りる。
+  const pushRects = () => {
+    if (queued) return;
+    queued = true;
+    setTimeout(() => {
+      queued = false;
+      const rects = hitRects(host);
+      const key = JSON.stringify(rects);
+      if (key === lastRects) return;
+      lastRects = key;
+      invoke("set_hit_regions", { rects }).catch((e) =>
+        console.warn("[petarin] 当たり判定の更新に失敗:", e),
+      );
+    }, 0);
+  };
+
   const apply = () => {
     const side = railSide(host);
     const width = requiredWidth(host);
     const key = `${side}:${width}`;
-    if (key === last) return; // 同じ指示の連打は IPC を無駄に往復させるので握る
-    last = key;
-    invoke("resize_rail", { side, width }).catch((e) =>
-      console.warn("[petarin] ウィンドウのリサイズに失敗:", e),
-    );
+    if (key !== last) {
+      last = key; // 同じ指示の連打は IPC を無駄に往復させるので握る
+      invoke("resize_rail", { side, width }).catch((e) =>
+        console.warn("[petarin] ウィンドウのリサイズに失敗:", e),
+      );
+    }
+    pushRects();
   };
+
+  // 窓のリサイズ後、レールは resize を受けてから再配置する（＝リサイズ直後の矩形はまだ古い）。
+  // content.js の再配置は style を書き換えるので下の MutationObserver でも拾えるが、
+  // 位置が変わらないケースでも確実に追従させるため resize でも 1 回送る。
+  window.addEventListener("resize", pushRects);
 
   // ライセンス面の開閉は Shadow DOM の外（document.body 直下）で起きるため、body も監視する。
   // これが無いと expandForPanel で広げた窓を面を閉じても戻せず、**透明な帯が画面端の
@@ -130,5 +199,6 @@ export async function bindRailWindow() {
 /// 起動に失敗したときの保険。描画が無いまま透明ウィンドウだけが残ると、画面端の
 /// クリックを奪ったまま利用者が気付けないので、最低限まで畳んでおく。
 export async function collapseRailWindow() {
+  await invoke("set_hit_regions", { rects: [] }).catch(() => {});
   await invoke("resize_rail", { side: railSide(boundHost), width: COLLAPSED_WIDTH }).catch(() => {});
 }

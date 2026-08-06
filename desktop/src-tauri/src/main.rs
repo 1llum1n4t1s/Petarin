@@ -65,6 +65,68 @@ fn resize_rail(window: WebviewWindow, side: Side, width: u32) -> Result<(), Stri
     dock(&window, side, width.max(COLLAPSED_WIDTH)).map_err(|e| e.to_string())
 }
 
+/// レールの当たり判定 1 枠（論理 px・ウィンドウのクライアント座標）。
+#[derive(serde::Deserialize)]
+struct HitRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+/// 帯ウィンドウの当たり判定を、実際に触れる部分（付箋タブ・展開した箱・絵文字ピッカー）だけに削る。
+///
+/// 帯は画面端の**全高**を占めるので、削らないと透明な部分がクリックを吸い、
+/// **最大化ウィンドウの閉じるボタンや右端のスクロールバーが押せなくなる**（透明でも窓は窓）。
+/// `SetWindowRgn` で窓の形そのものをタブの形へ削ると、region の外は OS から見て
+/// 「窓が無い」ので下のアプリへクリックがそのまま通る。
+///
+/// AppBar（`SHAppBarMessage`）で画面領域を予約する方式は採らない。全ての最大化ウィンドウが
+/// 帯のぶん縮むうえ、`ABM_REMOVE` をし損ねるとデスクトップの作業領域が縮んだまま残り、
+/// アプリを消しても直らない（explorer の再起動が要る）。
+///
+/// **空配列は「制限なし」**＝窓全体を当たり判定に戻す。ライセンス面のように Shadow DOM の外へ
+/// 生える UI は幅も当たり判定も窓いっぱい要るので、そちらは空を送って従来どおりにする。
+#[tauri::command]
+fn set_hit_regions(window: WebviewWindow, rects: Vec<HitRect>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        // SetWindowRgn は user32 の関数だが、windows-sys では GDI 側にまとめられている。
+        use windows_sys::Win32::Graphics::Gdi::{
+            CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR,
+        };
+
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+        let hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
+
+        if rects.is_empty() {
+            // null region ＝ 制限解除。第 3 引数は再描画するか。
+            unsafe { SetWindowRgn(hwnd, std::ptr::null_mut(), 1) };
+            return Ok(());
+        }
+
+        let scale = window.scale_factor().map_err(|e| e.to_string())?;
+        // 端数は外側へ寄せる（内側へ丸めるとタブの縁 1px が押せない帯になる）。
+        let total = unsafe { CreateRectRgn(0, 0, 0, 0) };
+        for r in &rects {
+            let x1 = (r.x * scale).floor() as i32;
+            let y1 = (r.y * scale).floor() as i32;
+            let x2 = ((r.x + r.w) * scale).ceil() as i32;
+            let y2 = ((r.y + r.h) * scale).ceil() as i32;
+            let part = unsafe { CreateRectRgn(x1, y1, x2, y2) };
+            unsafe {
+                CombineRgn(total, total, part, RGN_OR as i32);
+                DeleteObject(part as _);
+            }
+        }
+        // SetWindowRgn は region の所有権を OS へ渡す＝ここで DeleteObject してはいけない。
+        unsafe { SetWindowRgn(hwnd, total, 1) };
+    }
+    #[cfg(not(windows))]
+    let _ = (window, rects);
+    Ok(())
+}
+
 /// ポップアップの論理サイズ。幅は拡張の popup.css（400px）に合わせる。
 const POPUP_WIDTH: f64 = 400.0;
 const POPUP_HEIGHT: f64 = 620.0;
@@ -475,7 +537,12 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_store::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![resize_rail, open_desk, hide_popup])
+        .invoke_handler(tauri::generate_handler![
+            resize_rail,
+            set_hit_regions,
+            open_desk,
+            hide_popup
+        ])
         .setup(|app| {
             let window = app
                 .get_webview_window("main")
