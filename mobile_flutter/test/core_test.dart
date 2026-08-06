@@ -138,6 +138,43 @@ void main() {
     expect(store.trash, isEmpty);
   });
 
+  test('削除は退避先を先に書く（本体書き込み前に落ちても付箋は失われない）', () async {
+    // notes と trash は別キーでまとめて原子的には書けない。退避先を先に書いておけば、
+    // 途中で落ちた最悪ケースでも「ゴミ箱と本体の両方に在る」で止まり、復元不能な消失にならない。
+    final _CrashingStore kv = _CrashingStore(crashBeforeKey: notesKey);
+    final PetarinStore store = PetarinStore(kv);
+    await store.initialize();
+    final NoteModel? created = await store.addNote(
+      domain: defaultProfileKey,
+      text: 'メモ',
+      color: 'yellow',
+    );
+    expect(created, isNotNull);
+
+    kv.armed = true; // ここから notes への書き込みだけが失敗する（プロセス断の模擬）
+    await expectLater(
+      store.deleteNote(defaultProfileKey, created!.id),
+      throwsA(isA<StateError>()),
+    );
+
+    // 落ちた後にディスクから読み直す＝再起動と同じ経路
+    kv.armed = false;
+    final PetarinStore reopened = PetarinStore(kv);
+    await reopened.initialize();
+    expect(
+      reopened.trash.any((TrashEntry e) => e.note.id == created.id),
+      isTrue,
+      reason: 'ゴミ箱から復元できる',
+    );
+    expect(
+      reopened.notes[defaultProfileKey]?.any(
+        (NoteModel n) => n.id == created.id,
+      ),
+      isTrue,
+      reason: '本体はまだ消えていない（二重は復元で解消する。表示は live フィルタが隠す）',
+    );
+  });
+
   test('旧クラウド同期が残したローカルキーは起動時に消える', () async {
     final MemoryKeyValueStore kv = MemoryKeyValueStore(<String, String>{
       for (final String key in legacyCloudSyncKeys) key: '{"stale":true}',
@@ -148,6 +185,31 @@ void main() {
       expect(kv.values.containsKey(key), isFalse, reason: key);
     }
   });
+}
+
+/// 指定キーへの書き込みだけを失敗させるストア（永続化の途中でプロセスが落ちた状況の模擬）。
+class _CrashingStore implements KeyValueStore {
+  _CrashingStore({required this.crashBeforeKey});
+
+  final String crashBeforeKey;
+  final Map<String, String> values = <String, String>{};
+
+  /// true のあいだだけ crashBeforeKey への書き込みが落ちる。
+  bool armed = false;
+
+  @override
+  Future<String?> getString(String key) async => values[key];
+
+  @override
+  Future<void> setString(String key, String value) async {
+    if (armed && key == crashBeforeKey) {
+      throw StateError('crash before writing $key');
+    }
+    values[key] = value;
+  }
+
+  @override
+  Future<void> remove(String key) async => values.remove(key);
 }
 
 Map<String, Object?> _rawNote(String id, int at) => <String, Object?>{

@@ -387,12 +387,20 @@ class PetarinStore {
     return completer.future;
   }
 
+  /// 削除まわりの永続化。**必ず退避先（trash）を先に、本体（notes）を後に書く。**
+  ///
+  /// SharedPreferences のキーは 2 つで、まとめて原子的には書けない。notes を先に書くと
+  /// 「本体から消えたが、ゴミ箱にはまだ入っていない」瞬間ができ、そこで落ちると付箋が
+  /// 復元不能に消える。逆順なら最悪でも「ゴミ箱と本体の両方に在る」状態で止まり、
+  /// ゴミ箱の一覧は現存する (domain,id) を隠す（app_controller の live フィルタ）ので
+  /// 利用者から見た二重表示すら起きない。JS 版（mobile/src/storage-shim.js）も同じ理由で
+  /// notes を必ず最後に書いており、こちらだけ逆順だった。
   Future<void> _persistNotesAndTrash() async {
-    await _write(notesKey, _encodeNotes(_notes));
     await _write(
       trashKey,
       _trash.map((TrashEntry item) => item.toJson()).toList(),
     );
+    await _write(notesKey, _encodeNotes(_notes));
   }
 
   Future<void> _write(String key, Object? value) =>
