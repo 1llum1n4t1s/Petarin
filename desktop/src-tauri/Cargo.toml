@@ -1,6 +1,6 @@
 [package]
 name = "petarin-desktop"
-version = "1.0.8"
+version = "1.0.9"
 description = "ぺたりん デスクトップ版（画面の端から付箋が生える常駐アプリ）"
 authors = ["Kagayoi"]
 edition = "2021"
