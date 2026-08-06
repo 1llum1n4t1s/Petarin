@@ -77,7 +77,7 @@ async function renderNotes() {
   const root = $("#notes");
   if (!groups.length) {
     root.replaceChildren(
-      el("p", "empty", "右下の ＋ で付箋を作成できます。クラウド同期（買い切り）をオンにすると、PC や他の端末ともリアルタイムに共有できます。")
+      el("p", "empty", "右下の ＋ で付箋を作成できます。付箋はこの端末の中だけに保存され、外部へ送信されません。")
     );
     return;
   }
