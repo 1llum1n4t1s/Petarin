@@ -1,7 +1,7 @@
 {
   "name": "petarin-mobile",
   "private": true,
-  "version": "1.0.7",
+  "version": "1.0.8",
   "type": "module",
   "description": "ぺたりん モバイル（Capacitor）。拡張のストレージ層を単一ソース共有した、端末内で完結する付箋アプリ。",
   "scripts": {
