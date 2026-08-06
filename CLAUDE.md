@@ -26,7 +26,7 @@ src/
     content.js           ページに付箋レールを描画（Shadow DOM 隔離・ドラッグ・開閉・編集/プレビュー・色・絵文字・削除・フォント/サイズ/行番号/文字数）
     rail.css             レールの見た目（fetch して shadow root に注入。web_accessible_resources）
   popup/                 ツールバーのポップアップ（プロファイル切替＋簡易設定＝端/半透明/表示/書体/サイズ/行番号・「付箋デスク」への入口）
-  manage/                付箋デスク（options_ui＝別タブ。全プロファイルの付箋とプロファイル自体（作成/改名/削除/並べ替え）を管理＋同期パネル＝off/chrome の 2 モード選択）
+  manage/                付箋デスク（options_ui＝別タブ。全プロファイルの付箋（新規作成/編集/削除/ゴミ箱）とプロファイル自体（作成/改名/削除/並べ替え）を管理＋同期パネル＝off/chrome の 2 モード選択）
   fonts/                 同梱フォント（OFL-1.1・12書体woff2）＋ fonts.css（@font-face・popup/manage 用）＋ LICENSE/NOTICE。content は FontFace API で遅延ロード
 mobile/                  Android アプリ（Capacitor 8 + Vite）。ストレージ層は @shared エイリアスで拡張と単一ソース共有・同期なし（詳細は mobile/README.md）
 mobile_flutter/          iOS 正式アプリ（Flutter + Dart）。JS 版と互換のデータ形式を Dart 実装し、旧 Capacitor データを初回移行・同期なし（詳細は mobile_flutter/README.md）

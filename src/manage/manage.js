@@ -5,10 +5,12 @@
 // 変えていないので、ゴミ箱エントリのフィールド名も domain のまま据え置いている）。
 import {
   getAllNotes,
+  addNote,
   deleteNote,
   deleteNotes,
   updateNote,
   restoreNotes,
+  makeId,
   getTrash,
   restoreFromTrash,
   purgeFromTrash,
@@ -142,6 +144,8 @@ async function init() {
     renderBoard();
   });
   $("#backAll").addEventListener("click", () => { activeDomain = null; trashView = false; render(); });
+  $("#newNote").addEventListener("click", createNoteHere);
+  $("#emptyNew").addEventListener("click", createNoteHere);
   $("#selectAll").addEventListener("click", toggleSelectAllVisible);
   $("#clearSel").addEventListener("click", () => { selection.clear(); render(); });
   $("#bulkDelete").addEventListener("click", bulkDelete);
@@ -559,6 +563,9 @@ function renderBoard() {
   const notes = $("#notes");
   const empty = $("#empty");
   $("#emptyTrash").hidden = true;
+  // ゴミ箱ビューで隠した通常ボード用のボタンをここで必ず戻す（戻ってきたとき隠れっぱなしにしない）。
+  $("#selectAll").hidden = false;
+  $("#newNote").hidden = false;
 
   // スコープ見出し
   const favi = $("#scopeFavi");
@@ -591,6 +598,8 @@ function renderBoard() {
   if (!items.length) {
     notes.replaceChildren();
     empty.hidden = false;
+    // 検索ヒット無しのときだけ作成ボタンを伏せる（欲しいのは新規作成ではなく検索のやり直しなので）。
+    $("#emptyNew").hidden = !!query;
     cardCache.clear(); // 空表示中はキャッシュも空に保つ（退避ノードを残さない／再表示時は作り直す）
     const totalAll = Object.values(allNotes).reduce((s, a) => s + a.length, 0);
     if (query) {
@@ -601,13 +610,13 @@ function renderBoard() {
       $("#emptyTitle").textContent = "まだ付箋はないみたい";
       // 改行は <br> 要素を DOM で組み立てる（innerHTML を使わず AMO の UNSAFE_VAR_ASSIGNMENT を回避）
       $("#emptySub").replaceChildren(
-        document.createTextNode("好きなページを開いて、端の「＋」から"),
+        document.createTextNode("下の「＋」から、ここで最初の一枚を書けるよ。"),
         document.createElement("br"),
-        document.createTextNode("最初の一枚をぺたりと貼ってみて。")
+        document.createTextNode("好きなページの端の「＋」からも貼れるわ。")
       );
     } else if (activeDomain) {
       $("#emptyTitle").textContent = "このプロファイルには付箋がないわ";
-      $("#emptySub").textContent = "このプロファイルを表示中にして、ページの端の「＋」から貼ってみて。";
+      $("#emptySub").textContent = "下の「＋」から、このプロファイルに 1 枚足せるよ。";
     } else {
       $("#emptyTitle").textContent = "付箋が見つからないわ";
       $("#emptySub").textContent = "左の索引からプロファイルを選んでね。";
@@ -666,6 +675,9 @@ function renderTrashBoard() {
   // ボタン群（ゴミ箱では選択・サイトを開くは使わない。戻る・空にするを出す）
   $("#backAll").hidden = false;
   $("#selectAll").hidden = true;
+  // ゴミ箱に新規作成は無い（宛先プロファイルが決まらない）。空状態側も親の hidden に頼らず伏せる。
+  $("#newNote").hidden = true;
+  $("#emptyNew").hidden = true;
   $("#openDomain").hidden = true;
   $("#emptyTrash").hidden = list.length === 0;
   $("#bulkbar").hidden = true;
@@ -796,17 +808,23 @@ function buildMemo(domain, note) {
   // 開く・削除
   const tools = document.createElement("div");
   tools.className = "memo-tools";
-  const open = document.createElement("button");
-  open.className = "memo-open";
-  open.textContent = "↗";
-  open.title = `${domain} を開く`;
-  open.addEventListener("click", () => chrome.tabs.create({ url: `https://${domain}/` }));
+  // 「元サイトを開く」は移行で作られたホスト名キーのプロファイルにしか意味が無い。`group:` キーだと
+  // `https://group:44Oe.../` になり、URL としてもパースできない（`group` がホスト、残りがポート扱い）。
+  // ボード見出しの openDomain は既に isGroupKey で隠しているので、カード側も同じ判定に揃える。
   const del = document.createElement("button");
   del.className = "memo-del";
   del.textContent = "✕";
   del.title = "この付箋を剥がす";
   del.addEventListener("click", () => removeOne(domain, note));
-  tools.append(open, del);
+  if (!isGroupKey(domain)) {
+    const open = document.createElement("button");
+    open.className = "memo-open";
+    open.textContent = "↗";
+    open.title = `${domain} を開く`;
+    open.addEventListener("click", () => chrome.tabs.create({ url: `https://${domain}/` }));
+    tools.append(open);
+  }
+  tools.append(del);
   card.append(tools);
 
   // 本文（クリックでインライン編集）。非編集時は Markdown を整形プレビュー。
@@ -1082,6 +1100,51 @@ function toggleEmojiPicker() {
   };
   document.addEventListener("pointerdown", onDown, true);
   mmPicker = { el: picker, onDown };
+}
+
+// ── 新規作成 ──────────────────────────────────────────────────────
+// 作成先のプロファイル。索引で 1 つ選んでいればそこ、「すべての付箋」表示中はレールが表示している
+// プロファイル（currentDomain）へ落とす＝どのプロファイルに入ったかを必ず 1 つに決めて説明できるようにする。
+function newNoteTarget() {
+  if (activeDomain) return activeDomain;
+  return currentDomain || (profileList(profiles)[0] || {}).key || "";
+}
+
+// 同プロファイルの他の付箋と重複しない絵文字を選ぶ（出尽くしたら重複許容）。content.js の pickIcon と同方針。
+function pickIconFor(domain) {
+  const used = new Set((allNotes[domain] || []).map((n) => n.icon).filter(Boolean));
+  const pool = ICONS.filter((e) => !used.has(e));
+  const from = pool.length ? pool : ICONS;
+  return from[Math.floor(Math.random() * from.length)];
+}
+
+// デスクから付箋を 1 枚足してそのまま編集に入る。保存形式は content.js の createNote と揃える
+// （posRatio まで作るのは、レール側で開いたとき既存の付箋と重ならない位置に出すため）。
+async function createNoteHere() {
+  const domain = newNoteTarget();
+  if (!domain) { showToast("先に左の索引からプロファイルを作ってね"); return; }
+  const now = Date.now();
+  const count = (allNotes[domain] || []).length;
+  const ratio = Number(appSettings?.creatorRatio);
+  const base = Number.isFinite(ratio) ? ratio : 0.78;
+  const note = {
+    id: makeId(),
+    text: "",
+    color: colorOf(appSettings?.defaultColor).id, // 「最後に選んだ色」で開始（未知 id は黄へフォールバック）
+    icon: pickIconFor(domain),
+    posRatio: Math.min(0.96, Math.max(0.02, base - 0.18 - count * 0.015)),
+    createdAt: now,
+    updatedAt: now,
+  };
+  const scoped = !!activeDomain;
+  expectEcho();
+  await addNote(domain, note);
+  trashView = false;
+  await reload();
+  // 保存済みの実体でエディタを開く（reload 後の allNotes が正）。空本文なので openEditor は即編集モードに入る。
+  const fresh = (allNotes[domain] || []).find((n) => n.id === note.id) || note;
+  openEditor(domain, fresh);
+  if (!scoped) showToast(`「${profileLabel(profiles, domain)}」に足したよ`);
 }
 
 // ── 削除 / 一括 / 元に戻す ─────────────────────────────────────────

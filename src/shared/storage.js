@@ -658,6 +658,12 @@ export function restoreNotes(pairs) {
   });
 }
 
+// 付箋を 1 枚新規追加する（付箋デスクの「＋ 新しい付箋」）。note は呼び出し側が makeId() で採番済みの完成品。
+// 復元と同じ ifAbsent upsert 経路を通す＝読み取り〜set の隙に reconcile が pull した付箋を巻き戻さない。
+export function addNote(domain, note) {
+  return restoreNotes([{ domain, note }]);
+}
+
 // ── ゴミ箱の操作（読み取り / 復元 / 完全削除 / 空に）─────────────────────
 // すべて local 操作。除去（復元・完全削除・空に）は同期しない＝他端末のゴミ箱には残るが、manage が
 // 「notes に現存する付箋は表示しない」で隠すため UX は保たれる（追加だけ同期の割り切り）。
@@ -722,8 +728,8 @@ export function emptyTrash(domain) {
 }
 
 // 軽量なユニーク ID（時刻 + 乱数）。
-// 注: 付箋の新規作成は content.js のみで、そこは import 不可のため同式を手書きしている。
-// popup/manage から新規作成 UI を足す場合はこの関数を使うこと。
+// 注: content.js は import 不可のため同式を手書きしている（両者を変えるときは揃えること）。
+// import できる側（manage の「＋ 新しい付箋」等）は必ずこの関数を使う。
 export function makeId() {
   return `n_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
