@@ -24,6 +24,20 @@ const PANEL_WIDTH = 460;
 /// 幅の決定をこのセレクタ 1 つに集約し、開いた側が閉じるときに幅を戻す責任を負わないようにする。
 const PANEL_SELECTOR = ".lic-overlay, .lic-panel";
 
+/// レールが公開している配置サイドを読む。
+///
+/// content.js は `layer.dataset.side = settings.side` を必ず書くので、**レールが既に公開している状態**を
+/// こちら側で拾う。拡張と単一ソースのレールへデスクトップ専用の注入点を増やさずに済む。
+/// 帯ウィンドウは左右にしか吸着できない（main.rs の Side が left/right のみ）ので top/bottom は right へ丸める。
+/// host がまだ無い局面（ライセンス面をレールより先に出すとき）も right を既定にする。
+function railSide(host) {
+  const side = host?.shadowRoot?.querySelector(".layer")?.dataset?.side;
+  return side === "left" ? "left" : "right";
+}
+
+/// bindRailWindow が掴んだ host。expandForPanel / collapseRailWindow が同じサイドを使うために持つ。
+let boundHost = null;
+
 function requiredWidth(host) {
   // 面が出ているあいだは帯の状態に関わらず面の幅を確保する。
   if (document.querySelector(PANEL_SELECTOR)) return PANEL_WIDTH;
@@ -42,7 +56,7 @@ function requiredWidth(host) {
 /// ライセンス面（ロック／設定）は帯の幅では読めないので、出ているあいだだけウィンドウを広げる。
 /// レールの追従（bindRailWindow）とは別経路で、こちらは面が閉じるまで固定する。
 export async function expandForPanel(width = 460) {
-  await invoke("resize_rail", { side: "right", width }).catch((e) =>
+  await invoke("resize_rail", { side: railSide(boundHost), width }).catch((e) =>
     console.warn("[petarin] ライセンス面のためのリサイズに失敗:", e),
   );
 }
@@ -75,12 +89,13 @@ function waitForHost(timeoutMs = 10_000) {
 
 export async function bindRailWindow() {
   let host = null;
-  let last = -1;
+  let last = ""; // 直近に送った「サイド:幅」。幅だけで握ると、同幅のままサイドだけ変えたときに追従できない
   const apply = () => {
-    const side = document.documentElement.dataset.petarinSide === "left" ? "left" : "right";
+    const side = railSide(host);
     const width = requiredWidth(host);
-    if (width === last) return; // 同幅の連打は IPC を無駄に往復させるので握る
-    last = width;
+    const key = `${side}:${width}`;
+    if (key === last) return; // 同じ指示の連打は IPC を無駄に往復させるので握る
+    last = key;
     invoke("resize_rail", { side, width }).catch((e) =>
       console.warn("[petarin] ウィンドウのリサイズに失敗:", e),
     );
@@ -94,18 +109,20 @@ export async function bindRailWindow() {
   new MutationObserver(apply).observe(document.body, { childList: true });
 
   host = await waitForHost();
+  boundHost = host;
   if (!host) {
     console.warn("[petarin] レールの host が現れない（帯を畳んで待機）");
     apply(); // 広がったまま放置せず、必ず帯幅まで戻す
     return;
   }
 
-  // 展開/格納はクラス切替（applyState）で起きるので、属性の変化だけ見れば足りる。
+  // 展開/格納はクラス切替（applyState）、配置サイドの変更は layer の data-side 書き換えで起きるので、
+  // 属性の変化だけ見れば足りる。data-side を外すと popup で左端に変えても窓が右端に残る。
   const observer = new MutationObserver(apply);
   observer.observe(host.shadowRoot, {
     subtree: true,
     attributes: true,
-    attributeFilter: ["class", "style"],
+    attributeFilter: ["class", "style", "data-side"],
   });
   apply();
 }
@@ -113,6 +130,5 @@ export async function bindRailWindow() {
 /// 起動に失敗したときの保険。描画が無いまま透明ウィンドウだけが残ると、画面端の
 /// クリックを奪ったまま利用者が気付けないので、最低限まで畳んでおく。
 export async function collapseRailWindow() {
-  const side = document.documentElement.dataset.petarinSide === "left" ? "left" : "right";
-  await invoke("resize_rail", { side, width: COLLAPSED_WIDTH }).catch(() => {});
+  await invoke("resize_rail", { side: railSide(boundHost), width: COLLAPSED_WIDTH }).catch(() => {});
 }

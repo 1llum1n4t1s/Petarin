@@ -17,6 +17,19 @@ globalThis.close = () => invoke("hide_popup").catch(() => {});
 
 adoptExtensionPage(rawHtml);
 
+// 帯ウィンドウは画面の左右にしか吸着できない（main.rs の Side は left/right のみ）。上/下端を選ぶと
+// レールだけ横並びレイアウトに切り替わり、幅 56px の縦帯に潰れて操作できなくなるので、
+// デスクトップでは選択肢自体を出さない。拡張の popup.html は単一ソースのまま触らない。
+for (const zone of document.querySelectorAll('.zone[data-side="top"], .zone[data-side="bottom"]')) {
+  zone.remove();
+}
+// 上下を消すと左右の当たり判定（既定は上下 30% を空ける）の外側が押しても何も起きない死に領域になるので、
+// 全高へ伸ばす。CSP が動的な <style> を落とす（style-src の nonce）ため、インラインの style 属性で当てる。
+for (const zone of document.querySelectorAll('.zone[data-side="left"], .zone[data-side="right"]')) {
+  zone.style.top = "0";
+  zone.style.bottom = "0";
+}
+
 // 拡張では <script> で先読みされる依存。順序も拡張と同じにする。
 await import("@shared/markdown.js");
 await import("../../src/popup/popup.js");

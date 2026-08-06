@@ -7,7 +7,7 @@
 //   4. markdown.js → content.js の順に読む（拡張の content_scripts と同じ順序）
 // レール本体（src/content/content.js）は拡張と**単一ソース**なのでコピーしない。
 
-import { ensureProfiles } from "@shared/storage.js";
+import { ensureProfiles, getSettings, saveSettings } from "@shared/storage.js";
 import { installChromeShim } from "./bootstrap.js";
 import { tauriBackend } from "./tauri-backend.js";
 import { createLicenseService, LicenseState } from "./license.js";
@@ -23,6 +23,13 @@ async function main() {
   // 台帳を用意して settings.activeProfile を解決させる（既存のデスクトップ付箋は、そのキーが
   // 台帳へ「デスクトップ」という名前で登録されるだけ＝キーは付け替えないのでデータは動かない）。
   await ensureProfiles();
+
+  // 帯ウィンドウは画面の左右にしか吸着できない（main.rs の Side は left/right のみ）。設定に top/bottom が
+  // 残っていると content.js の isVertical() が false になり、横並びレールを幅 56px の縦帯へ描こうとして
+  // 操作不能になる。popup 側では選択肢を消してあるが（popup-entry.js）、それ以前に保存された値や
+  // 手で書き換えられた値もここで倒しておく。デスクトップに同期は無いので他端末へは波及しない。
+  const s = await getSettings();
+  if (s.side !== "left" && s.side !== "right") await saveSettings({ side: "right" });
 
   const license = createLicenseService(tauriBackend);
   const status = await license.evaluate();
