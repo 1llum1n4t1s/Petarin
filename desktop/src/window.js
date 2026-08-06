@@ -89,6 +89,29 @@ function hitRects(host) {
   return rects;
 }
 
+/// レールの右クリックでトレイと同じメニューを出す。
+///
+/// トレイアイコンは Windows 11 では既定でオーバーフローに隠れるので、画面に出ている
+/// レール（＋作成タブ・格納中の付箋）から同じ操作へ届くようにする。メニューの実体は
+/// Rust 側でトレイと共有している（main.rs の TrayMenu）。
+///
+/// **展開した付箋の中だけは既定のメニューを残す**。本文の編集・プレビューではコピー/貼り付け・
+/// 選択が要るので、そこをアプリメニューで潰すと文字を扱えなくなる。
+function bindRailContextMenu(host) {
+  const root = host?.shadowRoot;
+  if (!root) return;
+  root.addEventListener("contextmenu", (event) => {
+    const inExpandedNote = event
+      .composedPath()
+      .some((node) => node?.classList?.contains?.("note") && node.classList.contains("expanded"));
+    if (inExpandedNote) return;
+    event.preventDefault();
+    invoke("show_rail_menu").catch((e) =>
+      console.warn("[petarin] メニューの表示に失敗:", e),
+    );
+  });
+}
+
 /// ライセンス面（ロック／設定）は帯の幅では読めないので、出ているあいだだけウィンドウを広げる。
 /// レールの追従（bindRailWindow）とは別経路で、こちらは面が閉じるまで固定する。
 export async function expandForPanel(width = 460) {
@@ -187,6 +210,8 @@ export async function bindRailWindow() {
 
   // 展開/格納はクラス切替（applyState）、配置サイドの変更は layer の data-side 書き換えで起きるので、
   // 属性の変化だけ見れば足りる。data-side を外すと popup で左端に変えても窓が右端に残る。
+  bindRailContextMenu(host);
+
   const observer = new MutationObserver(apply);
   observer.observe(host.shadowRoot, {
     subtree: true,

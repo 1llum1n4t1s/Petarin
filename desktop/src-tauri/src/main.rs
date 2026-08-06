@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, ContextMenu, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, WindowEvent,
@@ -516,6 +516,57 @@ fn start_startup_update(app: &tauri::AppHandle, window: WebviewWindow, item: Men
     });
 }
 
+// ── スタートアップ登録 ────────────────────────────────────────────
+//
+// 実装は tauri-plugin-autostart（Windows では HKCU の Run キー）に任せる。自前で書くと
+// exe パスの引用符、更新でパスが変わったときの追従、アンインストール時の解除漏れを
+// 全部こちらで持つことになる。Velopack のインストール先は `…\Petarin\current\` で
+// **更新してもパスが変わらない**ので、登録し直しは要らない。
+
+/// 実際の登録状態を読む。読めないときは「未登録」に倒す（チェックだけ ON に見せない）。
+fn autostart_enabled(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// 登録/解除を切り替えて、**レジストリを読み直してから**チェックを合わせる。
+/// 失敗したときに表示だけ切り替わると「登録したのに起動しない」になるので、表示は必ず実態に従わせる。
+fn toggle_autostart(app: &tauri::AppHandle, item: &CheckMenuItem<tauri::Wry>) {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    let result = if manager.is_enabled().unwrap_or(false) {
+        manager.disable()
+    } else {
+        manager.enable()
+    };
+    if let Err(e) = result {
+        eprintln!("[petarin] スタートアップ登録の切り替えに失敗: {e}");
+    }
+    let _ = item.set_checked(autostart_enabled(app));
+}
+
+// ── レールの右クリックでも同じメニューを出す ────────────────────────
+//
+// トレイアイコンは隠れていることが多く（Windows 11 は既定でオーバーフローへ入る）、
+// 画面に出ているレールから同じ操作へ届く方が早い。**メニューはトレイと同一インスタンスを共有**する
+// ＝複製を持たない。更新項目のラベルは進捗表示を兼ねるので、複製すると片方だけ古い表示で残る。
+struct TrayMenu(Menu<tauri::Wry>);
+
+#[tauri::command]
+fn show_rail_menu(app: tauri::AppHandle, window: WebviewWindow) -> Result<(), String> {
+    reveal_rail_from(&app);
+    // 同期コマンドはメインスレッド（窓を持つスレッド）で走るので、ここから直接出してよい。
+    //
+    // 閉じ方はトレイのメニューと同じ＝**どこかをクリックすると閉じる。Escape では閉じない**。
+    // レール窓がフォーカスを持たないせいではなく（トレイのメニューでも同じ）、メニュー実装側の
+    // 挙動なので、ここでフォーカスを奪ってまで直そうとしない（右クリックのたびに他アプリから
+    // フォーカスを取り上げる方が実害が大きい。実測でも set_focus では変わらなかった）。
+    let menu = app.state::<TrayMenu>();
+    menu.0
+        .popup(window.as_ref().window())
+        .map_err(|e| e.to_string())
+}
+
 fn main() {
     // Velopack のインストール/更新フックを最初に処理する。
     //
@@ -537,11 +588,17 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_store::Builder::new().build())
+        // 引数なしで登録する（起動時サイレント更新が別経路で走るので、特別な引数は要らない）。
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .invoke_handler(tauri::generate_handler![
             resize_rail,
             set_hit_regions,
             open_desk,
-            hide_popup
+            hide_popup,
+            show_rail_menu
         ])
         .setup(|app| {
             let window = app
@@ -572,6 +629,15 @@ fn main() {
             // 「常駐しているのに何も出ない・原因が分からない」状態を作れてしまうため。
             // 全画面アプリの前面に被らない対応は最前面属性の自動制御（watch_fullscreen）が担う。
             let desk = MenuItem::with_id(app, "desk", "付箋デスク…", true, None::<&str>)?;
+            // チェックの初期値は**実際のレジストリを読んで**決める（前回の登録が残っていても合う）。
+            let startup = CheckMenuItem::with_id(
+                app,
+                "startup",
+                "Windows 起動時に開く",
+                true,
+                autostart_enabled(app.handle()),
+                None::<&str>,
+            )?;
             let license = MenuItem::with_id(app, "license", "ライセンス…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
             let menu = Menu::with_items(
@@ -581,11 +647,16 @@ fn main() {
                     &update,
                     &sep,
                     &desk,
+                    &startup,
                     &license,
                     &quit,
                 ],
             )?;
             let update_for_events = update.clone();
+            let startup_for_events = startup.clone();
+
+            // レールの右クリックから同じメニューを出せるように控える（複製は作らない）。
+            app.manage(TrayMenu(menu.clone()));
 
             // トレイのツールチップにも版を出す（メニューを開かなくても確認できる）。
             let tooltip = format!("ぺたりん v{version}");
@@ -630,6 +701,7 @@ fn main() {
                             eprintln!("[petarin] 付箋デスクの表示に失敗: {e}");
                         }
                     }
+                    "startup" => toggle_autostart(app, &startup_for_events),
                     // ライセンス面は Web 側が持つ（ロック面と同一のフォームを使い回すため）。
                     "license" => {
                         if let Some(w) = app.get_webview_window("main") {
