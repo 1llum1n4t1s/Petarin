@@ -614,6 +614,29 @@
     if (!host.isConnected) (document.documentElement || document.body).append(host);
   }
 
+  // 全画面で動画（映画など）を観ているあいだ、帯が上に居座らないようにする。
+  //
+  // プレイヤーの全画面ボタン（Fullscreen API）は**ブラウザ側が勝手に隠してくれる**。全画面要素は
+  // top layer へ載り、z-index では到達できない層になるため（実測: z-index 2147483600 の host が
+  // 全画面要素に覆われる）。塞げていないのは **F11 のブラウザ全画面**で、こちらはページが通常どおり
+  // 描画されるのでレールが動画の上に出てしまう。`display-mode: fullscreen` は F11 でも真になるので、
+  // これを見て host ごと畳む。
+  // デスクトップ版は対象外（surface で判定）。あちらは窓の最前面属性を Rust 側の watch_fullscreen が
+  // 降ろす方式で、Tauri の webview が display-mode をどう報告するかに挙動を依存させたくないため。
+  function bindFullscreen() {
+    if (surface) return;
+    const mq = window.matchMedia("(display-mode: fullscreen)");
+    const apply = () => {
+      const fs = !!document.fullscreenElement || mq.matches;
+      // 復帰時は空文字へ戻す。host の cssText は display を指定していないので、
+      // position:fixed による blockify（＝従来と同じ描画）へそのまま戻る。
+      host.style.display = fs ? "none" : "";
+    };
+    document.addEventListener("fullscreenchange", apply);
+    if (mq.addEventListener) mq.addEventListener("change", apply);
+    apply();
+  }
+
   // ── 配置計算 ──────────────────────────────────────────────────────
   function place(node, ratio, dim) {
     if (isVertical()) {
@@ -1469,6 +1492,8 @@
 
     let raf = 0;
     window.addEventListener("resize", () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(reposition); });
+
+    bindFullscreen();
 
     // SPA が host を剥がしても復活させる（state は JS 側に保持されるので再アタッチで復元）
     let mo = null;
