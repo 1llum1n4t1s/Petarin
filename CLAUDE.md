@@ -138,6 +138,7 @@ node scripts/_sync_repro.mjs # 同期エンジンの回帰テスト（依存な�
 - **テスト（拡張・共有エンジン）**（すべて依存なしの決定的スクリプト・Node22。lint や UI の自動テストは無い）:
   - `node scripts/_sync_repro.mjs` — 同期エンジン回帰スイート（S1〜S80）。**`shared/sync.js` / `shared/storage.js` / `shared/profiles.js` の同期・設定・台帳まわりを触ったら必ず実行**（墓石/容量/設定マージはエッジの巣）。単一シナリオは出力を `S65` 等で grep。
   - `node scripts/_mobile_crud_repro.mjs` — モバイル CRUD のデータ経路 e2e（シム上・グループキーの isValidDomain 通過も検証）。
+  - `node scripts/_license_clock_repro.mjs` — デスクトップ版ライセンスの時計巻き戻しガード（現在 11 PASS）。**`desktop/src/license.js` の時刻まわりを触ったら必ず実行**。試用中は license レコードが無いので、ガードを license 側だけに置くと購入前が丸ごと素通りする。
 - **テスト（Flutter / iOS）**: SDK は CI の `FLUTTER_VERSION` と揃える（現在 **3.44.6**・`git clone --depth 1 --branch <ver> https://github.com/flutter/flutter.git` で入れる）。`mobile_flutter/` で次を回す。単一テストは `flutter test --plain-name "<テスト名>"`。
   ```bash
   flutter pub get --enforce-lockfile   # CI と同じ lockfile 固定

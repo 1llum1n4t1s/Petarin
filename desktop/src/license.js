@@ -37,7 +37,7 @@ export const LicenseState = {
 
 const STORE_KEYS = {
   license: "petarin:license", // { key, email, purchaseId, lastCheckUtc, maxSeenUtc }
-  trial: "petarin:trial", // { startUtc }
+  trial: "petarin:trial", // { startUtc, maxSeenUtc }（maxSeenUtc は購入前も効かせる時計巻き戻しガード）
 };
 
 const DAY_MS = 86_400_000;
@@ -98,28 +98,50 @@ export function createLicenseService(backend) {
   };
   const write = (k, v) => backend.setItem(k, JSON.stringify(v));
 
-  /// 試用開始日。巻き戻し対策で「記録済みの最も早い日付」を採る（Kiriha は file と HKCU の 2 箇所で
-  /// 同じことをしている。デスクトップ版はまず store 1 箇所＋maxSeenUtc の単調増加ガードで守る）。
-  async function trialStart(now) {
-    const t = await read(STORE_KEYS.trial);
-    const recorded = t?.startUtc ? Date.parse(t.startUtc) : NaN;
-    if (Number.isFinite(recorded)) return Math.min(recorded, now);
-    await write(STORE_KEYS.trial, { startUtc: new Date(now).toISOString() });
+  /// ISO 文字列を時刻数値へ。未設定・壊れた値は -Infinity（＝Math.max で無視される）にする。
+  const stamp = (s) => {
+    const v = s ? Date.parse(s) : NaN;
+    return Number.isFinite(v) ? v : -Infinity;
+  };
+
+  /// 試用開始日。**記録済みの値をそのまま返す**（Kiriha は file と HKCU の 2 箇所で二重化している。
+  /// デスクトップ版は store 1 箇所＋maxSeenUtc の単調増加ガードで守る）。
+  ///
+  /// かつてここは `Math.min(recorded, now)` だった。「記録済みの最も早い日付を採る」つもりの式だが、
+  /// OS の日時を過去へ戻すと now 側が選ばれ、経過日数が 0 になって**試用期間が丸ごと復活する**。
+  /// now は guardedNow が単調化した値なので、記録済みの開始日をそのまま信じてよい。
+  async function trialStart(now, trial) {
+    const recorded = stamp(trial?.startUtc);
+    if (recorded > -Infinity) return recorded;
+    const iso = new Date(now).toISOString();
+    await write(STORE_KEYS.trial, { ...(trial || {}), startUtc: iso, maxSeenUtc: iso });
     return now;
   }
 
   /// 時計を巻き戻して試用や猶予を延ばす攻撃を潰す。観測した最大時刻を単調に持ち上げる。
-  async function guardedNow(persisted) {
-    const now = Date.now();
-    const seen = persisted?.maxSeenUtc ? Date.parse(persisted.maxSeenUtc) : NaN;
-    return Number.isFinite(seen) && seen > now ? seen : now;
+  ///
+  /// **試用中も効かせる**のが要点。ライセンスレコードは購入するまで存在しないので、そちらだけを
+  /// 見ていると試用期間中はガードが素通りし、日時を戻すだけで残日数が戻る。打刻は初回起動で必ず
+  /// 生える試用レコード側にも置き、両方＋試用開始日の最大値を採る（開始日より前へは戻せない）。
+  function guardedNow(trial, license) {
+    return Math.max(Date.now(), stamp(trial?.maxSeenUtc), stamp(license?.maxSeenUtc), stamp(trial?.startUtc));
+  }
+
+  /// 観測時刻を単調に前進させて永続化する。これが無いと maxSeenUtc は購入・失効確認の成功時にしか
+  /// 進まず、その打刻より後の任意の時点へ日時を戻してオフライン猶予を無限に伸ばせる。
+  /// 前進していないときは書かない（起動ごとの無駄書きを避ける）。
+  async function touchMaxSeen(now, trial, license) {
+    const iso = new Date(now).toISOString();
+    if (trial && stamp(trial.maxSeenUtc) < now) await write(STORE_KEYS.trial, { ...trial, maxSeenUtc: iso });
+    if (license && stamp(license.maxSeenUtc) < now) await write(STORE_KEYS.license, { ...license, maxSeenUtc: iso });
   }
 
   return {
     /// 起動時に呼ぶ。state / email / trialDaysLeft は組で意味を持つのでまとめて返す。
     async evaluate() {
-      const persisted = await read(STORE_KEYS.license);
-      const now = await guardedNow(persisted);
+      const [trial, persisted] = await Promise.all([read(STORE_KEYS.trial), read(STORE_KEYS.license)]);
+      const now = guardedNow(trial, persisted);
+      await touchMaxSeen(now, trial, persisted);
 
       if (persisted?.key) {
         const parsed = await parseKey(persisted.key);
@@ -133,7 +155,7 @@ export function createLicenseService(backend) {
         // 署名が通らないキーは捨てて試用判定へ落とす（改竄・鍵ローテ漏れの両方をここで吸収）
       }
 
-      const started = await trialStart(now);
+      const started = await trialStart(now, trial);
       const left = Math.max(0, TRIAL_DAYS - Math.floor((now - started) / DAY_MS));
       return {
         state: left > 0 ? LicenseState.Trial : LicenseState.TrialExpired,
