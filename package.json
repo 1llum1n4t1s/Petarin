@@ -11,9 +11,9 @@
     "build": "pnpm run generate-icons && pnpm run generate-screenshots"
   },
   "devDependencies": {
-    "puppeteer-core": "^25.4.0",
+    "puppeteer-core": "^25.5.0",
     "sharp": "^0.35.3",
-    "web-ext": "^10.5.0"
+    "web-ext": "^10.6.0"
   },
   "keywords": [
     "chrome-extension",
