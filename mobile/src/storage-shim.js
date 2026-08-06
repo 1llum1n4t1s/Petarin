@@ -54,9 +54,22 @@ export function createChromeStorageShim(backend) {
     return out;
   }
 
+  // 本家 chrome.storage.local.set は複数キーを**原子的**に反映するが、バックエンド（Capacitor
+  // Preferences / tauri-plugin-store）にその API は無く、ここはキーごとの逐次書き込みになる。
+  // 途中でプロセスが落ちると一部のキーだけが新値になる。
+  //
+  // そこで**順序で守る**: 付箋の実体である `petarin:notes` を必ず最後に書く。削除は
+  // notes・localTombs・trash を 1 回の set に載せるので、この順なら中断時に残るのは
+  //   「notes にまだ居るのに trash にも入っている」＝復元可能な重複
+  // であって、逆順で起きる「notes から消えたのに trash に無い」＝**復元不能な消失**にはならない。
+  // しかもこの重複は付箋デスクが表示時に隠す（notes に現存する (domain,id) はゴミ箱に出さない）ので
+  // 利用者からは見えない。原子化そのものはバックエンド側の課題として残す。
+  const NOTES_KEY = "petarin:notes";
   async function set(obj) {
+    const keys = Object.keys(obj);
+    const ordered = [...keys.filter((k) => k !== NOTES_KEY), ...keys.filter((k) => k === NOTES_KEY)];
     const changes = {};
-    for (const k of Object.keys(obj)) {
+    for (const k of ordered) {
       const oldValue = await readRaw(k);
       const newValue = obj[k];
       await backend.setItem(k, JSON.stringify(newValue));
